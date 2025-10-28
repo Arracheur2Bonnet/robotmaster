@@ -1,0 +1,26 @@
+#ROS NOETIC OFFICIAL IMAGE
+FROM osrf/ros:noetic-desktop
+
+#GENERAL DEPENDENCIES AND DEBUG TOOLS (MORE THAN NEEDED)
+RUN apt-get update && apt-get install -y \
+    python3-catkin-tools \
+    build-essential \
+    cmake \
+    git \
+    libopencv-dev \
+    ros-noetic-cv-bridge \
+    ros-noetic-image-transport \
+    libceres-dev \
+    gdb \
+    valgrind \
+    libboost-all-dev \
+    libeigen3-dev
+
+#SET WORKSPACE
+WORKDIR /root/ros_ws
+
+#ADD ROS SETUP SCRIPT TO BASHRC
+RUN echo "source /opt/ros/noetic/setup.bash" >> ~/.bashrc
+
+#KEEP IT RUNNING
+CMD ["bash"]
