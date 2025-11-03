@@ -1,0 +1,63 @@
+<launch>
+    <node name="carolus_astrobee_rex" pkg="carolus_astrobee" type="carolus_astrobee" output="screen">
+        
+        <!-- Execution Parameters -->
+        <param name="num_threads" value="1" />
+        <param name="queue_size" value="10" />
+
+        <!-- Blob Filtering Parameters -->
+        <param name="min_circularity" value="0.4" />
+        <param name="saturation_threshold" value="20" />
+        <param name="min_area" value="30.0" />
+        <param name="max_area" value="500.0" />
+        <param name="max_distance_lim" value="250.0" />
+        <param name="lb_hue" value="80.0" />
+        <param name="ub_hue" value="110.0" />
+
+        <!-- Preprocessing Parameters -->
+        <param name="kernel_size_gaussian" value="3" />
+        <param name="kernel_size_morph" value="3" />
+        <param name="image_threshold" value="240" />
+
+        <!-- Camera Parameters -->
+        <param name="nav_cam" value="true" />
+        <param name="dock_cam" value="false" />
+        <param name="fisheye" value="false" />
+        <param name="fov" value="true" />
+        <param name="mono" value="true" />
+
+        <!-- Robot Configuration -->
+        <param name="bot_name" value="wannabee" />
+
+        <!-- Camera Intrinsic Parameters
+        <param name="fx" value="603.78877" />
+        <param name="fy" value="602.11334" />
+        <param name="cx" value="575.92329" />
+        <param name="cy" value="495.30887" />  -->
+
+        <!-- Distortion Coefficients 
+        <param name="distortion" value="0.993591 0.0 0.0 0.0" /> -->
+
+        <!-- Topic Names -->
+        <param name="dock_cam_topic" value="/hw/cam_dock" />
+        <param name="nav_cam_topic" value="/hw/cam_nav" />
+        <param name="processed_image_topic" value="/postprocessed/image" />
+        <param name="pose_topic" value="/loc/ar/features" />
+
+        <!-- Benchtest Mode -->
+        <param name="benchtest" value="true" />
+
+        <!-- FIFO Filtering -->
+        <param name="filter_size" value="7" />
+        <param name="translation_threshold" value="0.5" />
+        <param name="rotation_threshold" value="0.5" />
+        <param name="fifo_on" value="true" />
+        <param name="max_time_fifo" value="5.0" />
+        <param name="reject_limit" value="5" />
+
+        <!-- Known Beacon Points -->
+        <param name="known_points" value="0.055 0.0 0.0 -0.055 0.0 0.0 0.0 0.048 0.0 0.0 0.0 0.037" />
+
+    </node>
+</launch>
+

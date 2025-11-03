@@ -1,0 +1,33 @@
+<package format="2">
+  <name>carolus_astrobee</name>
+  <version>0.0.1</version>
+  <description>The carolus_node package</description>
+
+  <maintainer email="ZAUBERFLOTE1@GITHUB.com">ZAUBERFLOTE1</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <build_depend>roscpp</build_depend>
+  <build_depend>sensor_msgs</build_depend>
+
+  <build_depend>geometry_msgs</build_depend>
+
+  <build_depend>opencv</build_depend>
+  <build_depend>Eigen3</build_depend>
+  <build_depend>image_transport</build_depend>
+
+
+  <exec_depend>roscpp</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+
+  <exec_depend>geometry_msgs</exec_depend>
+  
+  
+  <exec_depend>opencv</exec_depend>
+  <exec_depend>Eigen3</exec_depend>
+  <exec_depend>image_transport</exec_depend>
+
+
+  <export>
+  </export>
+</package>
