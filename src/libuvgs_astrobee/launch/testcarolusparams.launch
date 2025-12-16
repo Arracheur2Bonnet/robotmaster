@@ -1,0 +1,77 @@
+<launch>
+    <!-- Define arguments with default values -->
+    <arg name="num_threads" default="1" />
+    <arg name="queue_size" default="10" />
+    <arg name="min_circularity" default="0.4" />
+    <arg name="saturation_threshold" default="20" />
+    <arg name="min_area" default="30.0" />
+    <arg name="max_area" default="500.0" />
+    <arg name="max_distance_lim" default="250.0" />
+    <arg name="lb_hue" default="80.0" />
+    <arg name="ub_hue" default="110.0" />
+    <arg name="kernel_size_gaussian" default="3" />
+    <arg name="kernel_size_morph" default="3" />
+    <arg name="image_threshold" default="240" />
+    <arg name="nav_cam" default="true" />
+    <arg name="dock_cam" default="false" />
+    <arg name="fisheye" default="false" />
+    <arg name="fov" default="true" />
+    <arg name="mono" default="true" />
+    <arg name="bot_name" default="wannabee" />
+    <arg name="dock_cam_topic" default="/hw/cam_dock" />
+    <arg name="nav_cam_topic" default="/hw/cam_nav" />
+    <arg name="processed_image_topic" default="/postprocessed/image" />
+    <arg name="pose_topic" default="/loc/ar/features" />
+    <arg name="benchtest" default="true" />
+    <arg name="filter_size" default="7" />
+    <arg name="translation_threshold" default="0.5" />
+    <arg name="rotation_threshold" default="0.5" />
+    <arg name="fifo_on" default="true" />
+    <arg name="max_time_fifo" default="5.0" />
+    <arg name="reject_limit" default="5" />
+    <arg name="known_points" default="0.055 0.0 0.0 -0.055 0.0 0.0 0.0 0.048 0.0 0.0 0.0 0.037" />
+    <arg name="fx" default="603.78877" />
+    <arg name="fy" default="602.11334" />
+    <arg name="cx" default="575.92329" />
+    <arg name="cy" default="495.30887" />
+    <arg name="distortion" default="0.993591 0.0 0.0 0.0" />
+
+    <node name="carolus_astrobee_rex" pkg="carolus_astrobee" type="carolus_astrobee" output="screen">
+        <param name="num_threads" value="$(arg num_threads)" />
+        <param name="queue_size" value="$(arg queue_size)" />
+        <param name="min_circularity" value="$(arg min_circularity)" />
+        <param name="saturation_threshold" value="$(arg saturation_threshold)" />
+        <param name="min_area" value="$(arg min_area)" />
+        <param name="max_area" value="$(arg max_area)" />
+        <param name="max_distance_lim" value="$(arg max_distance_lim)" />
+        <param name="lb_hue" value="$(arg lb_hue)" />
+        <param name="ub_hue" value="$(arg ub_hue)" />
+        <param name="kernel_size_gaussian" value="$(arg kernel_size_gaussian)" />
+        <param name="kernel_size_morph" value="$(arg kernel_size_morph)" />
+        <param name="image_threshold" value="$(arg image_threshold)" />
+        <param name="nav_cam" value="$(arg nav_cam)" />
+        <param name="dock_cam" value="$(arg dock_cam)" />
+        <param name="fisheye" value="$(arg fisheye)" />
+        <param name="fov" value="$(arg fov)" />
+        <param name="mono" value="$(arg mono)" />
+        <param name="bot_name" value="$(arg bot_name)" />
+        <param name="dock_cam_topic" value="$(arg dock_cam_topic)" />
+        <param name="nav_cam_topic" value="$(arg nav_cam_topic)" />
+        <param name="processed_image_topic" value="$(arg processed_image_topic)" />
+        <param name="pose_topic" value="$(arg pose_topic)" />
+        <param name="benchtest" value="$(arg benchtest)" />
+        <param name="filter_size" value="$(arg filter_size)" />
+        <param name="translation_threshold" value="$(arg translation_threshold)" />
+        <param name="rotation_threshold" value="$(arg rotation_threshold)" />
+        <param name="fifo_on" value="$(arg fifo_on)" />
+        <param name="max_time_fifo" value="$(arg max_time_fifo)" />
+        <param name="reject_limit" value="$(arg reject_limit)" />
+        <param name="known_points" value="$(arg known_points)" />
+        <param name="fx" value="$(arg fx)" />
+        <param name="fy" value="$(arg fy)" />
+        <param name="cx" value="$(arg cx)" />
+        <param name="cy" value="$(arg cy)" />
+        <param name="distortion" value="$(arg distortion)" />
+    </node>
+</launch>
+
