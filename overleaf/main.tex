@@ -1,0 +1,51 @@
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{graphicx}
+\usepackage{hyperref}
+
+\title{Carolus: Vision-Based Relative Navigation for a Rooted RoboMaster S1}
+\author{} % TODO: author name(s)
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+% TODO: content pending -- one-paragraph summary of the project, the
+% approach (Carolus/UVGS-2 beacon + P4P, fused with wheel odometry via an
+% EKF), and the main result obtained so far.
+\end{abstract}
+
+\section{Introduction and Setup}
+% TODO: content pending -- hardware (rooted RoboMaster S1 via s1_sdk_hack,
+% EP SDK, Raspberry Pi) and software setup (Carolus/UVGS-2: 4-LED beacon
+% detection + P4P pose solve via Ceres).
+
+\section{Methodology}
+% TODO: content pending, by axis:
+% - F3: robot_localization EKF (loosely-coupled, odom + Carolus absolute pose)
+% - F4: MINS sandbox plan (KAIST dataset validation before any RoboMaster port)
+% - F5: Carolus vs AprilTag orientation accuracy (hypothesis, not yet tested)
+% - Ground-truth drift protocol (measuring-tape + CAD control points)
+
+\section{Results to Date}
+% TODO: content pending. IMPORTANT: the first F3 hardware test (2026-07-23,
+% 1.6 m / 37 s) must be presented explicitly as a pre-test / sanity check,
+% NOT as a drift-reduction demonstration -- see research-log/04-roadmap.md
+% and research-log/07-perplexity/16-metrique-reduction-derive-hector.md.
+
+\section{Planned Next Steps}
+% TODO: content pending -- ground-truth drift protocol execution, MINS
+% validation on KAIST, F5 test.
+
+\section{Selected Lessons Learned}
+% TODO: content pending -- structurally significant issues only, not the
+% full internal bug registry.
+
+\section{References}
+% TODO: content pending -- prior intern documentation, supervisor's papers
+% already reviewed (research-log/10-analyse-papiers-hector-mins-ekf.md).
+
+\end{document}

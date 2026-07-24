@@ -37,6 +37,11 @@ See `shortcuts/README.md` for the operational scripts (launcher, deployment,
 leak scan) and `cmake_shims/` for the Ubuntu 22.04 build workarounds (no
 `sudo` required).
 
+## Report
+
+`overleaf/` holds the English-language LaTeX report for the project
+supervisor (skeleton only for now — see `overleaf/README.md`).
+
 ---
 
 ## Legacy notes (original inherited README, `v0`)
