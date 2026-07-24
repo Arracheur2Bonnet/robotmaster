@@ -3,6 +3,7 @@
 \usepackage[english]{babel}
 \usepackage{graphicx}
 \usepackage{hyperref}
+\usepackage{amsmath}
 
 \title{Carolus: Vision-Based Relative Navigation for a Rooted RoboMaster S1}
 \author{} % TODO: author name(s)
@@ -13,39 +14,224 @@
 \maketitle
 
 \begin{abstract}
-% TODO: content pending -- one-paragraph summary of the project, the
-% approach (Carolus/UVGS-2 beacon + P4P, fused with wheel odometry via an
-% EKF), and the main result obtained so far.
+This report documents the integration of Carolus/uVGS-2 -- a monocular,
+4-LED-beacon pose estimation system derived from NASA's SVGS and originally
+developed for the Astrobee free-flyer -- onto a rooted RoboMaster S1 ground
+robot, with the long-term goal of cm-level relocalization by fusing Carolus
+with the MINS (Multi-sensor-aided Inertial Navigation System) framework in
+place of MINS's GPS channel. We report a working autonomous approach
+pipeline (beacon search, alignment, visual-servoed approach, stop) validated
+end to end on hardware, a lightweight EKF fusing wheel odometry with Carolus
+absolute pose (\texttt{robot\_localization}) validated on hardware as a
+wiring sanity check, and a concrete plan and protocol for the quantitative
+drift-reduction demonstration requested by the project supervisor. Full MINS
+integration and a Carolus-vs-AprilTag orientation-accuracy comparison remain
+open work, staged deliberately to de-risk the higher-effort items after the
+lower-risk ones were confirmed working.
 \end{abstract}
 
 \section{Introduction and Setup}
-% TODO: content pending -- hardware (rooted RoboMaster S1 via s1_sdk_hack,
-% EP SDK, Raspberry Pi) and software setup (Carolus/UVGS-2: 4-LED beacon
-% detection + P4P pose solve via Ceres).
 
-\section{Methodology}
-% TODO: content pending, by axis:
-% - F3: robot_localization EKF (loosely-coupled, odom + Carolus absolute pose)
-% - F4: MINS sandbox plan (KAIST dataset validation before any RoboMaster port)
-% - F5: Carolus vs AprilTag orientation accuracy (hypothesis, not yet tested)
-% - Ground-truth drift protocol (measuring-tape + CAD control points)
+\subsection{Hardware}
+The platform is a RoboMaster S1, rooted via \texttt{s1\_sdk\_hack\_v0.0.5},
+which exposes the RoboMaster EP SDK (chassis drive, gimbal control, onboard
+camera, wheel odometry, and IMU-derived attitude) over a local API. A
+Raspberry Pi 4B is mounted at the turret position and connects to the robot
+over USB/RNDIS at a fixed address. The Pi runs the vision and control nodes;
+a separate lab PC runs the operator GUI and, currently, the localization
+back end.
+
+\subsection{Carolus / uVGS-2}
+Carolus is a 4-LED beacon detection and P4P (Perspective-4-Point) pose
+solver, implemented with Ceres, inherited from prior work at FIT and derived
+from the original NASA SVGS system used on Astrobee. It publishes a 6-DOF
+pose (camera frame) whenever the beacon is visible. On this platform it
+currently runs at approximately 2.5\,Hz; a literature comparison against
+uVGS-2 performance figures on comparable CPU hardware (see
+Section~\ref{sec:lessons}) suggests this is well below what the algorithm
+itself is capable of, and that the limiting factor is more likely the
+network transport of images from the Pi to the PC than the P4P/Ceres
+computation itself -- a hypothesis identified but not yet directly measured.
+
+\subsection{Software Stack}
+ROS Noetic, run on Ubuntu 22.04 on the lab PC (not the officially supported
+target for either ROS Noetic or several dependencies used here, which
+required local build workarounds -- see the repository's \texttt{cmake\_shims/}).
+A Tkinter GUI (\texttt{shortcuts/carolus\_launcher.py}) provides manual
+teleoperation, live status (beacon detection indicator, minimap, camera
+preview with a reprojected-beacon HUD), and one-click sequential launch of
+the ROS stack.
+
+\section{System Architecture}
+
+\subsection{Autonomous State Machine}
+The core autonomy behavior is a state machine with four states:
+\textbf{SEARCH} (gimbal sweeps to look for the beacon without moving the
+chassis; a 6-heading ``fan search'' pattern rotates the chassis through
+successive headings if the beacon is not found from the starting
+orientation), \textbf{ALIGN} (chassis rotates in place to face the beacon
+once detected), \textbf{APPROACH} (visual servoing: the gimbal tracks the
+beacon while the chassis closes distance along the same heading), and
+\textbf{STOP} (triggered within a target stopping distance). SEARCH through
+APPROACH through STOP was validated end to end on hardware; LOCATE (a mode
+for calibrating beacon position live on an operator-drawn 2D map) and the
+fan-search coverage pattern were added and validated afterward. A structural
+bug in ALIGN (a pose buffer cleared immediately before the state needed to
+read it, preventing the state from ever completing) was identified and
+fixed.
+
+\subsection{Safety and Operator Tooling}
+A hand-drawn 2D occupancy grid combined with the robot's telemetry supports
+basic collision avoidance during manual driving. The GUI exposes a single
+gimbal ``LOCK'' behavior (periodic re-centering on the beacon, configurable
+period) and a base-position recenter command, independent of chassis
+orientation.
+
+\section{Localization and Sensor Fusion Methodology}
+
+\subsection{F3: Lightweight EKF (\texttt{robot\_localization})}
+Wheel odometry (from the SDK) and Carolus absolute pose (computed from a
+known, hand-measured beacon position and the detected camera-to-beacon
+transform) are fused with \texttt{robot\_localization}, a loosely-coupled,
+widely used ROS EKF. This was chosen as the first step ahead of MINS because
+it is lighter weight, has no unusual hardware/OS support requirements beyond
+what was already being worked around, and gives an early, concrete
+localization result to build confidence in the sensor and transform chain
+before committing effort to a heavier framework.
+
+\subsection{F4: MINS (planned)}
+The longer-term goal is to replace MINS's GPS channel with Carolus, since
+Carolus provides exactly the kind of periodic, absolute-pose correction that
+GPS provides outdoors, applied here to indoor navigation. MINS is officially
+supported on Ubuntu 20.04/ROS Noetic (not the 22.04 environment used on the
+lab PC), builds entirely in user space (no superuser access is available in
+this environment), and expects its GPS-equivalent channel as a standard
+\texttt{sensor\_msgs/NavSatFix} message, which will require a small adapter
+node from Carolus's native \texttt{PoseWithCovarianceStamped} output. The
+plan is to first validate the MINS installation itself against its official
+KAIST Urban benchmark dataset (with independent ground truth) before
+attempting any integration with RoboMaster hardware or Carolus data,
+so that installation problems and integration problems are never diagnosed
+as the same problem. The intended comparison metric between F3 and F4 is
+RMSE against ground truth plus NEES/NIS consistency metrics, for which MINS
+already ships an evaluation toolbox.
+
+\subsection{F5: Carolus vs. AprilTag Orientation Accuracy (planned)}
+A secondary, more exploratory objective is to quantify whether Carolus's
+non-coplanar 4-LED beacon geometry gives a more accurate orientation (roll/
+pitch/yaw) estimate than a planar fiducial marker such as AprilTag, which is
+a plausible but not yet validated hypothesis (published AprilTag accuracy
+figures are already on the order of 1--2 degrees). This is treated
+explicitly as a hypothesis to test, not an assumed result, and is one of the
+project's potential original contributions if confirmed. There is a
+supporting theoretical argument: in pure visual-inertial navigation, yaw
+about the gravity vector is a known unobservable direction and a documented
+source of filter inconsistency; an absolute-orientation beacon reference
+such as Carolus directly resolves that weakness.
+
+\subsection{Ground-Truth Drift Measurement Protocol}
+\label{sec:protocol}
+To quantify the localization-drift reduction that Carolus provides -- the
+core quantitative deliverable requested by the project supervisor -- a
+dedicated protocol was defined: a 10--15\,m course with 4--5 intermediate
+control points (not just start/end) marked on the floor and measured against
+a CAD drawing of the corridor with a measuring tape, a minimum of 3 runs per
+mode (wheel odometry alone vs.\ EKF with Carolus), for 6 runs total. For each
+control point and run, position error against the surveyed ground truth is
+computed; the reporting metrics are an error-vs-distance curve, the
+normalized final error (as a percentage of distance travelled), and RMSE per
+mode. Expected drift magnitude for uncalibrated wheel odometry over this
+distance is on the order of 1--5\% (10--75\,cm), well above the
+centimeter-level noise floor, so the effect should be clearly visible if
+present.
 
 \section{Results to Date}
-% TODO: content pending. IMPORTANT: the first F3 hardware test (2026-07-23,
-% 1.6 m / 37 s) must be presented explicitly as a pre-test / sanity check,
-% NOT as a drift-reduction demonstration -- see research-log/04-roadmap.md
-% and research-log/07-perplexity/16-metrique-reduction-derive-hector.md.
+
+The autonomous approach state machine (SEARCH, ALIGN, APPROACH, STOP) is
+validated end to end on hardware, including the fan-search coverage pattern
+and the LOCATE calibration mode. The F3 EKF chain (beacon detection $\to$
+camera-to-beacon transform $\to$ absolute pose $\to$ EKF fusion with wheel
+odometry) was validated on hardware with a first in-motion run (1.617\,m
+over 37.2\,s): the fused estimate and raw odometry diverged by up to 5.8\,cm
+during the run (average 0.6\,cm), with a real but modest signal, consistent
+with a short run and a small amount of accumulated drift.
+
+\textbf{This first run should be read as a wiring/sanity check, not as the
+drift-reduction demonstration requested by the supervisor}: the course was
+too short for meaningful odometric drift to accumulate, and no independent
+ground truth was used for comparison. The dedicated protocol in
+Section~\ref{sec:protocol} is designed specifically to produce that
+demonstration and has not yet been executed on hardware.
 
 \section{Planned Next Steps}
-% TODO: content pending -- ground-truth drift protocol execution, MINS
-% validation on KAIST, F5 test.
+
+\begin{itemize}
+  \item Execute the ground-truth drift protocol (Section~\ref{sec:protocol})
+  on hardware.
+  \item Validate the MINS installation against the official KAIST Urban
+  dataset on the lab PC before any RoboMaster/Carolus integration attempt.
+  \item Design and run the Carolus-vs-AprilTag orientation comparison (F5).
+  \item Measure the actual bottleneck behind Carolus's $\sim$2.5\,Hz publish
+  rate (network image transport is the leading hypothesis) to answer whether
+  a materially higher rate is achievable on this hardware.
+\end{itemize}
 
 \section{Selected Lessons Learned}
-% TODO: content pending -- structurally significant issues only, not the
-% full internal bug registry.
+\label{sec:lessons}
+
+A small number of structurally significant issues are worth recording
+explicitly, since they were not obvious from surface-level testing and cost
+real debugging time:
+
+\begin{itemize}
+  \item \textbf{Simultaneous SDK connections silently block motion
+  commands.} Two ROS nodes opening independent connections to the robot's
+  SDK at the same time causes chassis/gimbal motion commands to stop being
+  accepted after a few calls, with no error surfaced -- this was the root
+  cause that had blocked autonomous motion in the previous iteration of the
+  project and is now avoided by design (a single SDK connection, shared
+  across the relevant nodes).
+  \item \textbf{A cleared-too-early pose buffer silently broke ALIGN.} The
+  pose buffer used to check whether a fresh beacon detection was available
+  was being invalidated immediately before the state that needed to read it,
+  so ALIGN could never observe a valid pose and would fall back to SEARCH
+  before issuing any rotation command. The bug was structural (present since
+  the state was first implemented) rather than a hardware or tuning problem.
+  \item \textbf{The build environment is not on an officially supported OS
+  combination.} ROS Noetic and several of its dependencies target Ubuntu
+  20.04; this project's lab PC runs 22.04, and no superuser access is
+  available in this environment. Both issues were worked around locally
+  (custom \texttt{CMake} config shims, user-space builds) rather than by
+  changing the underlying OS or gaining elevated access, which constrains
+  how some future dependencies (including MINS) can be installed.
+  \item \textbf{Carolus's $\sim$2.5\,Hz publish rate is very likely a
+  network bottleneck, not a compute bottleneck.} Published uVGS-2 benchmarks
+  on comparable CPU hardware report roughly 40$\times$ higher throughput,
+  which places the P4P/Ceres computation itself well within budget and
+  points instead at the image transport path between the Pi and the PC
+  running Carolus -- a hypothesis, not yet a direct measurement.
+\end{itemize}
 
 \section{References}
-% TODO: content pending -- prior intern documentation, supervisor's papers
-% already reviewed (research-log/10-analyse-papiers-hector-mins-ekf.md).
+
+\begin{itemize}
+  \item Prior intern documentation and tutorials describing the original
+  Carolus/RoboMaster pipeline setup.
+  \item Manuscript describing uVGS-2 (Carolus), general architecture,
+  starting at the beacon-detection and P4P sections.
+  \item SVGS paper (original NASA system Carolus derives from), including
+  its accuracy-characterization methodology (encoder ground truth,
+  dynamic time warping, error histograms), used as a reference approach for
+  the drift-measurement protocol in Section~\ref{sec:protocol}.
+  \item MINS (Lee et al.), including its published Journal of Field
+  Robotics version, used for the F4 integration design and evaluation
+  toolbox.
+  \item Coverage/search-strategy literature consulted when designing the
+  fan-search pattern (coverage path planning survey; boustrophedon/lawnmower
+  decomposition-free coverage; the SIBA spiral+boustrophedon hybrid; radial
+  /fan search angular-increment literature) -- see
+  \texttt{research-log/07-perplexity/08-strategie-recherche-couverture.md}
+  in the project's internal engineering log for the specific sources.
+\end{itemize}
 
 \end{document}

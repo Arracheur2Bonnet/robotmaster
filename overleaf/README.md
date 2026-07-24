@@ -7,7 +7,10 @@ this repository, see the project root notes).
 
 ## Status
 
-Structure drafted 2026-07-24. No section content written yet.
+First full draft written 2026-07-24 (abstract, setup, architecture,
+methodology F3-F5 + ground-truth protocol, results-to-date, next steps,
+selected lessons learned, references). Not yet reviewed by the supervisor
+or compiled/proofread on Overleaf.
 
 ## Source material
 
