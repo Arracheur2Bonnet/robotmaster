@@ -9,6 +9,13 @@ this repository, see the project root notes).
 
 Structure drafted 2026-07-24. No section content written yet.
 
+## Source material
+
+Content will be synthesized from `research-log/journal.md` (the engineering
+log kept throughout the project) and the other `research-log/*.md` files as
+needed — not a re-edit of the original documents left by the previous
+intern. Confirmed direction, 2026-07-24.
+
 ## Usage
 
 Copy `main.tex` (and any files added under here later) into an Overleaf
