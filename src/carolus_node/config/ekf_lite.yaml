@@ -1,0 +1,70 @@
+# EKF leger (F3, research-log/04-roadmap.md) : fusion /odom (SDK RoboMaster,
+# dérive) + /carolus/absolute_pose (recalage absolu via balise connue). Pas
+# d'IMU dans ce V1 -- le SDK RoboMaster n'expose pas de flux IMU brut fiable
+# (cf. research-log/10-analyse-papiers-hector-mins-ekf.md).
+#
+# world_frame = odom (pas map) : /carolus/absolute_pose EST deja exprime dans
+# odom (cf. beacon_absolute_pose.py -- le node calcule directement T_odom_cam),
+# donc pas besoin d'un frame map separe pour ce V1 mono-balise. A revoir si un
+# jour plusieurs zones de recalage independantes (multi-salle) l'exigent.
+
+frequency: 20
+sensor_timeout: 0.2
+two_d_mode: true
+publish_tf: true
+publish_acceleration: false
+print_diagnostics: true
+
+map_frame: map
+odom_frame: odom
+base_link_frame: base_link
+world_frame: odom
+
+# Odometrie SDK (rm_cam_beacon.py, publisher /odom ajoute le 2026-07-21) --
+# derive sans correction, fournit position+yaw+vitesses. Covariance deja non
+# nulle depuis le tuning F2 du 2026-07-22 (_ODOM_POSE_COV/_ODOM_TWIST_COV).
+odom0: /odom
+odom0_config: [true,  true,  false,
+               false, false, true,
+               true,  true,  false,
+               false, false, true,
+               false, false, false]
+odom0_differential: false
+odom0_relative: false
+odom0_queue_size: 5
+odom0_nodelay: false
+
+# Pose absolue Carolus (beacon_absolute_pose.py) -- recalage ponctuel (~2.5Hz,
+# cadence balise), position+yaw seulement (roll/pitch de la balise pas fiables
+# en 2D). differential=false : c'est une mesure absolue, pas un increment --
+# elle doit pouvoir corriger la derive odometrique, pas juste suivre le delta.
+pose0: /carolus/absolute_pose
+pose0_config: [true,  true,  false,
+               false, false, true,
+               false, false, false,
+               false, false, false,
+               false, false, false]
+pose0_differential: false
+pose0_relative: false
+pose0_queue_size: 5
+# Rejet grossier des lectures aberrantes (cf. BUG-062, le meme risque de saut
+# P4P ponctuel existe ici) -- seuil large volontairement tant que la
+# covariance reelle n'est pas caracterisee (research-log/12-protocole-...).
+pose0_rejection_threshold: 5.0
+pose0_nodelay: false
+
+process_noise_covariance: [0.05, 0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0.05, 0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0.06, 0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0.03, 0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0.03, 0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0.06, 0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0.025, 0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0.025, 0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0.04, 0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0.01, 0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0.01, 0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0.02, 0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0.01, 0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0.01, 0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0.015]

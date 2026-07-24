@@ -1,0 +1,92 @@
+<launch>
+    <!-- pkg="carolus_astrobee" : binaire compilé par libuvgs_astrobee (package.xml name=carolus_astrobee) -->
+    <node name="carolus_astrobee_rex" pkg="carolus_astrobee" type="carolus_astrobee" output="screen">
+
+        <!-- FIX segfault ROS Noetic sur Ubuntu 22.04 (2026-07-20, BUG-049) :
+             le binaire recompilé sur 22.04 est lié à liblog4cxx.so.12 et libtinyxml2.so.9,
+             mais librosconsole.so/libimage_transport.so de ROS Noetic attendent .so.10 / .so.6.
+             Les deux versions se chargent, la 22.04 prime (résolution ELF globale) → segfault
+             dans ros::console::initialize (log4cxx). LD_PRELOAD force le chargement des versions
+             ROS-compatibles EN PREMIER pour que leurs symboles priment. Scopé à ce nœud C++.
+             Voir 06-versions.md (shims 22.04) et journal.md 2026-07-20. -->
+        <env name="LD_PRELOAD"
+             value="/usr/lib/x86_64-linux-gnu/liblog4cxx.so.10:/usr/lib/x86_64-linux-gnu/libtinyxml2.so.6" />
+
+        <!-- Execution Parameters -->
+        <param name="num_threads" value="1" />
+        <param name="queue_size" value="10" />
+
+        <!-- Blob Filtering Parameters -->
+        <param name="min_circularity" value="0.6" />
+        <param name="saturation_threshold" value="80" />
+        <param name="min_area" value="8.0" />
+        <param name="max_area" value="1800.0" />
+        <param name="max_distance_lim" value="1000.0" />
+        <!-- LEDs bleues : teinte OpenCV (0-180) ≈ 100-140. Ajuster en direct sur /postprocessed/image -->
+        <param name="lb_hue" value="90.0" />
+        <param name="ub_hue" value="140.0" />
+
+        <!-- Preprocessing Parameters -->
+        <param name="kernel_size_gaussian" value="3" />
+        <param name="kernel_size_morph" value="3" />
+        <param name="image_threshold" value="190" />
+
+        <!-- Camera Parameters -->
+        <param name="nav_cam" value="true" />
+        <param name="dock_cam" value="false" />
+        <param name="fisheye" value="false" />
+        <param name="fov" value="true" />
+        <param name="mono" value="false" />
+
+        <!-- Robot Configuration -->
+        <param name="bot_name" value="wannabee" />
+
+        <!-- Camera Intrinsic Parameters -->
+        <!-- Source : robomaster_cam/config/camera_info.yaml, camera_name: robomaster_s1, 1280x720 -->
+        <param name="fx" value="546.1957" />
+        <param name="fy" value="547.0838" />
+        <param name="cx" value="575.6041" />
+        <param name="cy" value="372.1876" />
+
+        <!-- Distortion Coefficients (plumb_bob : k1 k2 p1 p2 k3) -->
+        <!-- Source : robomaster_cam/config/camera_info.yaml -->
+        <param name="distortion" value="-0.1479, 0.1452, -0.0023, 0.0025, 0.0070" />
+
+        <!-- Topic Names -->
+        <param name="dock_cam_topic" value="/hw/cam_dock" />
+        <param name="nav_cam_topic" value="/camera/color/image_raw" />
+        <param name="processed_image_topic" value="/postprocessed/image" />
+        <!-- pose_topic : doit rester différent de /pose pour éviter le conflit de types (BUG-001+BUG-007b) -->
+        <!-- Ligne 361 C++ advertise pose_topic_ en ff_msgs/VisualLandmarks, ligne 362 advertise /pose en PoseStamped -->
+        <!-- Si pose_topic_="/pose", les deux advertises entrent en conflit (même topic, types différents) -->
+        <param name="pose_topic" value="/loc/ar/features" />
+
+        <!-- Benchtest Mode -->
+        <param name="benchtest" value="true" />
+
+        <!-- FIFO Filtering -->
+        <param name="filter_size" value="7" />
+        <param name="translation_threshold" value="0.5" />
+        <param name="rotation_threshold" value="0.3" />
+        <param name="fifo_on" value="true" />
+
+        <!-- Known Beacon Points -->
+        <param name="known_points" value="0.0825 0.0 0.0 -0.0825 0.0 0.0 0.0 0.072 0.0 0.0 0.0 0.0555" />
+
+    </node>
+
+    <!--  Static transform to create honey/body frame -->
+    <node pkg="tf2_ros"
+          type="static_transform_publisher"
+          name="static_honey_body_tf"
+          args="0 0 0 0 0 0 camera_link honey/body" />
+
+    <!--  RViz désactivé : chemin /home/iss-interns/ inexistant sur cette machine -->
+    <!--
+    <node pkg="rviz"
+          type="rviz"
+          name="rviz"
+         args="-d /home/iss-interns/carolus_ws/rviz_configs/testcarolus.rviz" />
+    -->
+</launch>
+

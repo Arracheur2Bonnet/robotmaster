@@ -1,0 +1,44 @@
+<launch>
+    <!-- Lance l'EKF leger (F3, research-log/04-roadmap.md) EN COMPLEMENT du
+         pipeline existant (testcarolus.launch + rm_cam_beacon.py). Fichier
+         separe, volontairement : testcarolus.launch reste le launch valide,
+         ne pas le modifier pour experimenter l'EKF. -->
+
+    <!-- base_link->camera_link (REP-105, requis par robot_localization / demande
+         Hector) est desormais une TF DYNAMIQUE publiee par rm_cam_beacon.py
+         (BUG-067, 2026-07-23) : le gimbal bouge reellement (pitch/yaw relatifs),
+         une TF statique identite donnait une pose absolue fausse des que la nacelle
+         n'etait pas parfaitement recentree (z aberrant observe en test reel). PAS de
+         static_transform_publisher ici, publier les deux entrerait en conflit tf2
+         (deux emetteurs sur la meme paire de frames). -->
+
+    <!-- Position connue de la balise unique dans le repere odom (V1,
+         pas de carte multi-balises, cf. gimbal_bearing.py). A ajuster
+         selon le placement reel avant chaque test (mesurer au metre-ruban
+         depuis l'origine odom = position de depart du robot). -->
+    <node pkg="carolus_node"
+          type="beacon_absolute_pose.py"
+          name="beacon_absolute_pose"
+          output="screen">
+        <param name="beacon_x" value="2.0" />
+        <param name="beacon_y" value="0.0" />
+        <param name="beacon_z" value="0.0" />
+        <param name="beacon_yaw_deg" value="0.0" />
+        <param name="publish_rate" value="10.0" />
+    </node>
+
+    <node pkg="robot_localization"
+          type="ekf_localization_node"
+          name="ekf_localization"
+          output="screen"
+          clear_params="true">
+        <!-- FIX segfault ROS Noetic sur Ubuntu 22.04 (2026-07-23, BUG-066), meme
+             cause que BUG-049 (carolus_astrobee) : le binaire lie a liblog4cxx.so.12/
+             libtinyxml2.so.9 (jammy) alors que librosconsole.so/libmessage_filters.so
+             de ROS Noetic attendent .so.10/.so.6. LD_PRELOAD force les versions
+             ROS-compatibles en premier. Voir 06-versions.md et journal.md 2026-07-23. -->
+        <env name="LD_PRELOAD"
+             value="/usr/lib/x86_64-linux-gnu/liblog4cxx.so.10:/usr/lib/x86_64-linux-gnu/libtinyxml2.so.6" />
+        <rosparam command="load" file="$(find carolus_node)/config/ekf_lite.yaml" />
+    </node>
+</launch>

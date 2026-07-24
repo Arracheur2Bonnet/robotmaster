@@ -1,0 +1,57 @@
+
+
+image_width: 1280
+
+image_height: 720
+
+camera_name: robomaster_s1
+
+
+camera_matrix:
+
+  rows: 3
+
+  cols: 3
+
+  data: [546.1957, 0.0, 575.6041,
+
+         0.0, 547.0838, 372.1876,
+
+         0.0, 0.0, 1.0]
+
+
+distortion_model: plumb_bob
+
+distortion_coefficients:
+
+  rows: 1
+
+  cols: 5
+
+  data: [-0.1479, 0.1452, -0.0023, 0.0025, 0.0070]
+
+
+rectification_matrix:
+
+  rows: 3
+
+  cols: 3
+
+  data: [1.0, 0.0, 0.0,
+
+         0.0, 1.0, 0.0,
+
+         0.0, 0.0, 1.0]
+
+
+projection_matrix:
+
+  rows: 3
+
+  cols: 4
+
+  data: [546.1957, 0.0, 575.6041, 0.0,
+
+         0.0, 547.0838, 372.1876, 0.0,
+
+         0.0, 0.0, 1.0, 0.0]

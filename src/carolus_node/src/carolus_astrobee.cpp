@@ -189,28 +189,28 @@ public:
             //CAMERA PROPERTIES (PINHOLE MODEL)
             if (nav_cam_){
                 //NAVCAM PARAMTERS FROM WANNABEE
-                private_nh_.param("fx", fx, 562.121846);
-                private_nh_.param("fy", fy, 565.312154);
-                private_nh_.param("cx", cx, 659.564484);
-                private_nh_.param("cy", cy, 373.599988);
+                private_nh_.param("fx", fx, 603.78877);
+                private_nh_.param("fy", fy, 602.11334);
+                private_nh_.param("cx", cx, 575.92329);
+                private_nh_.param("cy", cy, 495.30887);
                 private_nh_.getParam("distortion", distCoeffs_vector);
 
                 if (distCoeffs_vector.size() != 4) {
                     // ROS_WARN("Using default distortion coefficients, expected 4 elements.");
-                    distCoeffs_vector = {-0.092775, 0.014312, 0.000103, 0.000220};
+                    distCoeffs_vector = {0.993591, 0.0, 0.0, 0.0};
                 }
             }
             if (dock_cam_){
-                //NAVCAM PARAMTERS FROM WANNABEE
-                private_nh_.param("fx", fx, 562.121846);
-                private_nh_.param("fy", fy, 565.312154);
-                private_nh_.param("cx", cx, 659.564484);
-                private_nh_.param("cy", cy, 373.599988);
+                //DOCKCAM PARAMTERS FROM WANNABEE
+                private_nh_.param("fx", fx, 753.50986);
+                private_nh_.param("fy", fy, 751.15119);
+                private_nh_.param("cx", cx, 565.35452);
+                private_nh_.param("cy", cy, 483.81274);
                 private_nh_.getParam("distortion", distCoeffs_vector);
 
                 if (distCoeffs_vector.size() != 4) {
                     // ROS_WARN("Using default distortion coefficients, expected 4 elements.");
-                    distCoeffs_vector = {-0.092775, 0.014312, 0.000103, 0.000220};
+                    distCoeffs_vector = { 1.00447, 0.0, 0.0, 0.0};
                 }
             }
             if (sci_cam_compressed_){
