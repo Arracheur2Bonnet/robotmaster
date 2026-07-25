@@ -538,7 +538,11 @@ class EPCameraBeaconFollower:
             period = GIM_LOCK_PERIOD_S_DEFAULT
             rospy.logwarn(f"[LOCK] periode recue invalide ({msg.data!r}) -> repli sur {period}s")
         self._gimbal_lock_period_s = period
-        self._lock_timer.shutdown()
+        # Garde-fou : les subscribers sont enregistres (~ligne 435) AVANT la creation
+        # du timer (~ligne 442) dans __init__ ; un message arrivant dans cette fenetre
+        # trouverait _lock_timer=None (ligne 302) -> AttributeError sur .shutdown().
+        if self._lock_timer is not None:
+            self._lock_timer.shutdown()
         self._lock_timer = rospy.Timer(rospy.Duration(period), self._gimbal_lock_tick)
         rospy.loginfo(f"[LOCK] periode de centrage -> {period}s")
 
