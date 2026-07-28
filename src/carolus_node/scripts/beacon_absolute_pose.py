@@ -3,21 +3,31 @@
 """
 Convertit la TF `camera_link -> beacon_observed` (publiee par
 `carolus_tf_broadcaster.py`, deja en convention ROS/REP-103) plus la position
-CONNUE de la balise dans le repere `odom` en une pose absolue de la camera
-(approximee a `base_link`, cf. transform identite camera_link->honey/body dans
-testcarolus.launch) -- publiee comme `PoseWithCovarianceStamped` sur
-`/carolus/absolute_pose` pour fusion par `robot_localization` (F3).
+CONNUE de la balise dans le repere `odom` en une pose absolue de `base_link`
+-- publiee comme `PoseWithCovarianceStamped` sur `/carolus/absolute_pose` pour
+fusion par `robot_localization` (F3).
 
 Geometrie : la TF observee donne T_cam_beacon (position/orientation de la
 balise VUE DEPUIS la camera). La pose de la camera dans le repere odom est
-alors : T_odom_cam = T_odom_beacon * inverse(T_cam_beacon), avec T_odom_beacon
-la pose connue (fixe, parametree) de la balise.
+T_odom_cam = T_odom_beacon * inverse(T_cam_beacon), avec T_odom_beacon la pose
+connue (fixe, parametree) de la balise. Cette pose camera est ensuite ramenee
+a `base_link` via la TF dynamique `base_link -> camera_link` publiee par
+`rm_cam_beacon.py` (BUG-067, 2026-07-23, angle reel de la nacelle) :
+T_odom_base = T_odom_cam * inverse(T_base_cam).
 
-Limitations V1 assumees (a documenter/revisiter, cf. journal) :
+FIX BUG-069 (2026-07-27) : avant ce correctif, le module supposait
+camera_link == base_link (transform identite) et publiait T_odom_cam
+directement comme pose de base_link. Cette approximation etait deja fausse
+des l'introduction de la TF dynamique base_link->camera_link le meme jour que
+la creation de ce fichier (2026-07-23) -- les deux changements n'avaient
+jamais ete confrontes l'un a l'autre. Consequence : des que la nacelle
+n'etait pas centree (LOCK actif, sweep SEARCH), le yaw injecte dans l'EKF etait
+faux de yaw_rel. Desormais la TF reelle est lookee et composee explicitement,
+plus d'hypothese d'identite.
+
+Limitations V1 restantes (a documenter/revisiter, cf. journal) :
 - Une seule balise, position/orientation fixees par parametres ROS (pas de
   carte multi-balises -- prerequis F6 non rempli, cf. gimbal_bearing.py).
-- camera_link == base_link (transform identite deja en vigueur dans le
-  pipeline existant, pas une nouvelle approximation introduite ici).
 - Covariance provisoire fixe (diagonale, parametrable) -- la caracterisation
   empirique par distance/angle (research-log/12-protocole-covariance-carolus.md)
   n'a pas encore ete faite (protocole terrain, materiel physique requis).
@@ -34,6 +44,7 @@ from geometry_msgs.msg import PoseWithCovarianceStamped
 class BeaconAbsolutePose:
     def __init__(self):
         self.odom_frame = rospy.get_param("~odom_frame", "odom")
+        self.base_frame = rospy.get_param("~base_frame", "base_link")
         self.camera_frame = rospy.get_param("~camera_frame", "camera_link")
         self.beacon_frame = rospy.get_param("~beacon_frame", "beacon_observed")
 
@@ -103,8 +114,32 @@ class BeaconAbsolutePose:
             self.T_odom_beacon, tft.inverse_matrix(T_cam_beacon)
         )
 
-        trans = tft.translation_from_matrix(T_odom_cam)
-        quat = tft.quaternion_from_matrix(T_odom_cam)
+        # BUG-069 fix : ramener la pose camera a base_link via la vraie TF
+        # dynamique (angle nacelle reel), au lieu de supposer camera_link ==
+        # base_link. Sans ce lookup, le yaw publie est faux de yaw_rel des que
+        # la nacelle n'est pas centree (LOCK actif, sweep SEARCH).
+        try:
+            tf_base_cam = self.tf_buffer.lookup_transform(
+                self.base_frame, self.camera_frame, rospy.Time(0),
+                timeout=rospy.Duration(0.05),
+            )
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException):
+            return
+
+        tb = tf_base_cam.transform.translation
+        qb = tf_base_cam.transform.rotation
+        T_base_cam = tft.concatenate_matrices(
+            tft.translation_matrix((tb.x, tb.y, tb.z)),
+            tft.quaternion_matrix((qb.x, qb.y, qb.z, qb.w)),
+        )
+
+        T_odom_base = tft.concatenate_matrices(
+            T_odom_cam, tft.inverse_matrix(T_base_cam)
+        )
+
+        trans = tft.translation_from_matrix(T_odom_base)
+        quat = tft.quaternion_from_matrix(T_odom_base)
 
         msg = PoseWithCovarianceStamped()
         msg.header.stamp = tf_msg.header.stamp

@@ -40,6 +40,46 @@ See `shortcuts/README.md` for the operational scripts (launcher, deployment,
 leak scan) and `cmake_shims/` for the Ubuntu 22.04 build workarounds (no
 `sudo` required).
 
+## Testing
+
+Full step-by-step reproduction guide (fresh Pi/S1 to first launch):
+`research-log/08-guide-demarrage.md` in the project's working repository
+(not duplicated here — see that file for hardware setup, SDK install, and
+RNDIS networking).
+
+Prerequisite for every session: robot powered on (double chime), Pi
+reachable at its RNDIS/Wi-Fi address, `eth1` interface up on the Pi with an
+address on the robot's subnet.
+
+Launching the stack:
+
+```bash
+python3 shortcuts/carolus_launcher.py
+```
+
+Then, in order, the launcher's 4 buttons:
+
+| Button | What runs | Unlocked when |
+|---|---|---|
+| 1 · roscore + Pi | SSH → `eth1 up` + `roscore` | port 11311 open |
+| 2 · Camera + Beacon | SSH → `rm_cam_beacon.py` + `cam_view_helper.py` | `/camera/color/image_raw` published |
+| 3 · Carolus Astrobee | `roslaunch carolus_node testcarolus.launch` | manual |
+| 4 · TF Broadcaster | SSH → `carolus_tf_broadcaster.py` on the Pi | manual |
+
+**Sanity check that the pipeline is actually working**: with all 4
+terminals running and an LED beacon in the camera's field of view,
+`rostopic hz /pose` should report ~2.5 Hz. `rostopic echo /pose` should show
+a `geometry_msgs/PoseStamped` with a plausible Z distance matching the
+beacon's real distance from the camera. In the launcher GUI, the
+`BEACON: DETECTED` indicator should light up.
+
+**Known non-blocking warnings** you'll see on a normal launch (documented in
+`CLAUDE.md`, not worth re-diagnosing): a missing
+`~/catkin_ws/devel/setup.bash` line in the lab PC's `.bashrc` (leftover from
+a previous setup), a ROS log-directory-over-1GB warning on the Pi, and a
+`pillow`/`imageio` version mismatch from the `myqr` dependency (unused in
+this RNDIS-based pipeline).
+
 ## Report
 
 `overleaf/` holds the English-language LaTeX report for the project
