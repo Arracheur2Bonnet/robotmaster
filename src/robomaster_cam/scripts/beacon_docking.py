@@ -327,6 +327,11 @@ class BeaconDocking:
 
     def _status_tick(self, _event):
         self.pub_status.publish(String(data=self._status))
+        # Ligne loggee (en plus du topic /carolus/dock_status) pour etre parsee
+        # par carolus_launcher.py exactement comme [BEACON]/[BEACONPOS] deja
+        # publies par rm_cam_beacon.py -- meme mecanisme, pas de nouveau pattern.
+        rospy.loginfo_throttle(
+            1.0, f"[DOCKSTATUS] status={self._status} yaw_validated={BEACON_YAW_VALIDATED}")
 
     # ---------------------------------------------------------
     # Accesseurs

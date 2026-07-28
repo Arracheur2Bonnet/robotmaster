@@ -1,113 +1,116 @@
 # Shortcuts — Carolus / RoboMaster
 
-Scripts de raccourci pour les opérations fréquentes. Prérequis communs : robot allumé (double carillon), Pi sur `192.168.0.103`.
+Shortcut scripts for frequent operations. Common prerequisites: robot powered on (double chime), Pi at `192.168.0.103`.
 
 ---
 
 ## `carolus_launcher.py`
 
-**Quoi :** GUI tkinter (thème sombre) — séquence T1/T2/T3/T4, dashboard live, live map intégrée, pilotage manuel châssis (ZQSD) et nacelle (numpad), blocs de touches interactifs, mode LOCATE (localisation balise sans avance), bouton LOCK (centrage périodique de la balise, période configurable en secondes, 2026-07-23), voyant + minimap balise (2026-07-23, cf. section dédiée), bouton RECENTRER CAM (position de base nacelle, 2026-07-23), bouton APERCU CAM (OFF par défaut — active/désactive l'abonnement caméra, gagne en fluidité + bande passante réseau), plein écran (**F11** bascule, **Échap** quitte, 2026-07-23).
+**What:** Tkinter GUI (dark theme) — T1/T2/T3/T4/T5 sequence, live dashboard, integrated live map, manual chassis (ZQSD) and gimbal (numpad) piloting, interactive key blocks, LOCATE mode (beacon localization without advancing), LOCK button (periodic beacon re-centering, period configurable in seconds, 2026-07-23), beacon indicator + minimap (2026-07-23, see dedicated section), RECENTER CAM button (gimbal base position, 2026-07-23), CAM PREVIEW button (OFF by default — toggles the camera subscription, gains smoothness + network bandwidth), fullscreen (**F11** toggles, **Escape** exits, 2026-07-23), DOCKING BALISE panel — CALIBRATE/START/ABORT buttons + status readout (2026-07-27, see T5 below).
 
-**Pourquoi :** lance la pile sans taper de commandes ; dashboard live (état SEARCH/APPROACH/STOP/LOCATE/MANUEL, profondeur, batterie robot, caméra) ; live map temps réel (position robot + balise sur fond JSON) ; pilotage immédiat sans quitter la fenêtre ; retour visuel des touches actives.
+**Why:** launches the stack with no commands to type; a live dashboard (SEARCH/APPROACH/STOP/LOCATE/MANUAL state, depth, robot battery, camera); a real-time live map (robot + beacon position over a JSON background); immediate piloting without leaving the window; visual feedback for active keys.
 
-**Usage :**
+**Usage:**
 ```bash
 python3 shortcuts/carolus_launcher.py
 ```
 
-| Bouton | Ce qui tourne | Déverrouillé quand |
+| Button | What runs | Unlocked when |
 |---|---|---|
-| 1 · roscore + Pi | gnome-terminal → SSH → `eth1 up` + `roscore` | port 11311 ouvert (timeout 60s) |
-| 2 · Caméra + Beacon | SSH intégré → `rm_cam_beacon.py` + `cam_view_helper.py` | `/camera/color/image_raw` publié (timeout 60s) |
-| 3 · Carolus Astrobee | gnome-terminal → `roslaunch carolus_node testcarolus.launch` | — (manuel) |
-| 4 · TF Broadcaster (quat fix) | SSH intégré → `carolus_tf_broadcaster.py` sur le Pi | — (manuel, aucune attente — nœud léger, démarrage quasi instantané) |
+| 1 · roscore + Pi | gnome-terminal → SSH → `eth1 up` + `roscore` | port 11311 open (60s timeout) |
+| 2 · Camera + Beacon | integrated SSH → `rm_cam_beacon.py` + `cam_view_helper.py` | `/camera/color/image_raw` published (60s timeout) |
+| 3 · Carolus Astrobee | gnome-terminal → `roslaunch carolus_node testcarolus.launch` | — (manual) |
+| 4 · TF Broadcaster (quat fix) | integrated SSH → `carolus_tf_broadcaster.py` on the Pi | — (manual, no wait — a lightweight node, near-instant startup) |
+| 5 · Beacon Docking | local (lab PC) → `beacon_docking.py` | — (manual; unlocked after T4, no strict wait — depends on `/pose` (T3), `/odom`+`/carolus/gimbal_yaw_rel` (T2), which just need to already be running) |
 
-**T4 — ajouté le 2026-07-20, suite au fix BUG-048** (remapping quaternion Carolus→ROS, permutation naïve remplacée par composition `q_ros=r⊗q`). Republie `/pose` de Carolus en TF (`camera_link`→`beacon_observed`) via `carolus_tf_broadcaster.py`, exécuté sur le Pi. Sans effet sur le pipeline SEARCH/ALIGN/APPROACH actuel (qui consomme `/pose` directement, pas la TF) — pertinent pour valider l'orientation (`rosrun tf tf_echo camera_link beacon_observed`) et prépare le terrain pour l'adoption tf2_ROS/EKF de la Phase F. Peut être lancé indépendamment de T3, mais n'aura rien à republier tant que T3 (source de `/pose`) ne tourne pas.
+**T4 — added 2026-07-20, following the BUG-048 fix** (Carolus→ROS quaternion remapping, a naive permutation replaced by composition `q_ros=r⊗q`). Republishes Carolus's `/pose` as a TF (`camera_link`→`beacon_observed`) via `carolus_tf_broadcaster.py`, run on the Pi. Has no effect on the current SEARCH/ALIGN/APPROACH pipeline (which consumes `/pose` directly, not the TF) — relevant for validating orientation (`rosrun tf tf_echo camera_link beacon_observed`) and lays the groundwork for Phase F's tf2_ROS/EKF adoption. Can be launched independently of T3, but won't have anything to republish until T3 (the source of `/pose`) is running.
 
-**Logs — refonte du 2026-07-20 : un onglet par terminal.** Les 4 terminaux (T1-T4) sont désormais **tous intégrés** (plus de fenêtre gnome-terminal externe pour T1/T3 — leur sortie est capturée et affichée dans l'appli, comme T2/T4 l'étaient déjà). La zone Logs est un `ttk.Notebook` à 4 onglets (`T1 roscore+Pi`, `T2 Camera+Beacon`, `T3 Carolus Astrobee`, `T4 TF Broadcaster`), chaque terminal écrit uniquement dans son propre onglet — plus de mélange dans une boîte unique. Les messages d'événement globaux (mode AUTO/MANUEL, kill, etc.) restent diffusés dans les 4 onglets à la fois. Le bouton "Copier les logs" copie désormais le contenu de l'onglet actif uniquement. Changement nécessaire pour lancer T1 en mode intégré : vérifié au préalable que `sudo` sur le Pi ne demande pas de mot de passe (`sudo -n true`), sinon la commande `sudo ip link set eth1 up` de T1 bloquerait silencieusement en pipe.
+**T5 — added 2026-07-27.** Runs `beacon_docking.py` directly on the lab PC (like T3 — no SDK connection of its own, so no conflict with `rm_cam_beacon.py`'s single Pi-side SDK connection). Fixed-pose docking behavior relative to the beacon. Controlled by the **DOCKING BALISE** panel: `CALIBRATE` (determines the beacon-orientation sign convention — must be run and confirmed successful before `START` will do anything beyond a simple distance-hold, gated behind `BEACON_YAW_VALIDATED` in the script), `START`, `ABORT`. Commands go through `cam_view_helper.py` (`/carolus/dock`, same relay pattern as `RECENTER`), status comes back via the `[DOCKSTATUS]` log line parsed the same way as `[BEACON]`. **Not yet validated on hardware.**
 
-**Kill** : annule les attentes en cours (`wait_for_roscore` / `wait_for_camera`) puis tue les processus SSH et locaux. Libère les zombies OS (`proc.wait()`). Un Kill partiel (bouton Kill d'une ligne) ne tue que cette cible et les processus en aval.
+**Logs — reworked 2026-07-20: one tab per terminal, extended 2026-07-27 to T5.** All 5 terminals (T1-T5) are **fully integrated** (their output is captured and shown in the app, no external gnome-terminal window). The Logs area is a `ttk.Notebook` (`T1 roscore+Pi`, `T2 Camera+Beacon`, `T3 Carolus Astrobee`, `T4 TF Broadcaster`, `T5 Docking`), each terminal writes only to its own tab — no more mixing in a single box. Global event messages (AUTO/MANUAL mode, kill, etc.) still get broadcast to all tabs at once. The "Copy logs" button now copies only the active tab's content. A change needed to launch T1 in integrated mode: pre-checked that `sudo` on the Pi doesn't ask for a password (`sudo -n true`), otherwise T1's `sudo ip link set eth1 up` command would block silently in the pipe.
+
+**Kill**: cancels any pending waits (`wait_for_roscore` / `wait_for_camera`) then kills the SSH and local processes. Reaps OS zombies (`proc.wait()`). A partial Kill (a row's Kill button) only kills that target and its downstream processes.
 
 ---
 
-### Live map (panneau droit)
+### Live map (right-hand panel)
 
-Panneau `_LiveMapCanvas` affiché à droite de tous les contrôles. Canvas 520×420 px (26 cases × 20 px), fond grille, blocs obstacles du JSON.
+The `_LiveMapCanvas` panel shown to the right of all the controls. 520×420 px canvas (26 cells × 20 px), grid background, obstacle blocks from the JSON.
 
-| Élément | Description |
+| Element | Description |
 |---|---|
-| Carré bleu (■▲) | Position + cap robot en temps réel (mis à jour via `[POS]` + `[ATTI]`) |
-| Point jaune | Position balise détectée la plus récente (mis à jour via `[BEACONPOS]`). **Disparaît automatiquement** si aucune détection depuis 1.5s (`BEACON_FRESH_S`) — sert d'indicateur visuel que la détection est active sans avoir à lire les logs T3. |
-| Blocs gris | Obstacles chargés depuis `mapv1.json` au démarrage |
-| Bouton **Charger map** | Ouvrir un autre fichier JSON depuis le disque |
+| Blue square (■▲) | Real-time robot position + heading (updated via `[POS]` + `[ATTI]`) |
+| Yellow dot | Most recent detected beacon position (updated via `[BEACONPOS]`). **Auto-disappears** if there's been no detection for 1.5s (`BEACON_FRESH_S`) — serves as a visual indicator that detection is active without having to read the T3 logs. |
+| Gray blocks | Obstacles loaded from `mapv1.json` at startup |
+| **Load map** button | Open another JSON file from disk |
 
-**Auto-chargement :** `mapv1.json` (racine projet) chargé automatiquement 500ms après le lancement du launcher.
+**Auto-load:** `mapv1.json` (project root) auto-loaded 500ms after the launcher starts.
 
-**Convention axes (même que map_editor) :**
-- x EP (avant/nord) → haut sur canvas
-- y EP (droite/est) → droite sur canvas
-
----
-
-### Mode LOCALISER (LOCATE)
-
-Bouton **LOCALISER** dans la rangée de contrôle (jaune-or quand actif). Publie `"LOCATE"` sur `/carolus/mode`.
-
-**Comportement en mode LOCATE :**
-- Le sweep gimbal continue (identique à AUTO/SEARCH).
-- Dès que la balise est visible : robot s'immobilise (`stop_gimbal` + `stop_chassis`), position publiée sur la live map.
-- Pas de transition ALIGN/APPROACH — le robot reste en place.
-- Si la balise disparaît : le sweep reprend.
-
-**Auto-activation :** LOCATE s'active automatiquement 500ms après que T2 confirme que la caméra est prête. Pas besoin d'appuyer manuellement sur LOCALISER au démarrage.
-
-Pour repasser en AUTO (suivi complet) : cliquer **MODE : AUTO**.
+**Axis convention (same as map_editor):**
+- EP x (forward/north) → up on the canvas
+- EP y (right/east) → right on the canvas
 
 ---
 
-### LOCK (centrage périodique de la balise, 2026-07-23)
+### LOCATE mode
 
-Bouton **LOCK** dans la rangée de contrôle, avec un champ de saisie à côté (période en secondes, défaut **1**). Publie `"LOCK ON"`/`"LOCK OFF"` sur `/carolus/gimbal_lock`, et la période sur `/carolus/gimbal_lock_period` (via `cam_view_helper.py`).
+The **LOCATE** button in the control row (gold-yellow when active). Publishes `"LOCATE"` on `/carolus/mode`.
 
-**Fonctionnement :** toutes les *N* secondes (N = valeur du champ), s'il y a une pose fraîche, une **seule** commande de mouvement relatif (`gimbal.move()`) recentre la balise dans le champ, indépendamment du mouvement du châssis.
+**Behavior in LOCATE mode:**
+- The gimbal sweep continues (same as AUTO/SEARCH).
+- As soon as the beacon is visible: the robot stops (`stop_gimbal` + `stop_chassis`), position published to the live map.
+- No ALIGN/APPROACH transition — the robot stays in place.
+- If the beacon disappears: the sweep resumes.
 
-- **Période configurable en direct** : taper une valeur (ex. 5, 10) dans le champ et appuyer sur Entrée. **Secondes uniquement.** Une valeur non comprise (texte, négatif, vide) est ignorée sans planter — repli silencieux sur 1s côté `rm_cam_beacon.py`, comme un champ de formulaire web classique. Testé en changeant la valeur sur un node déjà lancé, sans relancer la stack.
-- **Yaw seulement** : le pitch reste désactivé (`GIM_PITCH_TRACK_ENABLED=False`, depuis l'incident BUG-058 — nacelle en butée → câble accroché).
-- Actif uniquement en mode MANUEL, reset à OFF à l'entrée/sortie MANUEL et au Kill.
-- **Pilotage numpad nacelle IGNORÉ tant que LOCK est ON** (2026-07-23 nuit) : quand le LOCK est actif, il a la main exclusive sur la nacelle ; les touches numpad 8/4/5/6 sont sans effet. Le châssis (ZQSD) reste pilotable normalement. Hors LOCK, le numpad reprend la main.
-- Ignore un tick si l'erreur d'angle dépasse `GIM_LOCK_MAX_ERR_DEG` (45°) — probable pose aberrante.
-- **Deadband `GIM_LOCK_DEADBAND_DEG=5°`** : sous ce seuil, pas de re-correction (pas la peine de recentrer trop finement).
-- **Vitesse `GIM_LOCK_YAW_SPEED=540°/s`** (plafond SDK, demande explicite utilisateur) — jamais testée sur ce robot au-delà de 80°/s avant ce choix, **confirmée fonctionnelle sur matériel** le 2026-07-23 (soir).
-- **Historique :** un précédent LOCK BALISE (servo continu à 20Hz avec gating/rampe/rejet d'aberration, distinct du mécanisme ci-dessus, parfois appelé « v1 ») a existé du 2026-07-22 au 2026-07-23 puis a été **retiré intégralement** le 2026-07-23 (soir), jugé redondant. Ce bouton s'appelait alors « LOCK V2 » ; il a été renommé simplement « LOCK » une fois le v1 supprimé.
-- **Confirmé fonctionnel sur matériel le 2026-07-23 (soir)** par l'utilisateur ("tout marche"), y compris à 540°/s.
+**Auto-activation:** LOCATE activates automatically 500ms after T2 confirms the camera is ready. No need to manually click LOCATE at startup.
+
+To switch back to AUTO (full tracking): click **MODE: AUTO**.
 
 ---
 
-### Voyant + minimap balise (2026-07-23)
+### LOCK (periodic beacon re-centering, 2026-07-23)
 
-Sous le panneau caméra du dashboard.
+The **LOCK** button in the control row, with an input field next to it (period in seconds, default **1**). Publishes `"LOCK ON"`/`"LOCK OFF"` on `/carolus/gimbal_lock`, and the period on `/carolus/gimbal_lock_period` (via `cam_view_helper.py`).
 
-- **Voyant** (rond + texte, anglais) : `BEACON: DETECTED` (vert) / `BEACON: LOST` (rouge). Alimenté par le log `[BEACON] status=...` que `rm_cam_beacon.py` publie à 5Hz.
-- **MINIMAP BALISE** (petit canvas 100×100) : un point représente la position de la balise *dans le champ caméra* (vert si centrée à ±3°, orange sinon) — distinct de la live map robot/grille existante, qui montre la position dans le labo.
-- Reset à l'entrée/sortie MANUEL et au Kill (même hygiène que le bouton LOCK).
-- **Boutons REMEMBER BEACON/SEARCH BEACON retirés le 2026-07-23 (nuit)** : avaient été confirmés fonctionnels sur matériel plus tôt dans la soirée, puis jugés insatisfaisants par l'utilisateur sans détail précis — retrait complet demandé, aucune trace de code restante. Remplacés par le bouton **RECENTRER CAM** (voir section dédiée ci-dessous).
+**How it works:** every *N* seconds (N = the field's value), if there's a fresh pose, a **single** relative movement command (`gimbal.move()`) re-centers the beacon in frame, independent of chassis motion.
 
----
-
-### RECENTRER CAM (position de base nacelle, 2026-07-23)
-
-Bouton **RECENTRER CAM**, sous le panneau caméra. Publie `"RECENTER"` sur `/carolus/gimbal_recenter`.
-
-- Ramène la nacelle à sa position de base (pitch=0, yaw=0, repère power-on du gimbal) via `gimbal.recenter()` du SDK — orientation de la **caméra**, indépendante de l'orientation du châssis robot.
-- Vitesse de recentrage : 360°/s sur les deux axes (plafond SDK pour `recenter()`, différent de `move()` qui plafonne à 540°/s).
-- Actif uniquement en mode MANUEL (même scope que LOCK).
-- **Bug corrigé le 2026-07-23 (nuit)** : ne fonctionnait pas car la boucle MANUEL réémettait `drive_speed(0,0)` à 20Hz, annulant l'action de recentrage ~50ms après son lancement (un grand angle de recentrage prend ~0.7s). Fix : fenêtre « gimbal occupé » de 2.5s pendant laquelle la boucle MANUEL et le LOCK suspendent leurs commandes. **Corrigé au niveau code, pas encore déployé/testé** (Pi injoignable au moment du fix).
+- **Live-configurable period**: type a value (e.g. 5, 10) into the field and press Enter. **Seconds only.** An unparseable value (text, negative, empty) is ignored without crashing — a silent fallback to 1s on the `rm_cam_beacon.py` side, like a standard web form field. Tested by changing the value on an already-running node, without restarting the stack.
+- **Yaw only**: pitch stays disabled (`GIM_PITCH_TRACK_ENABLED=False`, since the BUG-058 incident — gimbal hit a mechanical stop → cable snagged).
+- Active only in MANUAL mode, reset to OFF when entering/leaving MANUAL and on Kill.
+- **Numpad gimbal control IGNORED while LOCK is ON** (2026-07-23 night): when LOCK is active, it has exclusive control of the gimbal; the 8/4/5/6 numpad keys have no effect. The chassis (ZQSD) stays normally controllable. Outside LOCK, the numpad regains control.
+- Skips a tick if the angle error exceeds `GIM_LOCK_MAX_ERR_DEG` (45°) — likely an aberrant pose.
+- **Deadband `GIM_LOCK_DEADBAND_DEG=5°`**: below this threshold, no re-correction (not worth re-centering that finely).
+- **Speed `GIM_LOCK_YAW_SPEED=540°/s`** (the SDK's cap, explicit user request) — never tested on this robot above 80°/s before this choice, **confirmed working on hardware** on 2026-07-23 (evening).
+- **History:** an earlier LOCK BEACON (a continuous 20Hz servo with gating/ramp/outlier-rejection, distinct from the mechanism above, sometimes called "v1") existed from 2026-07-22 to 2026-07-23 then was **removed entirely** on 2026-07-23 (evening), judged redundant. This button was then called "LOCK V2"; it was renamed simply "LOCK" once v1 was removed.
+- **Confirmed working on hardware on 2026-07-23 (evening)** by the user ("everything works"), including at 540°/s.
 
 ---
 
-### Blocs de pilotage visuel (MODE MANUEL uniquement)
+### Beacon indicator + minimap (2026-07-23)
 
-Deux blocs apparaissent sous les boutons de lancement. Les touches s'allument en or quand elles sont actives (clavier ou clic souris).
+Below the dashboard's camera panel.
+
+- **Indicator** (a circle + text, in English): `BEACON: DETECTED` (green) / `BEACON: LOST` (red). Fed by the `[BEACON] status=...` log that `rm_cam_beacon.py` publishes at 5Hz.
+- **BEACON MINIMAP** (a small 100×100 canvas): a dot represents the beacon's position *within the camera frame* (green if centered within ±3°, orange otherwise) — distinct from the existing robot/grid live map, which shows position within the lab.
+- Reset on entering/leaving MANUAL and on Kill (same hygiene as the LOCK button).
+- **REMEMBER BEACON/SEARCH BEACON buttons removed 2026-07-23 (night)**: had been confirmed working on hardware earlier that evening, then judged unsatisfactory by the user without further detail — a full removal was requested, no code trace remains. Replaced by the **RECENTER CAM** button (see the dedicated section below).
+
+---
+
+### RECENTER CAM (gimbal base position, 2026-07-23)
+
+The **RECENTER CAM** button, below the camera panel. Publishes `"RECENTER"` on `/carolus/gimbal_recenter`.
+
+- Returns the gimbal to its base position (pitch=0, yaw=0, the gimbal's power-on frame) via the SDK's `gimbal.recenter()` — orientation of the **camera**, independent of the robot chassis's orientation.
+- Re-centering speed: 360°/s on both axes (the SDK's cap for `recenter()`, different from `move()` which caps at 540°/s).
+- Active only in MANUAL mode (same scope as LOCK).
+- **Bug fixed 2026-07-23 (night)**: wasn't working because the MANUAL loop kept re-sending `drive_speed(0,0)` at 20Hz, cancelling the re-centering action ~50ms after it started (a large re-centering angle takes ~0.7s). Fix: a 2.5s "gimbal busy" window during which the MANUAL loop and LOCK suspend their commands. **Fixed in code, not yet deployed/tested** (Pi unreachable at the time of the fix).
+
+---
+
+### Visual piloting blocks (MANUAL mode only)
+
+Two blocks appear below the launch buttons. Keys light up gold when active (keyboard or mouse click).
 
 **CHASSIS (ZQSD)**
 
@@ -115,167 +118,168 @@ Deux blocs apparaissent sous les boutons de lancement. Les touches s'allument en
       [Z]
   [Q] [S] [D]
 ```
-- `Z` = avant · `S` = arrière · `Q` = rotation gauche · `D` = rotation droite
+- `Z` = forward · `S` = reverse · `Q` = rotate left · `D` = rotate right
 - vx = 0.20 m/s · wz = 20 deg/s
-- Stop auto à la release de toutes les touches
+- Auto-stop when all keys are released
 
-**NACELLE (NUM 8/4/5/6/2)**
+**GIMBAL (NUM 8/4/5/6/2)**
 
 ```
       [8]
   [4] [5] [6]
       [2]
 ```
-- `8` = pitch haut · `2` = pitch bas · `4` = yaw gauche · `6` = yaw droite · `5` = stop gimbal
+- `8` = pitch up · `2` = pitch down · `4` = yaw left · `6` = yaw right · `5` = stop gimbal
 - pitch = 30 deg/s · yaw = 40 deg/s
-- Fonctionne avec NumLock ON (`KP_8`…) et NumLock OFF (`KP_Up`…)
+- Works with NumLock ON (`KP_8`…) and NumLock OFF (`KP_Up`…)
 
-**Activation :** cliquer `MODE : AUTO` → passe en `MODE : MANUEL` (orange). ZQSD/numpad actifs depuis le launcher **et** depuis la fenêtre map editor (bindings propagés aux deux fenêtres). Guard : les touches ne déclenchent pas de commande si le focus est sur un widget de saisie texte. Retour AUTO : re-cliquer, chassis + gimbal s'arrêtent immédiatement.
+**Activation:** click `MODE: AUTO` → switches to `MODE: MANUAL` (orange). ZQSD/numpad active both from the launcher **and** from the map editor window (bindings propagated to both windows). Guard: keys don't trigger a command if focus is on a text input widget. Back to AUTO: click again, chassis + gimbal stop immediately.
 
-**Focus clavier :** T1 et T3 ouvrent des fenêtres `gnome-terminal` externes qui volent le focus clavier du système. Si ZQSD ne répond plus après avoir lancé T1/T3, il suffit de **survoler la fenêtre du launcher ou de l'éditeur de map avec la souris** — le focus est repris automatiquement (`<Enter>` → `focus_set()`, corrigé 2026-07-01).
+**Keyboard focus:** T1 and T3 open external `gnome-terminal` windows that steal the system's keyboard focus. If ZQSD stops responding after launching T1/T3, just **hover the mouse over the launcher or map editor window** — focus is reclaimed automatically (`<Enter>` → `focus_set()`, fixed 2026-07-01).
 
 ---
 
 ### Dashboard
 
-| Indicateur | Détail |
+| Indicator | Detail |
 |---|---|
-| Point état robot | gris=SEARCH · orange=APPROACH · vert=STOP · jaune-or=LOCATE · bleu=MANUEL |
-| `depth = X.XXm` | distance balise en mode APPROACH |
-| Batterie robot | barre verte>40% · orange 15-40% · rouge <15% · `N/A` si non exposée |
-| Caméra 320×180 | vignette PNG mise à jour ~4 Hz via `cam_view_helper.py` |
-| Connexion Pi | ping toutes les 5s → point vert/rouge + IP |
+| Robot state dot | gray=SEARCH · orange=APPROACH · green=STOP · gold-yellow=LOCATE · blue=MANUAL |
+| `depth = X.XXm` | beacon distance in APPROACH mode |
+| Robot battery | green bar >40% · orange 15-40% · red <15% · `N/A` if not exposed |
+| 320×180 camera | PNG thumbnail updated ~4 Hz via `cam_view_helper.py` |
+| Pi connection | pinged every 5s → green/red dot + IP |
 
-**Logs :** zone sélectionnable, `Ctrl+A` pour tout sélectionner, `Ctrl+C` pour copier, bouton **"Copier les logs"**. Pas de freeze grâce à la queue asynchrone (batch 50ms / 50 lignes max, débit 1000 lignes/s). Télémétrie haute fréquence (`[ESC]`, `[ATTI]`, `[POS]`, `[BAT]`, `[VEL]`, `[TOF]`) filtrée de la zone Logs — affichée uniquement dans le dashboard. `[BEACONPOS]` reste visible dans les logs (utile pour diagnostiquer la position balise).
+**Logs:** a selectable area, `Ctrl+A` to select all, `Ctrl+C` to copy, a **"Copy logs"** button. No freezing thanks to the async queue (50ms batches / max 50 lines, throughput 1000 lines/s). High-frequency telemetry (`[ESC]`, `[ATTI]`, `[POS]`, `[BAT]`, `[VEL]`, `[TOF]`) filtered out of the Logs area — shown only in the dashboard. `[BEACONPOS]` stays visible in the logs (useful for diagnosing the beacon's position).
 
 ---
 
 ## `save_session.sh`
 
-**Quoi :** snapshot des fichiers sources actifs dans `saves/YYYY-MM-DD-HH-MM/`.
+**What:** snapshots the active source files into `saves/YYYY-MM-DD-HH-MM/`.
 
-**Pourquoi :** permet de revenir à un état stable si une modification casse quelque chose.
+**Why:** allows rolling back to a stable state if a change breaks something.
 
-**Usage :**
+**Usage:**
 ```bash
-bash shortcuts/save_session.sh "avant test gimbal"
-# Restaurer un fichier :
+bash shortcuts/save_session.sh "before gimbal test"
+# Restore a file:
 cp saves/2026-06-24-20-10/carolus_ws__src__robomaster_cam__scripts__rm_cam_beacon.py \
    carolus_ws/src/robomaster_cam/scripts/rm_cam_beacon.py
 ```
 
-**Fichiers sauvegardés :** `carolus_launcher.py`, `cam_view_helper.py`, `map_editor.py`, `rm_cam_beacon.py`, `testcarolus.launch`, plus les 5 `CMakeLists.txt` du workspace (`src/`, `libuvgs_astrobee/`, `ff_msgs/`, `robomaster_cam/`, `carolus_node/`) — ajoutés le 2026-07-13 pour couvrir la règle CLAUDE.md qui les cite comme fichiers critiques.
+**Files saved:** `carolus_launcher.py`, `cam_view_helper.py`, `map_editor.py`, `rm_cam_beacon.py`, `testcarolus.launch`, plus the workspace's 5 `CMakeLists.txt` files (`src/`, `libuvgs_astrobee/`, `ff_msgs/`, `robomaster_cam/`, `carolus_node/`) — added 2026-07-13 to cover the CLAUDE.md rule that lists them as critical files.
 
-**Attendu :** dossier `saves/YYYY-MM-DD-HH-MM/` créé avec 10 fichiers + `NOTE.txt`.
+**Expected:** a `saves/YYYY-MM-DD-HH-MM/` folder created with 10 files + `NOTE.txt`.
 
 ---
 
 ## `deploy_pi.sh`
 
-**Quoi :** déploie `rm_cam_beacon.py` sur le Pi (SCP) et vérifie l'intégrité par checksum md5 local vs distant + `ast.parse` côté Pi.
+**What:** deploys `rm_cam_beacon.py` to the Pi (SCP) and verifies integrity via a local vs. remote md5 checksum + `ast.parse` on the Pi side.
 
-**Pourquoi :** rendre le déploiement fiable en une commande (au lieu d'un SCP manuel + vérif à l'œil), avec garde-fous : refuse d'envoyer si le fichier ne compile pas localement, si le Pi est injoignable, ou si le checksum diffère après copie.
+**Why:** makes deployment reliable in one command (instead of a manual SCP + eyeballed check), with guardrails: refuses to send if the file doesn't compile locally, if the Pi is unreachable, or if the checksum differs after copying.
 
-**Usage :**
+**Usage:**
 ```bash
 bash shortcuts/deploy_pi.sh
 ```
 
-| Étape | Contrôle |
+| Step | Check |
 |---|---|
-| 0 | `py_compile` local — abort si erreur syntaxe |
-| 1 | Pi joignable (SSH ConnectTimeout 5s) — abort sinon |
+| 0 | local `py_compile` — abort on a syntax error |
+| 1 | Pi reachable (SSH ConnectTimeout 5s) — abort otherwise |
 | 2 | `scp rm_cam_beacon.py` → `/home/ubuntu/carolus_ws/.../rm_cam_beacon.py` |
-| 3 | md5 local == md5 distant — abort si différent |
-| 4 | `ast.parse` côté Pi (warn seulement) |
+| 3 | local md5 == remote md5 — abort if different |
+| 4 | `ast.parse` on the Pi side (warn only) |
 
-**Note :** seul `rm_cam_beacon.py` tourne sur le Pi. `carolus_launcher.py` et `cam_view_helper.py` tournent sur le PC labo → pris en compte au prochain lancement du launcher (pas de SCP). Après déploiement : relancer T2 (Kill T2 → `> 2 Camera+Beacon`) pour charger le nouveau code.
+**Note:** only `rm_cam_beacon.py` runs on the Pi. `carolus_launcher.py` and `cam_view_helper.py` run on the lab PC → picked up on the launcher's next launch (no SCP needed). After deploying: restart T2 (Kill T2 → `> 2 Camera+Beacon`) to load the new code.
 
-**Attendu :** `checksum identique -> deploiement verifie`, puis rappel de relancer T2.
+**Expected:** `checksum identique -> deploiement verifie`, then a reminder to restart T2.
 
 ---
 
 ## `leak_scan.sh`
 
-**Quoi :** scan par motifs (mots de passe/clés API/tokens/en-têtes de clé privée en dur) sur `carolus_ws/`, `shortcuts/`, `github/`, `research-log/`.
+**What:** a pattern-based scan (hardcoded passwords/API keys/tokens/private-key headers) over `carolus_ws/`, `shortcuts/`, `github/`, `research-log/`.
 
-**Pourquoi :** filet de sécurité avant tout envoi externe (premier `git push`, upload Overleaf) — créé le 2026-07-24 dans le cadre de l'audit fuite (`research-log/15-audit-fuites.md`), qui a trouvé un vrai mot de passe en clair dans `journal.md` (depuis corrigé). Détection par mots-clés seulement (pas d'outil dédié type gitleaks/trufflehog installé sur cette machine) — ne remplace pas une relecture manuelle des sorties terminales collées dans le journal.
+**Why:** a safety net before any external send-off (a first `git push`, an Overleaf upload) — created 2026-07-24 as part of the leak audit (`research-log/15-audit-fuites.md`), which found a real plaintext password in `journal.md` (since fixed). Keyword-only detection (no dedicated tool like gitleaks/trufflehog installed on this machine) — doesn't replace a manual reread of the terminal outputs pasted into the journal.
 
-**Usage :**
+**Usage:**
 ```bash
-bash shortcuts/leak_scan.sh                      # scan les 4 dossiers par défaut
-bash shortcuts/leak_scan.sh chemin/specifique     # scan un dossier précis
+bash shortcuts/leak_scan.sh                      # scan the 4 default folders
+bash shortcuts/leak_scan.sh specific/path         # scan one specific folder
 ```
 
-**Attendu :** `Rien trouve sur les motifs connus.` si clean, sinon liste des lignes suspectes à vérifier manuellement (faux positifs possibles).
+**Expected:** `Rien trouve sur les motifs connus.` if clean, otherwise a list of suspicious lines to check manually (false positives possible).
 
 ---
 
 ## `cam_view_helper.py`
 
-**Quoi :** process séparé à trois rôles — (1) vignette caméra PNG ~4 Hz avec HUD incrusté (réticule au centre géométrique de l'image + anneau de tolérance + marqueur balise reprojeté via les vraies intrinsèques, 2026-07-23), (2) passerelle clavier GUI → topics ROS châssis, (3) passerelle numpad GUI → topic ROS nacelle.
+**What:** a separate process with three roles — (1) a PNG camera thumbnail ~4 Hz with an overlaid HUD (crosshair at the image's geometric center + a tolerance ring + a beacon marker reprojected via the real intrinsics, 2026-07-23), (2) a GUI-keyboard → ROS chassis-topic gateway, (3) a GUI-numpad → ROS gimbal-topic gateway.
 
-**Pourquoi :** process isolé car `rospy.init_node` + SIGINT entrent en conflit avec tkinter. Centralise toutes les publications ROS depuis le GUI sans 2e connexion SDK. Lancé/arrêté automatiquement par `carolus_launcher.py`.
+**Why:** an isolated process because `rospy.init_node` + SIGINT conflict with Tkinter. Centralizes every ROS publication coming from the GUI without a 2nd SDK connection. Launched/stopped automatically by `carolus_launcher.py`.
 
-**Commandes stdin (envoyées par le launcher via PIPE) :**
+**Stdin commands (sent by the launcher over a PIPE):**
 
-| Commande | Effet |
+| Command | Effect |
 |---|---|
-| `MODE AUTO` | Publie `"AUTO"` sur `/carolus/mode` (latch) |
-| `MODE MANUAL` | Publie `"MANUAL"` sur `/carolus/mode` (latch) |
-| `MODE LOCATE` | Publie `"LOCATE"` sur `/carolus/mode` (latch) — sweep sans avance |
-| `VX 0.20 WZ 20.0` | Publie `Twist(linear.x, angular.z)` sur `/carolus/cmd_vel` |
-| `STOP` | Publie `Twist()` zéros sur `/carolus/cmd_vel` |
-| `GIMBAL 30.0 0.0` | Publie `Twist(angular.y=pitch, angular.z=yaw)` sur `/carolus/gimbal_vel` |
-| `LOCK ON` / `LOCK OFF` | Publie `"ON"`/`"OFF"` sur `/carolus/gimbal_lock` (centrage périodique) |
-| `LOCKPERIOD 5.0` | Publie `"5.0"` sur `/carolus/gimbal_lock_period` (période en secondes, repli sur défaut si invalide) |
-| `RECENTER` | Publie `"RECENTER"` sur `/carolus/gimbal_recenter` (position de base nacelle, 2026-07-23) |
+| `MODE AUTO` | Publishes `"AUTO"` on `/carolus/mode` (latched) |
+| `MODE MANUAL` | Publishes `"MANUAL"` on `/carolus/mode` (latched) |
+| `MODE LOCATE` | Publishes `"LOCATE"` on `/carolus/mode` (latched) — sweep without advancing |
+| `VX 0.20 WZ 20.0` | Publishes `Twist(linear.x, angular.z)` on `/carolus/cmd_vel` |
+| `STOP` | Publishes a zeroed `Twist()` on `/carolus/cmd_vel` |
+| `GIMBAL 30.0 0.0` | Publishes `Twist(angular.y=pitch, angular.z=yaw)` on `/carolus/gimbal_vel` |
+| `LOCK ON` / `LOCK OFF` | Publishes `"ON"`/`"OFF"` on `/carolus/gimbal_lock` (periodic re-centering) |
+| `LOCKPERIOD 5.0` | Publishes `"5.0"` on `/carolus/gimbal_lock_period` (period in seconds, falls back to default if invalid) |
+| `RECENTER` | Publishes `"RECENTER"` on `/carolus/gimbal_recenter` (gimbal base position, 2026-07-23) |
+| `DOCK CALIBRATE` / `DOCK START` / `DOCK ABORT` | Publishes `"CALIBRATE"`/`"START"`/`"ABORT"` on `/carolus/dock` (consumed by `beacon_docking.py`, T5, 2026-07-27) |
 
-**Usage :** (auto, via le launcher) — manuel pour debug :
+**Usage:** (automatic, via the launcher) — manual for debugging:
 ```bash
 source /opt/ros/noetic/setup.bash && source carolus_ws/devel/setup.bash
 export ROS_MASTER_URI=http://192.168.0.103:11311 ROS_IP=192.168.0.100
 python3 shortcuts/cam_view_helper.py /tmp/carolus_cam.png
 ```
 
-**Attendu :** `/tmp/carolus_cam.png` se met à jour ~4×/s. En mode MANUEL, `rm_cam_beacon.py` répond aux commandes VX/WZ/GIMBAL dans les ~50ms.
+**Expected:** `/tmp/carolus_cam.png` updates ~4×/s. In MANUAL mode, `rm_cam_beacon.py` responds to VX/WZ/GIMBAL commands within ~50ms.
 
 ---
 
 ## `map_editor.py`
 
-**Quoi :** éditeur de map 2D (fenêtre Toplevel séparée) — grille 26×21 cases (10.4m×8.4m, 1 case = 40 cm ≈ footprint S1), blocs plein/demi/quart, outil zone (drag fill), balises orientées demi-bloc, overlay robot snapé sur grille.
+**What:** a 2D map editor (a separate Toplevel window) — a 26×21-cell grid (10.4m×8.4m, 1 cell = 40 cm ≈ the S1's footprint), full/half/quarter blocks, a zone tool (drag fill), oriented half-block beacons, a grid-snapped robot overlay.
 
-**Pourquoi :** permet de cartographier les obstacles réels du labo (chaises, bureaux) avant une session, de positionner la balise et de visualiser la position du robot en live. La map JSON exportée est chargée par `map_collision.py` sur le Pi pour l'évitement d'obstacles.
+**Why:** lets you map the lab's real obstacles (chairs, desks) before a session, position the beacon, and visualize the robot's position live. The exported map JSON is loaded by `map_collision.py` on the Pi for obstacle avoidance.
 
-**Usage :** ouvert depuis le bouton "ÉDITEUR MAP" dans `carolus_launcher.py` (pas de lancement direct).
+**Usage:** opened from the "MAP EDITOR" button in `carolus_launcher.py` (no direct launch).
 
-| Outil | Clic gauche | Clic droit |
+| Tool | Left click | Right click |
 |---|---|---|
-| ▓ Plein | Poser bloc plein | Pas d'effet |
-| ▬ Demi | Poser demi-bloc (rotation auto selon position) | Changer rotation |
-| ▪ Quart | Poser quart-bloc | Changer rotation |
-| ▦ Zone | Drag → remplir rectangle de blocs pleins | — |
-| ◉ Balise | Placer balise (mode MANUEL) | Tourner balise 90° |
-| ✕ Effacer | Supprimer bloc ou balise | — |
+| ▓ Full | Place a full block | No effect |
+| ▬ Half | Place a half-block (auto-rotated by position) | Change rotation |
+| ▪ Quarter | Place a quarter-block | Change rotation |
+| ▦ Zone | Drag → fill a rectangle with full blocks | — |
+| ◉ Beacon | Place beacon (MANUAL mode) | Rotate beacon 90° |
+| ✕ Erase | Remove a block or beacon | — |
 
-**Robot :** verrouillé par défaut (🔒). Déverrouiller via la palette → drag → snap automatique au centre de case. La position définit l'origine (0,0) pour toutes les mises à jour live SDK.
+**Robot:** locked by default (🔒). Unlock via the palette → drag → auto-snap to the cell center. The position defines the (0,0) origin for every live SDK update.
 
-**Balises :**
-- **Mode MANUEL** (défaut) : drag pour placer, clic droit pour tourner. 1 seule balise orange.
-- **Mode AUTO** : `add_auto_beacon(wx_m, wy_m, facing_deg)` appelé par le launcher à chaque `[BEACONPOS]`. Multi-balises, déduplication < 0.5m, couleur jaune-or.
+**Beacons:**
+- **MANUAL mode** (default): drag to place, right-click to rotate. A single orange beacon.
+- **AUTO mode:** `add_auto_beacon(wx_m, wy_m, facing_deg)` called by the launcher on every `[BEACONPOS]`. Multi-beacon, deduplication < 0.5m, gold-yellow color.
 
-**Save/Load :** JSON v3 — `blocks`, `beacon_man` (wx, wy, rot), `beacons_auto` (liste wx/wy/facing). Copier la map sauvegardée vers `/home/ubuntu/carolus_map.json` sur le Pi pour activer la collision avoidance.
+**Save/Load:** JSON v3 — `blocks`, `beacon_man` (wx, wy, rot), `beacons_auto` (a list of wx/wy/facing). Copy the saved map to `/home/ubuntu/carolus_map.json` on the Pi to enable collision avoidance.
 
-**Navigation dans la map :**
-- **Molette souris** → zoom centré sur le curseur (facteur 1.15 par cran, Linux Button-4/5 supporté)
-- **Clic droit + drag** → pan (déplacement de la vue), tous les items se déplacent ensemble
-- **Clic droit sans drag** → changer la rotation du bloc sous le curseur (comportement inchangé)
-- Zoom/pan n'affecte pas les coords stockées (world, mètres) — save/load reste correct à tout niveau de zoom
+**Navigating the map:**
+- **Mouse wheel** → zoom centered on the cursor (1.15× per notch, Linux Button-4/5 supported)
+- **Right-click + drag** → pan (moves the view), every item moves together
+- **Right-click without dragging** → change the rotation of the block under the cursor (unchanged behavior)
+- Zoom/pan doesn't affect the stored coordinates (world, meters) — save/load stays correct at any zoom level
 
-**Convention axes (EP SDK → map) :**
-- EP `x+` = avant → nord sur canvas (py diminue)
-- EP `y+` = droite (est) → px augmente — convention inverse de ROS REP-103
-- Robot positionné au centre géométrique de la grille par défaut (colonne 13, ligne ~10.5 — 21 lignes est impair, le centre exact n'est pas une case entière — sur une grille 26×21, depuis l'agrandissement du 2026-06-30 — anciennement en bas de la grille 20×15).
+**Axis convention (EP SDK → map):**
+- EP `x+` = forward → north on the canvas (py decreases)
+- EP `y+` = right (east) → px increases — the reverse of the ROS REP-103 convention
+- The robot is positioned at the grid's geometric center by default (column 13, row ~10.5 — 21 rows is odd, so the exact center isn't a whole cell — on a 26×21 grid, since the 2026-06-30 enlargement — previously at the bottom of the 20×15 grid).
 
-**Attendu :** overlay robot bleu (■▲) se déplace en live via `update_robot()`, point orange temporaire via `update_beacon()`, balises persistantes via `add_auto_beacon()`. Zoom avec molette, pan avec clic droit drag. Hover ghost optimisé (cache par case/rotation — aucun redraw si la souris ne change pas de case).
+**Expected:** the blue robot overlay (■▲) moves live via `update_robot()`, a temporary orange dot via `update_beacon()`, persistent beacons via `add_auto_beacon()`. Zoom with the wheel, pan with right-click drag. An optimized hover ghost (cached per cell/rotation — no redraw if the mouse stays in the same cell).

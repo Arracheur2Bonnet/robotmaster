@@ -235,6 +235,9 @@ def _stdin_reader():
                 _set_camera_subscription(state == "ON")
             elif line == "RECENTER":
                 _pub_gimbal_recenter.publish(String(data="RECENTER"))
+            elif line.startswith("DOCK"):
+                cmd = line.split()[1].upper()   # "START", "CALIBRATE" ou "ABORT"
+                _pub_dock.publish(String(data=cmd))
         except Exception as e:
             rospy.logwarn(f"[CAMVIEW] commande mal formee ({line!r}): {e}")
 
@@ -243,7 +246,7 @@ def _stdin_reader():
 
 def main():
     global _pub_mode, _pub_cmdvel, _pub_gimbal, _pub_wheels, _pub_lock, _pub_lock_period
-    global _pub_gimbal_recenter
+    global _pub_gimbal_recenter, _pub_dock
 
     rospy.init_node("carolus_gui_cam", anonymous=True, disable_signals=True)
 
@@ -260,6 +263,10 @@ def main():
     # RECENTRER CAM (2026-07-23) : pas de latch, action ponctuelle (pas un etat
     # persistant a rejouer au redemarrage d'un noeud).
     _pub_gimbal_recenter = rospy.Publisher("/carolus/gimbal_recenter", String, queue_size=1)
+    # Docking (2026-07-27, beacon_docking.py) : pas de latch, memes raisons que
+    # RECENTER -- une commande START/CALIBRATE/ABORT n'a pas vocation a etre
+    # rejouee automatiquement au redemarrage d'un noeud.
+    _pub_dock = rospy.Publisher("/carolus/dock", String, queue_size=1)
 
     # /pose : toujours souscrit (message leger, pas d'image) pour le HUD -- independant
     # du toggle CAM ON/OFF qui ne concerne que /camera/color/image_raw (le vrai goulot

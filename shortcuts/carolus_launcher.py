@@ -131,6 +131,10 @@ PI_HOST  = "192.168.0.103"
 WS       = "~/carolus_ws"
 BEACON_PI = "/home/ubuntu/carolus_ws/src/robomaster_cam/scripts/rm_cam_beacon.py"
 TF_BROADCASTER_PI = "/home/ubuntu/carolus_ws/src/carolus_node/scripts/carolus_tf_broadcaster.py"
+# Docking (2026-07-27) : tourne sur le PC labo, pas le Pi -- pas de connexion SDK
+# propre (commande via /carolus/cmd_vel, deja relaye par rm_cam_beacon.py), donc
+# pas de contrainte "un seul proprietaire SDK" ici, meme raisonnement que T3.
+DOCKING_SCRIPT = "~/carolus_ws/src/robomaster_cam/scripts/beacon_docking.py"
 SSH_KEY  = os.path.expanduser("~/.ssh/carolus_nopass")
 SSH_OPTS = ["-i", SSH_KEY, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no"]
 
@@ -178,6 +182,7 @@ RE_STATUS    = re.compile(r"\[STATUS\]\s*pickup=(\d)\s*slip=(\d)\s*roll=(\d)\s*s
 RE_TOF       = re.compile(r"\[TOF\]\s*front=([0-9.]+)cm")
 RE_OBSTACLE  = re.compile(r"\[OBSTACLE\]\s*(.+)")
 RE_BEACON    = re.compile(r"\[BEACON\]\s*status=(DETECTED|LOST)(?:\s*yaw_err=([+-]?[0-9.]+)\s*pitch_err=([+-]?[0-9.]+))?")
+RE_DOCKSTATUS = re.compile(r"\[DOCKSTATUS\]\s*status=(\S+)\s*yaw_validated=(True|False)")
 
 BEACON_FRESH_S = 1.5   # doit matcher POSE_TIMEOUT_S dans rm_cam_beacon.py
 
@@ -219,7 +224,7 @@ class App(tk.Tk):
         self.title("Carolus Launcher")
         self.configure(bg=BG)
         self.resizable(False, False)
-        self.procs      = [None, None, None, None]   # Popen T1 / T2 / T3 / T4
+        self.procs      = [None, None, None, None, None]   # Popen T1 / T2 / T3 / T4 / T5
         self.cam_proc   = None                 # Popen helper video (stdin=PIPE)
         self.cam_img    = None                 # reference PhotoImage (anti-GC)
         self.last_state = None
@@ -298,6 +303,7 @@ class App(tk.Tk):
             ("2  Camera + Beacon",           False),
             ("3  Carolus Astrobee",          False),
             ("4  TF Broadcaster (quat fix)", False),
+            ("5  Beacon Docking",            False),
         ]
         body = tk.Frame(left_col, bg=BG)
         body.pack(fill="x", padx=12, pady=8)
@@ -443,7 +449,25 @@ class App(tk.Tk):
                                        font=FONT, command=self._on_gimbal_recenter)
         self._recenter_btn.pack(fill="x", pady=(6, 0))
 
-        # --- logs : un onglet par terminal (T1-T4), selectionnables + bouton copier ---
+        # --- Docking (2026-07-27) : commandes sur /carolus/dock (relayees par
+        # cam_view_helper.py, meme mecanisme que RECENTER), statut lu depuis les
+        # logs de T5 ([DOCKSTATUS], meme mecanisme que [BEACON]). ---
+        tk.Label(right, text="DOCKING BALISE", bg=BG2, fg=ACCENT, anchor="w", font=FONT).pack(anchor="w", pady=(10, 0))
+        dock_row = tk.Frame(right, bg=BG2)
+        dock_row.pack(fill="x", pady=(2, 0))
+        tk.Button(dock_row, text="CALIBRATE", bg=BG3, fg=FG, relief="flat",
+                  activebackground=COL_ALIGN, activeforeground=FG, font=FONT,
+                  command=lambda: self._on_dock_cmd("CALIBRATE")).pack(side="left", fill="x", expand=True, padx=(0, 2))
+        tk.Button(dock_row, text="START", bg=BG3, fg=FG, relief="flat",
+                  activebackground=COL_OK, activeforeground=FG, font=FONT,
+                  command=lambda: self._on_dock_cmd("START")).pack(side="left", fill="x", expand=True, padx=2)
+        tk.Button(dock_row, text="ABORT", bg=BG3, fg=COL_KO, relief="flat",
+                  activebackground=COL_KO, activeforeground=FG, font=FONT,
+                  command=lambda: self._on_dock_cmd("ABORT")).pack(side="left", fill="x", expand=True, padx=(2, 0))
+        self._dock_status_lbl = tk.Label(right, text="DOCK: —", bg=BG2, fg=FG_DIM, font=FONT_MONO)
+        self._dock_status_lbl.pack(anchor="w", pady=(4, 0))
+
+        # --- logs : un onglet par terminal (T1-T5), selectionnables + bouton copier ---
         logh = tk.Frame(left_col, bg=BG)
         logh.pack(fill="x", padx=12, pady=(6, 0))
         tk.Label(logh, text="Logs :", bg=BG, fg=FG_DIM, font=FONT).pack(side="left")
@@ -464,7 +488,7 @@ class App(tk.Tk):
         self.log_nb.pack(padx=12, pady=(2, 12), fill="both", expand=True)
 
         self.log_boxes = []
-        tab_labels = ["T1 roscore+Pi", "T2 Camera+Beacon", "T3 Carolus Astrobee", "T4 TF Broadcaster"]
+        tab_labels = ["T1 roscore+Pi", "T2 Camera+Beacon", "T3 Carolus Astrobee", "T4 TF Broadcaster", "T5 Docking"]
         for label in tab_labels:
             box = tk.Text(self.log_nb, height=16, width=66, bg=BG2, fg=FG,
                           insertbackground=FG, relief="flat", padx=6, pady=4,
@@ -627,6 +651,27 @@ class App(tk.Tk):
     def _on_gimbal_recenter(self):
         self._send_to_helper("RECENTER")
         self.after(0, self._log, "> RECENTRER CAM — nacelle vers position de base")
+
+    def _on_dock_cmd(self, cmd):
+        # T5 doit tourner pour que la commande ait un effet (personne n'est
+        # abonne a /carolus/dock sinon) -- pas de garde bloquante ici, le
+        # bouton reste utilisable a tout moment, meme raisonnement que LOCK.
+        self._send_to_helper(f"DOCK {cmd}")
+        self.after(0, self._log, f"> DOCK {cmd}")
+
+    def _on_dock_status(self, status, yaw_validated):
+        """Parse [DOCKSTATUS] status=... yaw_validated=... (~1Hz, T5) : met a jour
+        le label. Meme mecanisme que _on_beacon_status pour [BEACON]."""
+        if status in ("DOCKED",):
+            color = COL_OK
+        elif status in ("ABORTED", "ERROR", "CAL_FAILED", "NO_BEACON", "NOT_CONVERGED"):
+            color = COL_KO
+        elif status in ("DOCKING", "CALIBRATING"):
+            color = COL_ALIGN
+        else:
+            color = FG_DIM
+        suffix = " [YAW OK]" if yaw_validated else " [YAW NON VALIDE]"
+        self._dock_status_lbl.config(text=f"DOCK: {status}{suffix}", fg=color)
 
     def _reset_beacon_ui(self):
         """Reset visuel complet voyant/minimap -- appele aux memes points que le
@@ -1031,6 +1076,10 @@ class App(tk.Tk):
                         pass
                 self._live_map.add_auto_beacon(wx, wy, face_deg)
                 self._last_beacon_ts = time.time()
+        if "[DOCKSTATUS]" in line:
+            m = RE_DOCKSTATUS.search(line)
+            if m:
+                self._on_dock_status(m.group(1), m.group(2) == "True")
 
     def _check_beacon_freshness(self):
         """Cache le marqueur balise sur la live map si aucune detection recente
@@ -1111,6 +1160,15 @@ class App(tk.Tk):
                     "export ROS_MASTER_URI=http://localhost:11311; "
                     "export ROS_IP=192.168.0.103; "
                     f"stdbuf -oL -eL python3 -u {TF_BROADCASTER_PI} 2>&1"]
+        if i == 4:
+            # Tourne sur le PC labo (pas le Pi) : pas de connexion SDK propre,
+            # commande via /carolus/cmd_vel deja relaye par rm_cam_beacon.py --
+            # meme raisonnement que T3 (roslaunch carolus_node, aussi sur le PC).
+            return ["bash", "-c",
+                    "source /opt/ros/noetic/setup.bash && "
+                    "export ROS_MASTER_URI=http://192.168.0.103:11311 && "
+                    "export ROS_IP=192.168.0.100 && "
+                    f"stdbuf -oL -eL python3 -u {DOCKING_SCRIPT} 2>&1"]
         return ["bash", "-c",
                 "source /opt/ros/noetic/setup.bash && "
                 "export ROS_MASTER_URI=http://192.168.0.103:11311 && "
@@ -1174,6 +1232,8 @@ class App(tk.Tk):
             self.after(0, self._log, "> T3 lance - attends RPY dans les logs", i)
         elif i == 3:
             self.after(0, self._log, "> T4 lance - TF broadcaster actif (quaternion corrige, BUG-048)", i)
+        elif i == 4:
+            self.after(0, self._log, "> T5 lance - docking pret (attend /pose, /odom, /carolus/gimbal_yaw_rel)", i)
 
         self._set_status(i, S_OK)
         if i + 1 < len(self.rows):
@@ -1186,13 +1246,17 @@ class App(tk.Tk):
         threading.Thread(target=self._run_kill, args=(i,), daemon=True).start()
 
     def _run_kill(self, i):
-        targets = [i] if i >= 0 else [0, 1, 2, 3]
+        targets = [i] if i >= 0 else [0, 1, 2, 3, 4]
         # annule les wait_for_* en cours pour ces cibles
         for t in targets:
             self._launch_cancelled[t] = True
         time.sleep(0.1)   # laisse les threads voir le flag
         for t in sorted(targets, reverse=True):
-            if t == 3:
+            if t == 4:
+                local_kill("beacon_docking.py")
+                self._close_terminal(4)
+                self.after(0, lambda: self._dock_status_lbl.config(text="DOCK: —", fg=FG_DIM))
+            elif t == 3:
                 ssh_kill("pkill -9 -f carolus_tf_broadcaster.py")
                 self._close_terminal(3)
             elif t == 2:
