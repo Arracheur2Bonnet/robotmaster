@@ -1,0 +1,1292 @@
+\documentclass[11pt]{report}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[english]{babel}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{longtable}
+\usepackage{booktabs}
+\usepackage{geometry}
+\geometry{margin=0.85in}
+\setlength{\parskip}{2pt}
+
+% --- Code listing style ---------------------------------------------------
+\definecolor{codebg}{rgb}{0.96,0.96,0.96}
+\definecolor{codecomment}{rgb}{0.4,0.45,0.4}
+\definecolor{codestring}{rgb}{0.5,0.1,0.1}
+\lstdefinestyle{shell}{
+    backgroundcolor=\color{codebg},
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    numbers=none,
+    language=bash,
+    commentstyle=\color{codecomment},
+    keywordstyle=\bfseries,
+    aboveskip=6pt,
+    belowskip=6pt
+}
+\lstdefinestyle{code}{
+    backgroundcolor=\color{codebg},
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    commentstyle=\color{codecomment},
+    stringstyle=\color{codestring},
+    keywordstyle=\bfseries,
+    aboveskip=6pt,
+    belowskip=6pt
+}
+\lstset{style=shell}
+
+\title{Carolus / RoboMaster S1 --- Complete Technical Manual}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This manual is self-sufficient: following it from Chapter~\ref{ch:poweron}
+onward requires no other document, inherited tutorial, or vendor PDF. It
+covers the complete path from unboxing a rooted RoboMaster S1 and a
+Raspberry Pi 4B to a running Carolus/uVGS-2 pose-estimation pipeline with
+autonomous beacon docking, using only the corrected, currently-working
+configuration of this project --- not the historical or inherited versions
+of any script, launch file, or procedure. Every program listed here is the
+version that actually runs today.
+\end{abstract}
+
+\tableofcontents
+
+\chapter{Introduction}
+
+\section{What this manual covers}
+
+This is the complete, self-contained setup and operation manual for the
+Carolus/RoboMaster S1 platform: a DJI RoboMaster S1 ground robot, rooted to
+expose the RoboMaster EP SDK, carrying a Raspberry Pi~4B at the turret
+position, running Carolus (also called uVGS-2) --- a 4-LED beacon
+pose-estimation system --- to autonomously search for, align to, approach,
+and dock at a fixed beacon.
+
+Everything in this manual has been executed and verified on this exact
+hardware. Where a step has not been physically re-verified on this specific
+unit but is inherited from a documented, working precedent (e.g.\ a rooting
+procedure that predates this project), that is stated explicitly at the
+point it occurs.
+
+\section{Hardware}
+
+\begin{itemize}
+  \item \textbf{Robot:} DJI RoboMaster S1, rooted via the
+  \texttt{s1\_sdk\_hack\_v0.0.5} community hack, which exposes the
+  RoboMaster EP SDK (chassis drive, gimbal control, onboard camera, wheel
+  odometry, IMU) over a local API not officially released for the S1.
+  \item \textbf{Companion computer:} Raspberry Pi~4B, mounted at the turret,
+  connected to the robot over USB via RNDIS (a virtual Ethernet link over
+  USB). The Pi holds the single connection to the robot's SDK and runs the
+  camera/beacon-tracking node.
+  \item \textbf{Lab PC:} runs the operator GUI, the Carolus pose-estimation
+  node, and (planned) the localization back end. Not physically connected to
+  the robot; communicates with the Pi over the local network.
+  \item \textbf{Camera:} the S1's own internal camera (built into the
+  gimbal/head), streamed over the SDK. This project does not use an external
+  Intel RealSense D455 --- some inherited reference material describes a
+  D455-based pipeline (see Chapter~\ref{ch:calibration}'s calibration
+  discussion); that material is noted where it applies to calibration
+  \emph{technique}, not to this robot's actual camera hardware.
+\end{itemize}
+
+\section{Software stack}
+
+\begin{itemize}
+  \item \textbf{Operating systems:} Raspberry Pi runs Ubuntu 20.04.6~LTS
+  (aarch64). The lab PC runs Ubuntu 22.04.5~LTS (x86\_64) --- not the
+  officially supported target for ROS Noetic, which requires local
+  workarounds documented in Chapter~\ref{ch:carolus-node}.
+  \item \textbf{Middleware:} ROS Noetic (1.17.4) on both machines.
+  \item \textbf{Robot control:} the official \texttt{robomaster} Python SDK,
+  requiring Python~3.7 specifically.
+  \item \textbf{Vision:} Carolus/uVGS-2, a C++ ROS node built on OpenCV,
+  Eigen3, and Ceres Solver, performing 4-LED blob detection and a
+  Perspective-4-Point (P4P) pose solve.
+\end{itemize}
+
+\section{What Carolus is}
+
+Carolus (internally named uVGS-2, Unified Visual Guidance System version~2)
+is a monocular pose-estimation system originally developed for NASA's
+Astrobee free-flying robot aboard the International Space Station, derived
+from the earlier SVGS system. It detects four illuminated beacon points
+(LEDs) in a camera image, identifies which detected blob corresponds to
+which known 3D point on the physical beacon, and solves a Perspective-4-Point
+optimization (via Ceres Solver, not OpenCV's \texttt{solvePnP} family) to
+recover the beacon's full 6-DOF pose relative to the camera.
+
+\textbf{Carolus's own native coordinate frame is left-handed.} This is not
+obvious from the code and is stated here because it matters for every
+transform downstream: converting a Carolus pose or orientation into ROS's
+right-handed convention (REP-103) requires a true change-of-basis on the
+rotation, not a component-wise permutation of a quaternion's vector part ---
+the latter is only valid for a proper (determinant~$+1$) rotation, and a
+left-to-right-handed conversion is improper (determinant~$-1$). The correct
+method (quaternion composition, not permutation) is given at the point it is
+needed in this manual.
+
+\section{The four operating states}
+
+Once running, the robot's autonomous behavior is a state machine:
+
+\begin{description}
+  \item[SEARCH] The gimbal sweeps without moving the chassis, looking for
+  the beacon. If not found from the current heading, the chassis rotates to
+  a new heading and the gimbal sweeps again (a ``fan search'' pattern).
+  \item[ALIGN] Once the beacon is detected, the chassis rotates in place
+  until it faces the beacon.
+  \item[APPROACH] The gimbal tracks the beacon while the chassis advances
+  along the same heading.
+  \item[STOP] Triggered once within a target stopping distance of the
+  beacon.
+\end{description}
+
+A separate, more deliberate \textbf{docking} behavior performs a calibrated,
+verified approach-and-stop sequence rather than the lighter continuous
+SEARCH/ALIGN/APPROACH loop. It runs through this project's own operator
+tooling, not yet covered in this manual (see the note at the end of
+Chapter~\ref{ch:carolus-node}).
+
+\section{How to use this manual}
+
+Follow the chapters in order for a from-scratch setup: power the robot on
+and confirm it is rooted (Chapter~\ref{ch:poweron}), root it if it is not
+(Chapter~\ref{ch:rooting}), set up the Raspberry Pi
+(Chapter~\ref{ch:raspberrypi}), bring up the network link
+(Chapter~\ref{ch:network}), bring up the camera pipeline
+(Chapter~\ref{ch:camera}), calibrate the camera
+(Chapter~\ref{ch:calibration}), then build and launch Carolus
+(Chapter~\ref{ch:carolus-node}). At that point the core pipeline is running
+and can be driven manually over the topics named in
+Chapter~\ref{ch:camera}; the operator GUI and autonomous docking behavior
+are this project's own tooling on top of it, documented separately.
+
+Every command, parameter value, and code listing in this manual is the
+\emph{current, corrected} version --- the one that actually runs on this
+project today.
+
+\chapter{Powering On the Robot}
+\label{ch:poweron}
+
+\section{Before you start}
+
+\begin{itemize}
+  \item The S1's smart battery, charged. Charging is required before first
+  use even if the battery shows some charge --- this ``wakes up'' the
+  battery.
+  \item The S1 charger, plugged into mains (100--240\,V, 50/60\,Hz). A full
+  charge takes approximately 1\,h30.
+  \item The battery only charges between 5\,\textdegree C and
+  45\,\textdegree C.
+  \item Do not touch the motors, motor mounting plate, or the inside of the
+  Mecanum wheels immediately after powering the robot off --- they can be
+  hot.
+  \item Do not attempt to charge a battery that has dropped below 1\,V per
+  cell; this poses a fire risk.
+  \item Use the official DJI charger only.
+\end{itemize}
+
+\section{Power-on sequence}
+
+The battery compartment is behind the chassis's rear armor panel, so the
+sequence is: open, insert, power on, close.
+
+\begin{enumerate}
+  \item Press the rear armor release button to open the chassis's rear
+  cover.
+  \item Insert the smart battery into its compartment, making sure it is
+  firmly seated --- a poorly seated battery gives poor contact and can cause
+  the robot to lose battery information.
+  \item Press and hold the power button (on the battery itself) for more
+  than two seconds to power on.
+  \item Close the chassis's rear armor.
+\end{enumerate}
+
+The Raspberry Pi at the turret is a separate power domain from the robot
+chassis; there is no required power-on order between the two, and the
+USB/RNDIS cable connecting them is for the SDK link (Chapter~\ref{ch:network}),
+not for powering either device.
+
+\section{Confirming the robot is powered on}
+
+Expected light signals at power-on:
+
+\begin{itemize}
+  \item \textbf{Gimbal (head) LED:} blinks cyan, counterclockwise.
+  \item \textbf{Chassis LED:} solid cyan.
+  \item \textbf{Motion controller LED:} blinks blue slowly --- this means
+  the motion controller is working normally.
+\end{itemize}
+
+\section{Confirming the robot is rooted}
+
+This project assumes a rooted S1 exposing the RoboMaster EP SDK. Without the
+root hack (Chapter~\ref{ch:rooting}), SDK commands (chassis, gimbal, camera)
+will not respond, even though the robot otherwise powers on and behaves
+normally through the stock RoboMaster app.
+
+\textbf{Audible cue at boot:} a correctly rooted S1 emits two chimes instead
+of the usual single chime. The hack persists across power cycles --- it does
+not need to be reapplied every time the robot is powered on.
+
+\textbf{Concrete test, once the Pi is connected over RNDIS
+(Chapter~\ref{ch:network}):} the camera/beacon node
+(\texttt{rm\_cam\_beacon.py}, Chapter~\ref{ch:camera}) opens the one and
+only SDK connection this project uses:
+
+\begin{lstlisting}[style=code]
+self.ep = robot.Robot()
+self.ep.initialize(conn_type="rndis")
+\end{lstlisting}
+
+\begin{itemize}
+  \item \textbf{Success:} the node's log shows the connection succeeding, and
+  the robot responds to \texttt{Twist} commands published on
+  \texttt{/carolus/cmd\_vel} (Chapter~\ref{ch:camera}).
+  \item \textbf{Failure:} the SDK connection fails or times out. First
+  confirm the network link itself (\texttt{ping 192.168.42.2} from the Pi,
+  Chapter~\ref{ch:network}). If the network link is fine but the SDK
+  connection still fails, redo the power-on and listen carefully for the
+  double chime --- a single chime means the root hack is not active.
+\end{itemize}
+
+\textbf{Do not use any script other than \texttt{rm\_cam\_beacon.py} to test
+this.} Two independent scripts each attempting
+\texttt{ep.initialize(conn\_type="rndis")} at the same time silently blocks
+robot motion after a few commands, with no error surfaced --- this failure
+mode is why this project uses exactly one script holding the SDK connection
+at any time (see Chapter~\ref{ch:camera}).
+
+\section{Which camera is mounted}
+
+This project uses the S1's own internal camera, not an external Intel
+RealSense D455. Physically: a D455 is an external rectangular camera housing
+mounted in addition to the robot's own head; if there is no such external
+camera, the internal camera is in use. In software, once
+\texttt{rm\_cam\_beacon.py} is running (Chapter~\ref{ch:camera}), the
+internal camera feed appears on \texttt{/camera/color/image\_raw}
+immediately, with no separate D455 driver (\texttt{rs\_camera.launch})
+needed.
+
+\chapter{Rooting the S1}
+\label{ch:rooting}
+
+If Chapter~\ref{ch:poweron}'s double-chime check already confirmed the robot
+is rooted, this chapter is informational only --- do not re-run it.
+
+\section{What the hack does}
+
+DJI's RoboMaster app exposes a limited, sandboxed Python scripting
+environment (``the Lab''). The S1's Python subsystem runs with root
+privileges internally, but DJI restricts which modules a Lab script can
+import via a whitelist attached to the \texttt{\_\_builtins\_\_} object.
+Several of the whitelisted modules (needed for legitimate scripting
+features) still hold a reference to the real, unrestricted
+\texttt{\_\_builtins\_\_} internally. That reference can be recovered and
+used to import \texttt{subprocess}, which can then invoke a shell script
+already present on the robot's filesystem (\texttt{adb\_en.sh}) to enable
+\texttt{adb} and open a root shell over USB.
+
+Once a root shell is available, a patch is pushed to the robot's filesystem
+that installs the RoboMaster EP SDK's full command set (the EP is DJI's
+higher-end sibling to the S1; underneath, the two share nearly identical
+firmware) onto the S1, which DJI has never officially released to S1 owners.
+
+\textbf{Warning, carried over from the hack's own documentation, to be taken
+literally:} this has the potential to break the robot. It did not break this
+project's unit, but there is no guarantee for any given unit.
+
+\section{Step-by-step procedure}
+
+\subsection{What you need}
+
+\begin{itemize}
+  \item A computer running Windows or macOS (the RoboMaster app requires
+  one of these to configure the S1; the Raspberry Pi is not involved in this
+  chapter).
+  \item Android SDK Platform-Tools (\texttt{adb.exe} and friends) --- unzip
+  anywhere, remember the path.
+  \item A micro-USB cable.
+  \item The RoboMaster app, with a DJI account.
+\end{itemize}
+
+\subsection{Procedure}
+
+\begin{enumerate}
+  \item Connect the computer to the S1's Intelligent Controller Micro-USB
+  port with the micro-USB cable. Ensure no other Android device is connected
+  over USB during this procedure.
+
+  \item Power on the robot (Chapter~\ref{ch:poweron}) and connect the
+  RoboMaster app to it via its own Wi-Fi hotspot (visible on top of the
+  gimbal, with a password shown alongside it).
+
+  \item In the app: \textbf{Lab} $\to$ \textbf{DIY Programming} $\to$ select
+  \textbf{Python} on the top bar $\to$ \textbf{New} to create a new program.
+
+  \item Paste the following into the program editor exactly. This is the
+  current, working root script for this hack version --- do not use an
+  older variant that imports \texttt{'subprocess'} as a literal string or
+  reads from \texttt{rm\_log} instead of \texttt{rm\_define}; a firmware
+  update closed that specific path.
+
+\begin{lstlisting}[style=code,language=Python]
+def root_me(module):
+    __import__=rm_define.__dict__['__builtins__']['__import__']
+    return __import__(module,globals(),locals(),[],0)
+
+builtins=root_me('builtins')
+x=root_me('sub'+'process')
+proc=x.Popen('/system/bin/adb_en.sh',shell=True,executable='/system/bin/sh',
+             stdout=x.PIPE,stderr=x.PIPE)
+\end{lstlisting}
+
+  \item Run the program from within the Lab. A correct run shows no
+  compilation errors and the console prints \texttt{Execution Complete}. Do
+  not close the RoboMaster app.
+
+  \item On the computer, open a terminal in the folder containing the
+  Android Platform-Tools and run:
+
+\begin{lstlisting}[style=shell]
+adb devices
+\end{lstlisting}
+
+  The S1 should appear in the device list.
+
+  \item Confirm root access:
+
+\begin{lstlisting}[style=shell]
+adb shell
+\end{lstlisting}
+
+  \item With the root shell open, from a second terminal, in the folder
+  containing the hack's distribution files (\texttt{dji\_scratch},
+  \texttt{dji.json}, \texttt{dji\_hdvt\_uav}, \texttt{dji\_sys},
+  \texttt{patch.sh}), push the patch:
+
+\begin{lstlisting}[style=shell]
+adb shell rm -rf /data/dji_scratch
+adb push dji_scratch /data/.
+adb push dji.json /data/.
+adb push dji_hdvt_uav /data/.
+adb push dji_sys /data/.
+adb shell chmod 755 /data/dji_hdvt_uav
+adb shell chmod 755 /data/dji_sys
+adb push patch.sh /data/.
+\end{lstlisting}
+
+  \item Restart the S1 fully (hold the power button until it turns off,
+  then hold it again to turn back on). On boot, listen for \textbf{two
+  chimes instead of one} --- this confirms the hack is active
+  (Chapter~\ref{ch:poweron}'s check).
+
+  \item Close the RoboMaster app and power off the robot; the setup for
+  this chapter is complete.
+\end{enumerate}
+
+\section{A pitfall to know before rooting}
+
+Starting with hack version 0.0.3, \texttt{adb} is re-enabled by default in
+the patch, which \textbf{disables RNDIS support} --- the exact link this
+project's Pi$\leftrightarrow$robot connection depends on
+(Chapter~\ref{ch:network}). If RNDIS stops working after rooting, comment
+out the \texttt{adb} line in \texttt{patch.sh} before pushing the patch, or
+re-push a corrected \texttt{patch.sh} and restart the robot again.
+
+\chapter{Setting Up the Raspberry Pi}
+\label{ch:raspberrypi}
+
+This chapter takes a blank Raspberry Pi~4B to a working Ubuntu~20.04
+installation with Python~3.7, the RoboMaster SDK, ROS Noetic, and SSH
+access. If the Pi is already set up, skip to Chapter~\ref{ch:network}.
+
+\section{Flashing Ubuntu Server}
+
+\begin{enumerate}
+  \item Download the Ubuntu Server ARM64 image from
+  \url{https://cdimage.ubuntu.com/releases/focal/release/}
+  (\texttt{ubuntu-20.04.5-preinstalled-server-arm64+raspi.img.xz}).
+  \item Decompress it:
+\begin{lstlisting}[style=shell]
+unxz ubuntu-20.04.5-preinstalled-server-arm64+raspi.img.xz
+\end{lstlisting}
+  \item Identify the SD card device (do this carefully --- writing to the
+  wrong device destroys data on it):
+\begin{lstlisting}[style=shell]
+lsblk
+\end{lstlisting}
+  \item Flash it:
+\begin{lstlisting}[style=shell]
+sudo dd if=ubuntu-20.04.5-preinstalled-server-arm64+raspi.img of=/dev/sdX bs=4M status=progress conv=fsync
+\end{lstlisting}
+  \item Boot the Pi with the card inserted, plus keyboard, mouse, display,
+  and an Ethernet cable for first boot. Default credentials:
+  \texttt{ubuntu}/\texttt{ubuntu} (you will be asked to change the password
+  on first login).
+\end{enumerate}
+
+\section{Desktop environment (optional)}
+
+Only needed if you want a graphical session on the Pi itself (not required
+for this project's normal operation, which runs headless):
+
+\begin{lstlisting}[style=shell]
+sudo apt update
+sudo apt install ubuntu-desktop
+sudo reboot
+\end{lstlisting}
+
+\section{Enabling headless SSH access}
+
+If SSH was not already enabled at flash time (Raspberry Pi Imager's advanced
+options support this directly), enable it on first boot:
+
+\begin{lstlisting}[style=shell]
+sudo systemctl enable ssh
+sudo systemctl start ssh
+sudo systemctl status ssh   # optional: confirm it's running
+\end{lstlisting}
+
+Find the Pi's IP address on the local network:
+
+\begin{lstlisting}[style=shell]
+hostname -I
+\end{lstlisting}
+
+Connect from the client machine, first with a password, then switch to
+key-based login:
+
+\begin{lstlisting}[style=shell]
+# First connection (password):
+ssh <username>@<pi_ip>
+
+# On the client: generate a key
+ssh-keygen -t ed25519 -C "client-key"
+
+# Copy it to the Pi
+ssh-copy-id <username>@<pi_ip>
+
+# Test key-based login (no password prompt expected)
+ssh <username>@<pi_ip>
+\end{lstlisting}
+
+A convenient alias, in \texttt{\textasciitilde/.ssh/config} on the client:
+
+\begin{lstlisting}[style=code]
+Host raspberry
+   HostName <pi_ip>
+   User <username>
+   IdentityFile ~/.ssh/id_ed25519
+\end{lstlisting}
+
+\textbf{Note the exact directive name: \texttt{IdentityFile}, not
+\texttt{IdentifyFile}} --- a common typo that OpenSSH silently rejects the
+config over.
+
+Connect with \texttt{ssh raspberry} from then on.
+
+\textbf{Optional hardening, once key-based login is confirmed working:}
+
+\begin{lstlisting}[style=shell]
+# Firewall
+sudo apt install -y ufw
+sudo ufw allow OpenSSH
+sudo ufw enable
+
+# Disable password authentication (only after keys work!)
+sudo nano /etc/ssh/sshd_config
+# Ensure: PasswordAuthentication no
+#         PubkeyAuthentication yes
+sudo systemctl restart ssh
+\end{lstlisting}
+
+\section{Building Python 3.7 from source}
+
+The RoboMaster SDK requires Python~3.7 specifically; Ubuntu~20.04 ships a
+newer default Python, so 3.7 is built from source into a separate location
+rather than replacing the system Python.
+
+\begin{lstlisting}[style=shell]
+sudo apt update
+sudo apt install -y build-essential libssl-dev zlib1g-dev \
+    libreadline-dev libsqlite3-dev libbz2-dev libexpat1-dev \
+    liblzma-dev tk-dev libffi-dev uuid-dev
+
+cd ~/Python-3.7.17/
+./configure --enable-optimizations
+make -j4
+sudo make altinstall
+\end{lstlisting}
+
+Using \texttt{altinstall} (not \texttt{install}) is deliberate: it installs
+as \texttt{python3.7} alongside the system Python, without overwriting it.
+
+Confirm the SSL module built correctly (a common source of a broken venv
+later if skipped):
+
+\begin{lstlisting}[style=shell]
+python3.7 -c "import ssl; print(ssl.OPENSSL_VERSION)"
+\end{lstlisting}
+
+\section{Virtual environment and the RoboMaster SDK}
+
+\begin{lstlisting}[style=shell]
+python3.7 -m venv env
+source env/bin/activate
+pip install --upgrade pip
+pip install robomaster numpy
+pip install "opencv-python==4.5.5.64"
+\end{lstlisting}
+
+The pinned OpenCV version is a historically validated compatible version for
+this SDK/Python combination on this hardware; it is not a hard requirement
+enforced elsewhere in this manual, and later versions have since been used
+successfully on the lab PC (Chapter~\ref{ch:carolus-node}) without issue.
+
+\section{Installing ROS Noetic}
+
+\begin{lstlisting}[style=shell]
+sudo sh -c 'echo "deb http://packages.ros.org/ros/ubuntu \
+$(lsb_release -sc) main" > /etc/apt/sources.list.d/ros-latest.list'
+sudo apt install curl
+curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc \
+    | sudo apt-key add -
+sudo apt update
+
+# Full desktop version:
+sudo apt install ros-noetic-desktop-full
+# --- or, if the Pi struggles with the desktop version's resource use ---
+sudo apt install ros-noetic-ros-base
+
+echo "source /opt/ros/noetic/setup.bash" >> ~/.bashrc
+source ~/.bashrc
+
+sudo apt install python3-rosdep python3-rosinstall \
+    python3-rosinstall-generator python3-wstool build-essential
+sudo rosdep init
+rosdep update
+\end{lstlisting}
+
+On this project's Pi, the lighter \texttt{ros-noetic-ros-base} is what
+actually runs day to day --- the Pi only needs to run
+\texttt{rm\_cam\_beacon.py} (Chapter~\ref{ch:camera}), not a full desktop
+ROS toolchain.
+
+\section{Getting this project's code onto the Pi}
+\label{sec:pi-code}
+
+The Pi needs this project's own workspace --- specifically
+\texttt{carolus\_ws/src/robomaster\_cam/}, which holds
+\texttt{rm\_cam\_beacon.py} (Chapter~\ref{ch:camera}) and its companion
+scripts. Clone the project's repository directly onto the Pi:
+
+\begin{lstlisting}[style=shell]
+git clone git@github.com:Arracheur2Bonnet/robotmaster.git carolus_ws
+\end{lstlisting}
+
+This is a private repository; you need an SSH key registered against it
+(ask the project supervisor for collaborator access if you do not already
+have it) --- do not substitute a personal access token pasted into the
+clone URL for this. If cloning over SSH is not set up, an HTTPS clone with
+your own GitHub credentials works the same way:
+
+\begin{lstlisting}[style=shell]
+git clone https://github.com/Arracheur2Bonnet/robotmaster.git carolus_ws
+\end{lstlisting}
+
+No build step is needed on the Pi side for \texttt{robomaster\_cam} ---
+it is a pure-Python package, run directly (Chapter~\ref{ch:camera}).
+
+\section{A pitfall to expect at first launch}
+
+The RNDIS network interface (Chapter~\ref{ch:network}) does not come up
+automatically at Pi boot, even once everything above is configured
+correctly. This is expected --- Chapter~\ref{ch:network} gives the exact
+two commands to run at the start of every session.
+
+\chapter{Network Setup (RNDIS)}
+\label{ch:network}
+
+The robot exposes an RNDIS virtual Ethernet interface over the same USB
+cable used for the SDK connection. The robot holds a fixed address,
+\texttt{192.168.42.2}; the Raspberry Pi must be configured on the same
+subnet.
+
+\section{Bringing up the link}
+
+\textbf{Run these two commands at the start of every session, on the Pi.}
+The interface does not persist across Pi reboots --- this is expected
+behavior on this hardware, not a fault, and there is no step elsewhere in
+this manual that avoids needing it.
+
+\begin{lstlisting}[style=shell]
+sudo ip link set eth1 up
+sudo ip addr add 192.168.42.3/24 dev eth1
+\end{lstlisting}
+
+If the interface is not named \texttt{eth1} on your system, identify it
+first:
+
+\begin{lstlisting}[style=shell]
+ip -br addr
+# look for eth1 / usb0 / enx<MAC> -- whichever one is meant to carry 192.168.42.x
+\end{lstlisting}
+
+\textbf{Never assign \texttt{192.168.42.2} to the Pi} --- that address
+belongs to the robot.
+
+\section{Verifying the link}
+
+\begin{lstlisting}[style=shell]
+ping -c 4 192.168.42.2
+\end{lstlisting}
+
+Expect 0\% packet loss, sub-millisecond round-trip time once the interface
+is correctly up.
+
+\section{A quick automated alternative}
+
+Rather than typing the two commands above by hand every session, they can be
+scripted:
+
+\begin{lstlisting}[style=shell]
+sudo ip link set eth1 up && sudo dhclient eth1
+\end{lstlisting}
+
+This project's own operator tooling (not covered in this manual) runs the
+equivalent of the first two-command form automatically as part of its first
+launch step, over SSH from the lab PC.
+
+\section{Lab PC hostname resolution}
+
+If any ROS tool on the lab PC (e.g.\ \texttt{rqt\_image\_view}) shows a
+black image or errors with something like
+\texttt{Couldn't find AF\_INET address for [ubuntu]}, add the Pi's hostname
+to \texttt{/etc/hosts} on the lab PC:
+
+\begin{lstlisting}[style=shell]
+echo "192.168.0.103 ubuntu" | sudo tee -a /etc/hosts
+\end{lstlisting}
+
+Unlike the RNDIS interface on the Pi, this fix is permanent on the lab PC
+and does not need to be repeated.
+
+\section{Summary of addresses used in this manual}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Device & Address \\
+\midrule
+Robot (over RNDIS) & \texttt{192.168.42.2} \\
+Raspberry Pi (over RNDIS, to the robot) & \texttt{192.168.42.3} \\
+Raspberry Pi (on the local network, to the lab PC) & \texttt{192.168.0.103} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The last of these is a DHCP-assigned local-network address and may differ on
+a different network; find it with \texttt{hostname -I} run on the Pi
+(Chapter~\ref{ch:raspberrypi}).
+
+\chapter{The Camera and Robot Bridge}
+\label{ch:camera}
+
+\section{Design: a single SDK connection}
+
+The Pi runs exactly one script that ever connects to the robot's SDK:
+\texttt{rm\_cam\_beacon.py} (in
+\texttt{carolus\_ws/src/robomaster\_cam/scripts/}). It is not just a camera
+capture script --- it is this project's single bridge to the entire SDK:
+camera stream, chassis drive, gimbal control, odometry, and IMU all go
+through this one script and its one connection.
+
+\textbf{This is a deliberate design choice, not an incidental one.} Two
+independent scripts each holding their own
+\texttt{ep.initialize(conn\_type="rndis")} connection at the same time
+silently blocks robot motion commands after a few calls, with no error
+surfaced. \textbf{Never run any other script that calls
+\texttt{robot.Robot().initialize(...)} while \texttt{rm\_cam\_beacon.py} is
+running.}
+
+\section{Starting the bridge}
+
+On the Pi, with the RNDIS link up (Chapter~\ref{ch:network}) and the Python
+3.7 virtual environment active (Chapter~\ref{ch:raspberrypi}):
+
+\begin{lstlisting}[style=shell]
+source ~/env/bin/activate
+python3.7 carolus_ws/src/robomaster_cam/scripts/rm_cam_beacon.py
+\end{lstlisting}
+
+In normal operation this is launched automatically by this project's own
+operator tooling, over SSH from the lab PC --- it is not usually started by
+hand.
+
+\section{What it connects to}
+
+\begin{lstlisting}[style=code,language=Python]
+self.ep = robot.Robot()
+self.ep.initialize(conn_type="rndis")
+self.chassis = self.ep.chassis
+self.gimbal  = self.ep.gimbal
+self.cam     = self.ep.camera
+self.cam.start_video_stream(display=False)
+\end{lstlisting}
+
+From there it subscribes to the SDK's own push-data channels
+(\texttt{sub\_position}, \texttt{sub\_attitude}, \texttt{sub\_velocity},
+\texttt{sub\_imu}, \texttt{sub\_angle} for the gimbal), converts each
+callback into a ROS message, and publishes:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Topic & Content \\
+\midrule
+\texttt{/camera/color/image\_raw} & Camera frames (\texttt{sensor\_msgs/Image}) \\
+\texttt{/odom} & Wheel odometry, republished from the SDK \\
+\texttt{/imu} & Raw IMU (accelerometer + gyroscope), 50\,Hz \\
+\texttt{/carolus/gimbal\_yaw\_rel} & Gimbal yaw relative to the chassis \\
+\texttt{/carolus/gimbal\_yaw\_ground} & Gimbal yaw in the world frame (absolute) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+and subscribes to a small set of control topics used by this project's own
+higher-level tooling (not covered in this manual):
+\texttt{/pose} (Carolus's own output, consumed here to drive autonomous
+behavior), \texttt{/carolus/mode}, \texttt{/carolus/cmd\_vel},
+\texttt{/carolus/gimbal\_vel}, \texttt{/carolus/wheels},
+\texttt{/carolus/gimbal\_lock}, \texttt{/carolus/gimbal\_lock\_period}, and
+\texttt{/carolus/gimbal\_recenter}.
+
+\section{Verifying it is running}
+
+From the lab PC, with the ROS master reachable:
+
+\begin{lstlisting}[style=shell]
+rostopic list | grep camera
+rostopic hz /camera/color/image_raw
+rostopic echo -n1 /odom
+rostopic echo -n1 /imu
+\end{lstlisting}
+
+Expect a steady rate on \texttt{/camera/color/image\_raw} (roughly
+10--15\,Hz) and at least one non-empty message on \texttt{/odom} and
+\texttt{/imu}. If the camera topic is silent, confirm the RNDIS link
+(Chapter~\ref{ch:network}) before suspecting the script itself --- a dead
+network link and a dead camera stream look identical from this check alone.
+
+\section{Gimbal yaw: two signals, two different meanings}
+
+\texttt{/carolus/gimbal\_yaw\_rel} and \texttt{/carolus/gimbal\_yaw\_ground}
+are not interchangeable, and confusing them is a documented source of bugs
+in this project's history:
+
+\begin{itemize}
+  \item \textbf{\texttt{gimbal\_yaw\_ground}} is the gimbal's heading in the
+  world frame. The S1's gimbal is yaw-stabilized: when the chassis rotates
+  without an explicit gimbal command, the gimbal holds its absolute heading.
+  This value stays essentially constant across a chassis rotation.
+  \item \textbf{\texttt{gimbal\_yaw\_rel}} is the gimbal's angle
+  \emph{relative to the chassis}. Because the gimbal holds its world heading
+  while the chassis turns underneath it, this value \emph{absorbs} the
+  chassis's rotation --- it is not a stable ``how far off is the beacon''
+  signal across a chassis maneuver, it is a signal that actively tracks how
+  much the chassis has turned since the gimbal last held still relative to
+  it.
+\end{itemize}
+
+Use \texttt{gimbal\_yaw\_ground} when you need to know the camera's absolute
+heading in the world. Use \texttt{gimbal\_yaw\_rel} only for what it
+actually is: the angle between the gimbal and the chassis at this instant,
+not a proxy for beacon bearing across a chassis rotation.
+
+\section{The internal camera vs.\ an external D455}
+
+This robot uses its own internal camera exclusively. If, when following any
+inherited reference material, you encounter instructions to launch
+\texttt{rs\_camera.launch} or install \texttt{librealsense}, that material
+concerns a different camera than the one on this robot and does not apply
+here --- see the calibration discussion in Chapter~\ref{ch:calibration} for
+where that material remains genuinely useful (the calibration
+\emph{technique}, not the camera driver).
+
+\chapter{Camera Calibration}
+\label{ch:calibration}
+
+\section{Current values in use}
+
+The intrinsics and distortion coefficients currently loaded by
+\texttt{testcarolus.launch} (Chapter~\ref{ch:carolus-node}) are:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Parameter & Value \\
+\midrule
+$f_x$ & 546.1957 \\
+$f_y$ & 547.0838 \\
+$c_x$ & 575.6041 \\
+$c_y$ & 372.1876 \\
+Distortion (plumb\_bob: $k_1,k_2,p_1,p_2,k_3$) & $-0.1479,\ 0.1452,\ -0.0023,\ 0.0025,\ 0.0070$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+These come from \texttt{robomaster\_cam/config/camera\_info.yaml}
+(\texttt{camera\_name: robomaster\_s1}, $1280\times720$), validated
+pragmatically --- Carolus produces a stable, coherent pose with these values
+in practice. They are \textbf{not} the result of a formal metric
+calibration campaign (checkerboard/AprilGrid target, dedicated calibration
+tool run to convergence with a reported reprojection error). If you are
+setting up a new unit, or want a rigorous calibration, follow the procedure
+below rather than reusing these values --- they are specific to this
+project's camera and are not guaranteed to transfer to a different physical
+unit.
+
+\section{Recommended method: a checkerboard with the MATLAB Camera
+Calibration Toolbox}
+
+This procedure has not yet been run against this project's own camera ---
+the values in the previous section are what is actually loaded today. It is
+included here as the recommended path for whoever runs the next
+calibration, based on a direct comparison against Kalibr on a comparable
+camera (Section~\ref{sec:kalibr-alt}).
+
+\begin{enumerate}
+  \item Print a checkerboard target with known square size (25\,mm squares
+  is a proven working size for this class of camera).
+  \item Capture a set of images of the board with the robot's camera
+  (Chapter~\ref{ch:camera}): at least 10 images, 15 or more for better
+  accuracy. The board should occupy roughly 20--25\% of the frame area, and
+  be tilted more than 45\textdegree{} from the camera's optical axis in each
+  shot to avoid detection errors. Capture from a wide variety of positions
+  and orientations across the field of view.
+  \item In MATLAB (desktop or MATLAB Online, no additional software
+  required): open the \textbf{Camera Calibration app} (Apps tab), add the
+  captured images, select the checkerboard pattern with the correct square
+  size, and enable \textbf{tangential distortion} and \textbf{three radial
+  distortion coefficients} (this camera class shows moderate wide-angle
+  distortion that the default two-coefficient model under-fits).
+  \item Run the calibration. Export the resulting coefficients to the MATLAB
+  workspace and generate the calibration script --- this script contains the
+  intrinsic matrix, distortion coefficients, and reprojection errors in a
+  form that can be transcribed directly into \texttt{testcarolus.launch}'s
+  \texttt{fx}/\texttt{fy}/\texttt{cx}/\texttt{cy}/\texttt{distortion}
+  parameters (Chapter~\ref{ch:carolus-node}).
+\end{enumerate}
+
+\section{Alternative / complementary method: Kalibr}
+\label{sec:kalibr-alt}
+
+Kalibr (ETH Zürich) is the standard tool if a camera--IMU joint calibration
+is needed (required for any future MINS/visual-inertial integration, not
+needed for Carolus's own pose estimation, which does not use the IMU).
+
+\subsection{Target}
+
+A $6\times6$ AprilGrid, tag size $0.089\,\mathrm{m}$, tag spacing $0.3\times$
+tag size (an $\sim\!0.8\times0.8\,\mathrm{m}$ printed board). Measure the
+actual printed square size and use the measured value, not the nominal one
+--- even a $\sim\!1\%$ sizing error biases the recovered scale.
+
+\begin{lstlisting}[style=code]
+target_type: 'aprilgrid'
+tagCols: 6
+tagRows: 6
+tagSize: 0.089        # metres -- MEASURE your own printed board
+tagSpacing: 0.3        # ratio of gap to tag size
+codeOffset: 0
+\end{lstlisting}
+
+\subsection{Installing Kalibr}
+
+\begin{lstlisting}[style=shell]
+cd ~/camera_ws/src
+git clone https://github.com/ethz-asl/kalibr.git
+cd ~/camera_ws
+rosdep install --from-paths src --ignore-src -y
+sudo apt install python3-rosdep python3-rosinstall python3-rosinstall-generator \
+    build-essential python3-catkin-tools
+sudo apt-get install libv4l-dev doxygen python3-igraph
+sudo apt install python3-pip
+pip install wxPython   # can take a long time -- be patient
+catkin_make -DCMAKE_BUILD_TYPE=Release
+source ~/camera_ws/devel/setup.bash
+\end{lstlisting}
+
+\textbf{Do not separately clone \texttt{numpy\_eigen} or
+\texttt{Schweizer-Messer}} --- Kalibr bundles its own copies, and cloning
+them independently into \texttt{src/} produces duplicate-package build
+errors. If you hit \texttt{ModuleNotFoundError: No module named 'sm'} after
+building, verify with:
+
+\begin{lstlisting}[style=shell]
+python3 -c "import sm; print(sm.__file__)"
+\end{lstlisting}
+
+and if it fails, remove any independently-cloned copy of
+\texttt{Schweizer-Messer}, then rebuild:
+
+\begin{lstlisting}[style=shell]
+rm -rf build/ devel/ install/
+catkin_make -DCMAKE_BUILD_TYPE=Release
+\end{lstlisting}
+
+\subsection{Capturing data and running the calibration}
+
+Record a rosbag while moving the camera (or the robot itself, for a joint
+camera--IMU calibration) through the AprilGrid's field of view for 60--90
+seconds, exciting all six degrees of freedom (translate near/far/side to
+side, rotate about all three axes, not just yaw).
+
+\begin{lstlisting}[style=shell]
+rosbag record -O calib_data.bag /camera/color/image_raw
+\end{lstlisting}
+
+Run the calibration:
+
+\begin{lstlisting}[style=shell]
+export KALIBR_MANUAL_FOCAL_LENGTH_INIT=1
+kalibr_calibrate_cameras \
+    --bag calib_data.bag --target target.yaml \
+    --models pinhole-radtan \
+    --topics /camera/color/image_raw \
+    --approx-sync 0.01
+\end{lstlisting}
+
+If Kalibr reports \texttt{Initialization of focal length failed}, provide a
+manual seed value (\texttt{600} is a reasonable starting guess for a
+$640\times480$-class image; scale proportionally for other resolutions).
+
+\subsection{Reading the result}
+
+Kalibr writes three files: a \texttt{.txt} summary, a \texttt{.pdf} of
+reprojection-error plots, and a \texttt{.yaml} with the calibration
+parameters. \textbf{Target: reprojection error under 0.2--0.5 pixels.} In
+practice, a completed run can land a little outside that target (observed:
+0.59--0.67\,px std on a comparable camera) without necessarily being
+unusable --- treat the target as a goal to aim for, not a hard pass/fail
+gate, and judge the calibration by whether downstream pose estimates are
+stable and physically plausible.
+
+\section{Camera--IMU time offset}
+
+If a Kalibr camera--IMU joint calibration is run, its output
+\texttt{timeshift\_cam\_imu} is in \textbf{seconds}, with the convention
+$t_{\mathrm{imu}} = t_{\mathrm{cam}} + \mathrm{shift}$. This matches
+OpenVINS's own internal convention exactly --- the value can be used
+directly with no sign flip if it is later consumed by an OpenVINS-based
+filter.
+
+\chapter{Building and Launching Carolus}
+\label{ch:carolus-node}
+
+Carolus (the ROS package name is \texttt{carolus\_astrobee}) is built on the
+\textbf{lab PC}, not the Pi. It has no SDK connection of its own --- it only
+consumes \texttt{/camera/color/image\_raw} (published by
+\texttt{rm\_cam\_beacon.py} over the network from the Pi, Chapter~\ref{ch:camera})
+and publishes a pose.
+
+\section{Getting this project's code onto the lab PC}
+
+Clone the project's repository onto the lab PC --- it contains
+\texttt{carolus\_node/} (the launch files and configuration),
+\texttt{libuvgs\_astrobee/} (Carolus's own C++ source, already patched for
+this robot), \texttt{ff\_msgs/} (a message-definition dependency), and
+\texttt{shortcuts/} (this project's operator tooling, not covered in this
+manual):
+
+\begin{lstlisting}[style=shell]
+git clone git@github.com:Arracheur2Bonnet/robotmaster.git carolus_ws
+# or, over HTTPS with your own GitHub credentials:
+# git clone https://github.com/Arracheur2Bonnet/robotmaster.git carolus_ws
+\end{lstlisting}
+
+This is a private repository; you need collaborator access (ask the project
+supervisor) and an SSH key or GitHub credentials of your own --- never a
+token pasted directly into a clone command shared between people.
+
+\section{Building on Ubuntu 20.04}
+
+If the lab PC is on Ubuntu~20.04 (the officially supported target for ROS
+Noetic), building is standard:
+
+\begin{lstlisting}[style=shell]
+cd ~/carolus_ws
+catkin_make --pkg ff_msgs   # build this dependency first, avoids ordering issues
+catkin_make
+source devel/setup.bash
+\end{lstlisting}
+
+Skip the rest of this section and go to Section~\ref{sec:launching}.
+
+\section{Building on Ubuntu 22.04 (unsupported, requires fixes)}
+
+ROS Noetic officially targets Ubuntu~20.04 only. If the lab PC runs 22.04,
+four system-level fixes are needed before \texttt{catkin\_make} succeeds, and
+a fifth fix is needed at launch time.
+
+\subsection{Fix 1: glibc symlinks}
+
+\texttt{librt}, \texttt{libpthread}, and \texttt{libdl} were merged into
+\texttt{libc.so.6} starting with glibc~2.34 (shipped in 22.04); older
+binaries and build systems still look for the separate files.
+
+\begin{lstlisting}[style=shell]
+sudo ln -sf /usr/lib/x86_64-linux-gnu/libc.so.6 /usr/lib/x86_64-linux-gnu/librt.so
+sudo ln -sf /usr/lib/x86_64-linux-gnu/libc.so.6 /usr/lib/x86_64-linux-gnu/libpthread.so
+sudo ln -sf /usr/lib/x86_64-linux-gnu/libc.so.6 /usr/lib/x86_64-linux-gnu/libdl.so
+\end{lstlisting}
+
+\subsection{Fix 2: libpython3.8 symlink}
+
+Referenced by \texttt{rospack} (an official ROS Noetic package):
+
+\begin{lstlisting}[style=shell]
+sudo ln -sf /usr/lib/x86_64-linux-gnu/libpython3.8.so.1 /usr/lib/x86_64-linux-gnu/libpython3.8.so
+\end{lstlisting}
+
+\subsection{Fix 3: Boost 1.71 (real libraries, not symlinks)}
+
+ROS Noetic's official binaries need Boost~1.71; 22.04 ships 1.74, which is
+ABI-incompatible for the libraries ROS actually links (regex, filesystem).
+Symlinking will not work here --- the real 1.71 \texttt{.so} files are
+needed:
+
+\begin{lstlisting}[style=shell]
+# Download from http://old-releases.ubuntu.com/ubuntu/pool/{main,universe}/b/boost1.71/
+# the following packages: libboost-{chrono,date-time,filesystem,program-options,
+# regex,system,thread}1.71.0
+
+dpkg-deb -x <package>.deb <extract_dir>
+# copy each extracted .so.1.71.0 file into /usr/lib/x86_64-linux-gnu/
+sudo ldconfig
+\end{lstlisting}
+
+\textbf{Pitfall:} if a symlink already exists at the destination path
+(pointing at the 1.74 library), a plain \texttt{cp} writes \emph{through}
+the symlink and corrupts the real system 1.74 file. Always remove the
+symlink first:
+
+\begin{lstlisting}[style=shell]
+sudo rm -f /usr/lib/x86_64-linux-gnu/libboost_<name>.so.1.74.0   # if it is a symlink
+# then copy the real 1.71 file to that path
+\end{lstlisting}
+
+If this happens anyway, recovery is a straightforward package reinstall:
+
+\begin{lstlisting}[style=shell]
+sudo apt install --reinstall libboost-{chrono,date-time,filesystem,program-options,regex,system,thread}1.74.0
+\end{lstlisting}
+
+\subsection{Fix 4: ICU 67}
+
+A dependency of Boost~1.71's regex component; 22.04 ships 66/70, not 67.
+
+\begin{lstlisting}[style=shell]
+# Download libicu67 from old-releases.ubuntu.com
+# copy libicuuc.so.67*, libicui18n.so.67*, libicudata.so.67* into /usr/lib/x86_64-linux-gnu/
+sudo ldconfig
+\end{lstlisting}
+
+\subsection{Building, after the four fixes}
+
+\begin{lstlisting}[style=shell]
+cd ~/carolus_ws
+rm -rf build/ devel/
+catkin_make --pkg ff_msgs
+catkin_make
+source devel/setup.bash
+\end{lstlisting}
+
+\subsection{Fix 5: LD\_PRELOAD at launch (a runtime fix, not a build fix)}
+
+A binary compiled on 22.04 links against \texttt{liblog4cxx.so.12} and
+\texttt{libtinyxml2.so.9}; ROS Noetic's own libraries
+(\texttt{librosconsole.so}, \texttt{libimage\_transport.so}) expect
+\texttt{.so.10}/\texttt{.so.6}. Both versions load at runtime and the 22.04
+version wins global symbol resolution, which segfaults inside
+\texttt{ros::console::initialize()}. The fix, scoped to the affected node in
+its launch file (already applied in the launch file below, and in
+\texttt{ekf\_lite.launch}):
+
+\begin{lstlisting}[style=code,language=XML]
+<env name="LD_PRELOAD"
+     value="/usr/lib/x86_64-linux-gnu/liblog4cxx.so.10:/usr/lib/x86_64-linux-gnu/libtinyxml2.so.6" />
+\end{lstlisting}
+
+Apply the same pattern to any other C++ node recompiled under 22.04 that
+segfaults the same way on startup.
+
+\subsection{If an additional ROS package needs to be built from source}
+
+Packages unavailable via \texttt{apt} on 22.04 (e.g.\ \texttt{robot\_localization},
+for planned EKF sensor-fusion work) can fail with CMake errors
+about a missing \texttt{<pkg>Config.cmake} or a nonexistent
+\texttt{orocos\_kdl} include path --- seven packages
+(\texttt{eigen\_conversions}, \texttt{tf2\_geometry\_msgs},
+\texttt{kdl\_parser}, \texttt{kdl\_conversions},
+\texttt{robot\_state\_publisher}, \texttt{tf2\_kdl},
+\texttt{tf\_conversions}) are broken this way by the 20.04$\to$22.04
+packaging difference. Without root access to fix the real files under
+\texttt{/opt/ros/noetic/}, the working solution is a set of locally
+corrected copies in \texttt{carolus\_ws/cmake\_shims/<pkg>\_fix/}, given
+priority via \texttt{list(PREPEND CMAKE\_PREFIX\_PATH ...)} in the
+\texttt{CMakeLists.txt} of whichever package is being built.
+
+\textbf{Stale-cache pitfall:} if a shim is created only after a first failed
+build attempt, \texttt{<pkg>\_DIR} may stay cached with the old broken path.
+Clear just that variable rather than wiping the whole build:
+
+\begin{lstlisting}[style=shell]
+cmake -U <pkg>_DIR
+\end{lstlisting}
+
+\section{Launching Carolus}
+\label{sec:launching}
+
+The full, current launch file, \texttt{carolus\_node/launch/testcarolus.launch}:
+
+\begin{lstlisting}[style=code,language=XML]
+<launch>
+    <node name="carolus_astrobee_rex" pkg="carolus_astrobee" type="carolus_astrobee" output="screen">
+
+        <!-- Ubuntu 22.04 runtime fix -- see Fix 5 above -->
+        <env name="LD_PRELOAD"
+             value="/usr/lib/x86_64-linux-gnu/liblog4cxx.so.10:/usr/lib/x86_64-linux-gnu/libtinyxml2.so.6" />
+
+        <!-- Execution -->
+        <param name="num_threads" value="1" />
+        <param name="queue_size" value="10" />
+
+        <!-- Blob filtering -->
+        <param name="min_circularity" value="0.6" />
+        <param name="saturation_threshold" value="80" />
+        <param name="min_area" value="8.0" />
+        <param name="max_area" value="1800.0" />
+        <param name="max_distance_lim" value="1000.0" />
+        <!-- Blue LEDs: OpenCV hue (0-180) is approximately 100-140.
+             Tune live against /postprocessed/image if the beacon color changes. -->
+        <param name="lb_hue" value="90.0" />
+        <param name="ub_hue" value="140.0" />
+
+        <!-- Preprocessing -->
+        <param name="kernel_size_gaussian" value="3" />
+        <param name="kernel_size_morph" value="3" />
+        <param name="image_threshold" value="190" />
+
+        <!-- Camera selection -->
+        <param name="nav_cam" value="true" />
+        <param name="dock_cam" value="false" />
+        <param name="fisheye" value="false" />
+        <param name="fov" value="true" />
+        <param name="mono" value="false" />
+
+        <!-- Robot label -- a legacy name from the Astrobee simulation template
+             this launch file was originally derived from. It has no functional
+             effect on this robot; left as-is rather than renamed. -->
+        <param name="bot_name" value="wannabee" />
+
+        <!-- Camera intrinsics -- see Chapter on Calibration -->
+        <param name="fx" value="546.1957" />
+        <param name="fy" value="547.0838" />
+        <param name="cx" value="575.6041" />
+        <param name="cy" value="372.1876" />
+        <param name="distortion" value="-0.1479, 0.1452, -0.0023, 0.0025, 0.0070" />
+
+        <!-- Topics -->
+        <param name="dock_cam_topic" value="/hw/cam_dock" />
+        <param name="nav_cam_topic" value="/camera/color/image_raw" />
+        <param name="processed_image_topic" value="/postprocessed/image" />
+        <!-- pose_topic must stay different from /pose: the C++ node advertises
+             pose_topic_ as ff_msgs/VisualLandmarks and /pose as PoseStamped;
+             if the two names coincide, only one publisher survives. -->
+        <param name="pose_topic" value="/loc/ar/features" />
+
+        <param name="benchtest" value="true" />
+
+        <!-- Outlier rejection (a moving-window filter on successive poses) -->
+        <param name="filter_size" value="7" />
+        <param name="translation_threshold" value="0.5" />
+        <param name="rotation_threshold" value="0.3" />
+        <param name="fifo_on" value="true" />
+
+        <!-- Known beacon geometry, metres, in Carolus's own (left-handed) frame -->
+        <param name="known_points" value="0.0825 0.0 0.0 -0.0825 0.0 0.0 0.0 0.072 0.0 0.0 0.0 0.0555" />
+
+    </node>
+
+    <node pkg="tf2_ros" type="static_transform_publisher" name="static_honey_body_tf"
+          args="0 0 0 0 0 0 camera_link honey/body" />
+</launch>
+\end{lstlisting}
+
+Launch it (after sourcing the workspace):
+
+\begin{lstlisting}[style=shell]
+roslaunch carolus_node testcarolus.launch
+\end{lstlisting}
+
+\section{Verifying it is running}
+
+\begin{lstlisting}[style=shell]
+rosnode info /carolus_astrobee_rex
+rostopic hz /pose
+rostopic hz /postprocessed/image
+\end{lstlisting}
+
+With a beacon visible to the camera, \texttt{/pose} publishes a
+\texttt{geometry\_msgs/PoseStamped}. Visualize blob detection in RViz by
+adding an \textbf{Image} display on \texttt{/postprocessed/image}: correctly
+detected blobs appear as small circles over the live feed.
+
+\section{Beacon geometry and blob-filtering parameters}
+
+The parameters most likely to need tuning for a new beacon or lighting
+condition:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Parameter & Meaning \\
+\midrule
+\texttt{min\_circularity} & Rejects non-round contours; closer to 1 is stricter. \\
+\texttt{saturation\_threshold} & Rejects low-saturation pixels (in HSV) before hue filtering. \\
+\texttt{min\_area}, \texttt{max\_area} & Rejects contours outside this pixel-area range. \\
+\texttt{max\_distance\_lim} & Rejects candidate 4-blob groups whose pairwise distances exceed this. \\
+\texttt{lb\_hue}, \texttt{ub\_hue} & Hue range (degrees, 0--360) the beacon's LEDs must fall within. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\texttt{known\_points} is the beacon's four LED positions in metres, in
+Carolus's own left-handed frame, with one point deliberately off the plane
+of the other three (needed for P4P to resolve pose unambiguously).
+\textbf{These are a physical measurement of this project's specific beacon,
+not a universal constant} --- the same caveat as the camera intrinsics in
+Chapter~\ref{ch:calibration}. A beacon built to different dimensions needs
+these four points re-measured and substituted; reusing this project's values
+against a differently-sized beacon will make the P4P solve fail silently or
+produce a plausible-looking but wrong pose.
+
+\end{document}
