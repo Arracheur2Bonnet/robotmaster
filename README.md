@@ -57,7 +57,7 @@ Launching the stack:
 python3 shortcuts/carolus_launcher.py
 ```
 
-Then, in order, the launcher's 4 buttons:
+Then, in order, the launcher's 5 buttons:
 
 | Button | What runs | Unlocked when |
 |---|---|---|
@@ -65,6 +65,7 @@ Then, in order, the launcher's 4 buttons:
 | 2 · Camera + Beacon | SSH → `rm_cam_beacon.py` + `cam_view_helper.py` | `/camera/color/image_raw` published |
 | 3 · Carolus Astrobee | `roslaunch carolus_node testcarolus.launch` | manual |
 | 4 · TF Broadcaster | SSH → `carolus_tf_broadcaster.py` on the Pi | manual |
+| 5 · Docking | `beacon_docking.py` (lab PC) — `ALIGN_ONLY`/`APPROACH_ONLY`/`START`/`ABORT` panel | first `[DOCKSTATUS]` line seen |
 
 **Sanity check that the pipeline is actually working**: with all 4
 terminals running and an LED beacon in the camera's field of view,

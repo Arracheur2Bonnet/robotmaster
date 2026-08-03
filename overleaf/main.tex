@@ -62,6 +62,120 @@ teleoperation, live status (beacon detection indicator, minimap, camera
 preview with a reprojected-beacon HUD), and one-click sequential launch of
 the ROS stack.
 
+\section{Project History and Continuity with Prior Work}
+\label{sec:history}
+
+Per the project supervisor's explicit guidance,\footnote{Email correspondence,
+2026-07-03: ``For the documentation it seems the best would be to use
+Overleaf. We can start with the documents left by Quentin, eliminate the
+portions that are wrong, and document the new solutions you are
+implementing.''} this section documents what was inherited from the
+project's prior iteration, keeps what was correctly worked out, and states
+explicitly which parts were found not to work and why -- rather than
+silently discarding that history.
+
+\subsection{Prior Architecture (Quentin, March 2026)}
+The hardware identification (rooted S1, Pi 4B at the turret, RNDIS link),
+the Carolus/UVGS-2 lineage from NASA's Astrobee SVGS system, and the general
+shape of the pipeline (beacon detection $\to$ pose $\to$ motion command)
+were correctly established by the previous iteration of the project and
+carried forward unchanged.\footnote{Supervisor's own assessment, email
+2026-07-03: ``the hardware identification, the Astrobee/UVGS-2 lineage, and
+the general pipeline shape were all correctly worked out and saved me real
+time.''} The control layer itself, however, was substantially different
+from the current one and was not carried forward. Quentin's tutorial
+(\emph{Carolus Robot -- Full Operation Tutorial}, March 2026) documents a
+five-pane \texttt{tmux} launcher (\texttt{run\_stack.sh}) starting, in
+order, \texttt{roscore} with the Pi's \texttt{eth1} interface brought up
+manually, a camera-capture script, \texttt{rm\_cam\_ros.py}, a
+\texttt{rosbridge\_websocket} server, and \texttt{testcarolus.launch}
+(Source: Carolus Tutorial.pdf, \S3, p.2--3). The control script itself
+(\texttt{testco6.py}) ran in a separate Python 3.7 virtual environment and
+communicated with ROS over \texttt{roslibpy}/rosbridge rather than a direct
+\texttt{rospy} import -- a workaround for a Python-version mismatch between
+that environment and the SDK (Source: Carolus Tutorial.pdf, \S4--5,
+p.3--6). It implemented a single reactive control law, not a state machine:
+a PID controller on the beacon bearing (\texttt{bearing = atan2(x, -z)}
+computed from \texttt{/pose}) drove the chassis to rotate in place until
+aligned within a deadband, then to advance at a fixed forward speed until
+within a target stopping distance, with the gimbal centered
+(\texttt{gimbal.set\_mode(0)}, i.e.\ free-coupling mode, then
+\texttt{moveto(pitch=0, yaw=0)}) and left fixed for the whole
+maneuver (Source: Carolus Tutorial.pdf, \S4 and \S7, p.3--8). The tutorial
+also documents an IMU recalibration procedure via the RoboMaster mobile app,
+to be run if motion appears unstable (Source: Carolus Tutorial.pdf, \S6,
+p.7).
+
+\subsection{Errors Identified in the Prior Iteration}
+\label{sec:prior-bugs}
+The supervisor's own review of the roughly fifteen control-script
+iterations left in the repository (beyond the specific version documented
+in the tutorial above) identified a chain of compounding bugs, communicated
+directly and quoted here rather than paraphrased, since the exact wording
+carries the diagnosis:\footnote{All four items and the quoted text in this
+subsection: email correspondence with the project supervisor, 2026-07-03.}
+
+\begin{enumerate}
+  \item \textbf{A duplicated topic advertisement in the C++ pose node.}
+  ``The C++ pose estimation node had a topic that got declared twice in the
+  code, so the second declaration silently overwrote the first and one of
+  the two topics it was supposed to publish on never actually went out. Most
+  of the control script iterations subscribed to exactly that dead topic.''
+  This traces to \texttt{carolus\_astrobee.cpp}, where the node
+  advertises a parameterized \texttt{pose\_topic\_} (intended as
+  \texttt{ff\_msgs::VisualLandmarks}) immediately before unconditionally
+  advertising \texttt{/pose} (\texttt{geometry\_msgs::PoseStamped}); if the
+  two names coincide, only one type survives and the other silently never
+  publishes. The current codebase avoids the collision by keeping
+  \texttt{pose\_topic} set to its own distinct (if otherwise unused) name
+  and treating \texttt{/pose} as the single source of truth, rather than by
+  fixing the underlying double-advertisement in the inherited C++ file.
+  \item \textbf{A constructor typo in the specific script matching the
+  tutorial.} ``The specific script matching Quentin's tutorial had a typo
+  in its constructor (it was declared as \texttt{init} instead of
+  \texttt{\_\_init\_\_}), so it never actually initialized itself when
+  run.'' This was identified by the supervisor in the deployed script file
+  itself, not independently re-verified in the present report against the
+  copy of the code printed in the tutorial PDF (which shows a correctly
+  double-underscored constructor); the two need not be the same revision of
+  the file.
+  \item \textbf{An earlier EKF attempt that diverged and was never
+  resolved.} ``There was also an attempt earlier in that period to fuse IMU
+  and wheel odometry with an EKF node, which is a reasonable thing to try,
+  but the logs show it diverged (NaN and denormalized quaternion errors)
+  and was never resolved.'' This is a distinct issue from the current
+  project's own \texttt{robot\_localization} EKF (Section~\ref{sec:f3}),
+  which is a fresh implementation rather than a continuation of this
+  earlier, abandoned one; the earlier attempt's divergence is recorded here
+  as motivation for validating the current EKF carefully (an unrelated
+  frame-assumption bug was in fact later found and fixed in the current
+  implementation, Section~\ref{sec:lessons}) rather than assuming a
+  from-scratch EKF is automatically safe from this class of failure.
+  \item \textbf{Simultaneous SDK connections silently blocking motion.}
+  ``Two of the ROS nodes were opening simultaneous connections to the
+  robot's SDK, which I later confirmed silently blocks movement commands
+  after a few calls, something that would have made any of that control
+  code unreliable even if the topic and constructor issues had been
+  fixed.'' The supervisor further notes that this was already suspected in
+  the prior iteration but not resolved there: ``Quentin found this problem
+  but he was not able to fix it: used rosbridge to transfer Carolus data,
+  but then he was unable to send motion commands'' -- which explains the
+  rosbridge/Python-3.7-venv split architecture described above as an
+  unsuccessful workaround attempt, not an arbitrary design choice. The
+  current architecture avoids the failure mode directly, by design, with a
+  single shared SDK connection rather than a fix layered on top of multiple
+  connections (Section~\ref{sec:lessons}).
+\end{enumerate}
+
+None of the four issues above are present in the current implementation:
+the first is sidestepped by topic-naming discipline, the second and third
+do not apply to it (built from scratch, not a continuation of either
+buggy file), and the fourth is avoided architecturally rather than patched.
+This distinction -- avoided by a different design versus actively
+fixed -- is kept explicit throughout this report rather than collapsed into
+a single ``resolved'' status, per the supervisor's own request to document
+changes to both the code and the reasoning behind them.
+
 \section{System Architecture}
 
 \subsection{Autonomous State Machine}
@@ -90,6 +204,7 @@ orientation.
 \section{Localization and Sensor Fusion Methodology}
 
 \subsection{F3: Lightweight EKF (\texttt{robot\_localization})}
+\label{sec:f3}
 Wheel odometry (from the SDK) and Carolus absolute pose (computed from a
 known, hand-measured beacon position and the detected camera-to-beacon
 transform) are fused with \texttt{robot\_localization}, a loosely-coupled,

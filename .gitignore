@@ -1,3 +1,12 @@
+# Secrets (added 2026-07-28) — defence in depth. No .env is expected inside
+# this repository (the project's .env lives at the project root, outside it),
+# but an accidental copy here would otherwise be tracked and pushed.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
 build/
 build_isolated/
 devel/
@@ -6,3 +15,10 @@ __pycache__/
 *.pyc
 *.swp
 *.swo
+
+# LaTeX build artifacts (added 2026-08-03) — keep only .tex sources and the
+# compiled .pdf tracked, not the intermediate files pdflatex regenerates.
+*.aux
+*.log
+*.out
+*.toc
