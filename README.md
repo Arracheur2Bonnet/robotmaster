@@ -4,6 +4,17 @@ Vision-based relative navigation (Carolus/UVGS-2: 4-LED beacon detection + P4P
 pose solve) integrated on a rooted RoboMaster S1, fused with wheel odometry via
 `robot_localization`.
 
+## License
+
+Apache License 2.0 — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
+
+This matches what the third-party components already declared rather than
+overriding them: `src/ff_msgs/` is NASA Astrobee code (Apache-2.0) and
+`src/libuvgs_astrobee/` (Carolus/uVGS-2, original author zauberflote1)
+declares Apache-2.0 in its own `package.xml`. `NOTICE` lists each component,
+its origin, and what was modified here.
+
+
 ## Versioning
 
 Per the project's supervisor request (branches for the useful part of the
@@ -110,9 +121,12 @@ Then, in order, the launcher's 5 buttons:
 | 4 · TF Broadcaster | SSH → `carolus_tf_broadcaster.py` on the Pi | manual |
 | 5 · Docking | `beacon_docking.py` (lab PC) — `ALIGN_ONLY`/`APPROACH_ONLY`/`START`/`ABORT` panel | first `[DOCKSTATUS]` line seen |
 
-**Sanity check that the pipeline is actually working**: with all 4
-terminals running and an LED beacon in the camera's field of view,
-`rostopic hz /pose` should report ~2.5 Hz. `rostopic echo /pose` should show
+**Sanity check that the pipeline is actually working**: with the terminals
+running and an LED beacon in the camera's field of view, `rostopic hz /pose`
+should report a steady rate. Carolus running on the Raspberry Pi processes
+~24 frames/s (measured 2026-08-04); running it on the lab PC instead drops
+this to ~2.5 Hz, because every uncompressed 1280x720 frame has to cross the
+network first — see the technical manual for why the Pi is the right target. `rostopic echo /pose` should show
 a `geometry_msgs/PoseStamped` with a plausible Z distance matching the
 beacon's real distance from the camera. In the launcher GUI, the
 `BEACON: DETECTED` indicator should light up.
@@ -126,8 +140,14 @@ this RNDIS-based pipeline).
 
 ## Report
 
-`overleaf/` holds the English-language LaTeX report for the project
-supervisor (skeleton only for now — see `overleaf/README.md`).
+`overleaf/` holds two LaTeX documents:
+
+- **`technical.pdf` / `technical.tex`** — the self-contained technical manual
+  (power-on through building and launching Carolus). This is the one to read
+  to set the system up.
+- **`main.tex`** — the progress report for the project supervisor.
+
+See `overleaf/README.md` for the difference and for how to compile them.
 
 ---
 
