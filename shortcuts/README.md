@@ -319,6 +319,27 @@ python3 shortcuts/cam_view_helper.py /tmp/carolus_cam.png
 
 ---
 
+## measure_pi_pose.sh
+
+**What** — measures Carolus's real `/pose` rate on the Raspberry Pi with a beacon in view, in one command, and captures several other findings while the stack is up.
+
+**Why** — the 2026-08-04 Pi benchmark measured ~24 frames/s *processed*, counted with **no beacon in view**: no P4P solve ran per frame and the outlier filter was never exercised. The number the supervisor will actually quote — `/pose` under load — is still unmeasured. This script collects it in one command so a short hardware slot is spent on the robot rather than on typing commands.
+
+It also captures, opportunistically: whether the BUG-087 non-convergence warning ever fires in a real run (surfaced 2026-08-03, never yet observed live), whether `[LOCK]` ticks during the run (point 4 of `research-log/21-points-a-creuser/`), blob-detection health, and CPU load.
+
+**Usage**
+```bash
+bash shortcuts/measure_pi_pose.sh          # full run (~3 min)
+DURATION=120 bash shortcuts/measure_pi_pose.sh   # longer measurement window
+bash shortcuts/measure_pi_pose.sh --stop   # stop everything, leave the Pi clean
+```
+
+**Prerequisites it cannot check for you:** robot powered on, Pi reachable, and **a powered beacon in the camera's field of view** — without it `/pose` never publishes and the run measures nothing.
+
+**Expected** — a full report written to `shortcuts/logs/pi-pose-measure-<timestamp>.log`, with the `/pose` rate as the headline figure. Fails early and clearly if the Pi is unreachable.
+
+---
+
 ## sync_repo.sh
 
 **What** — reconciles `carolus_repo/` (the published git repo) with the live working files, reporting drift by checksum.
