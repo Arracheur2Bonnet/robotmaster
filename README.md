@@ -83,10 +83,12 @@ profile and adds an S1-specific static transform, then delegates to
 
 ## Testing
 
-Full step-by-step reproduction guide (fresh Pi/S1 to first launch):
-`research-log/08-guide-demarrage.md` in the project's working repository
-(not duplicated here — see that file for hardware setup, SDK install, and
-RNDIS networking).
+Full step-by-step reproduction guide, from a fresh Pi and a fresh S1 through
+to a running Carolus pipeline: **[`overleaf/technical.pdf`](overleaf/technical.pdf)**,
+in this repository. It is self-contained — powering on, rooting the S1,
+Raspberry Pi and ROS setup, RNDIS networking, the camera bridge, camera
+calibration, and building/launching Carolus, including how to run it on a
+robot other than this one.
 
 Prerequisite for every session: robot powered on (double chime), Pi
 reachable at its RNDIS/Wi-Fi address, `eth1` interface up on the Pi with an

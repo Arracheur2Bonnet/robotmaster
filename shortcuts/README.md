@@ -6,7 +6,7 @@ Shortcut scripts for frequent operations. Common prerequisites: robot powered on
 
 ## `carolus_launcher.py`
 
-**What:** Tkinter GUI (dark theme) — T1/T2/T3/T4/T5 sequence, live dashboard, integrated live map, manual chassis (ZQSD) and gimbal (numpad) piloting, interactive key blocks, LOCATE mode (beacon localization without advancing), LOCK button (periodic beacon re-centering, period configurable in seconds, 2026-07-23), beacon indicator + minimap (2026-07-23, see dedicated section), RECENTER CAM button (gimbal base position, 2026-07-23), CAM PREVIEW button (OFF by default — toggles the camera subscription, gains smoothness + network bandwidth), fullscreen (**F11** toggles, **Escape** exits, 2026-07-23), DOCKING BALISE panel — CALIBRATE/START/ABORT buttons + status readout (2026-07-27, see T5 below).
+**What:** Tkinter GUI (dark theme) — T1/T2/T3/T4/T5 sequence, live dashboard, integrated live map, manual chassis (ZQSD) and gimbal (numpad) piloting, interactive key blocks, LOCATE mode (beacon localization without advancing), LOCK button (periodic beacon re-centering, period configurable in seconds, 2026-07-23), beacon indicator + minimap (2026-07-23, see dedicated section), RECENTER CAM button (gimbal base position, 2026-07-23), CAM PREVIEW button (OFF by default — toggles the camera subscription, gains smoothness + network bandwidth), fullscreen (**F11** toggles, **Escape** exits, 2026-07-23), DOCKING BALISE panel — CALIBRATE/CAL STEP 2/START/ABORT buttons + status readout (2026-07-27, see T5 below).
 
 **Why:** launches the stack with no commands to type; a live dashboard (SEARCH/APPROACH/STOP/LOCATE/MANUAL state, depth, robot battery, camera); a real-time live map (robot + beacon position over a JSON background); immediate piloting without leaving the window; visual feedback for active keys.
 
@@ -25,7 +25,7 @@ python3 shortcuts/carolus_launcher.py
 
 **T4 — added 2026-07-20, following the BUG-048 fix** (Carolus→ROS quaternion remapping, a naive permutation replaced by composition `q_ros=r⊗q`). Republishes Carolus's `/pose` as a TF (`camera_link`→`beacon_observed`) via `carolus_tf_broadcaster.py`, run on the Pi. Has no effect on the current SEARCH/ALIGN/APPROACH pipeline (which consumes `/pose` directly, not the TF) — relevant for validating orientation (`rosrun tf tf_echo camera_link beacon_observed`) and lays the groundwork for Phase F's tf2_ROS/EKF adoption. Can be launched independently of T3, but won't have anything to republish until T3 (the source of `/pose`) is running.
 
-**T5 — added 2026-07-27.** Runs `beacon_docking.py` directly on the lab PC (like T3 — no SDK connection of its own, so no conflict with `rm_cam_beacon.py`'s single Pi-side SDK connection). Fixed-pose docking behavior relative to the beacon. Controlled by the **DOCKING BALISE** panel: `CALIBRATE` (determines the beacon-orientation sign convention — must be run and confirmed successful before `START` will do anything beyond a simple distance-hold, gated behind `BEACON_YAW_VALIDATED` in the script), `START`, `ABORT`. Commands go through `cam_view_helper.py` (`/carolus/dock`, same relay pattern as `RECENTER`), status comes back via the `[DOCKSTATUS]` log line parsed the same way as `[BEACON]`. **Not yet validated on hardware.**
+**T5 — added 2026-07-27, first hardware session run the same day (journal entry 10).** Runs `beacon_docking.py` directly on the lab PC (like T3 — no SDK connection of its own, so no conflict with `rm_cam_beacon.py`'s single Pi-side SDK connection). Fixed-pose docking behavior relative to the beacon, currently the simplified `SIMPLE_APPROACH_ONLY` pipeline (gimbal align → chassis align via `yaw_rel` → drive to `DOCK_DISTANCE_M`, 0.20m). Controlled by the **DOCKING BALISE** panel: `CALIBRATE` + `CAL STEP 2` (2-click calibration — step 1 measures face-on, step 2 measures after the user pivots ~30-45°, no time pressure between them; the original single-shot 20s-timer design was unusable in practice and was replaced), `START`, `ABORT`. `BEACON_YAW_VALIDATED` is **currently `True`** on this robot (`BEACON_YAW_SIGN=+1.0`, `BEACON_YAW_OFFSET_DEG=+2.4`, calibrated 2026-07-27). Commands go through `cam_view_helper.py` (`/carolus/dock`, same relay pattern as `RECENTER`), status comes back via the `[DOCKSTATUS]` log line parsed the same way as `[BEACON]`. T5 only unlocks its buttons after seeing its own first `[DOCKSTATUS]` line (not just after the process starts) — sending a command too early used to be silently dropped (BUG-076, fixed). **Validated on hardware with mixed results**: one collision (BUG-078, root-caused and fixed — a silent gimbal-probe failure let the chassis align to the wrong reference), one clean approach that ended up close to the beacon but off-center (open issue: nothing corrects chassis heading during/after the drive, only the camera tracks — fix identified, not yet implemented, see roadmap next-session item 12).
 
 **Logs — reworked 2026-07-20: one tab per terminal, extended 2026-07-27 to T5.** All 5 terminals (T1-T5) are **fully integrated** (their output is captured and shown in the app, no external gnome-terminal window). The Logs area is a `ttk.Notebook` (`T1 roscore+Pi`, `T2 Camera+Beacon`, `T3 Carolus Astrobee`, `T4 TF Broadcaster`, `T5 Docking`), each terminal writes only to its own tab — no more mixing in a single box. Global event messages (AUTO/MANUAL mode, kill, etc.) still get broadcast to all tabs at once. The "Copy logs" button now copies only the active tab's content. A change needed to launch T1 in integrated mode: pre-checked that `sudo` on the Pi doesn't ask for a password (`sudo -n true`), otherwise T1's `sudo ip link set eth1 up` command would block silently in the pipe.
 
@@ -151,6 +151,37 @@ Two blocks appear below the launch buttons. Keys light up gold when active (keyb
 
 **Logs:** a selectable area, `Ctrl+A` to select all, `Ctrl+C` to copy, a **"Copy logs"** button. No freezing thanks to the async queue (50ms batches / max 50 lines, throughput 1000 lines/s). High-frequency telemetry (`[ESC]`, `[ATTI]`, `[POS]`, `[BAT]`, `[VEL]`, `[TOF]`) filtered out of the Logs area — shown only in the dashboard. `[BEACONPOS]` stays visible in the logs (useful for diagnosing the beacon's position).
 
+**Session log on disk (added 2026-07-31).** Every line written to any tab is also appended to `shortcuts/logs/session-YYYY-MM-DD-HH-MM-SS.log`, one file per launcher start, each line prefixed with the time and the originating tab (`T1`..`T5`, or `--` for a global event broadcast to all tabs). Before this, logs lived only in the tkinter widgets: closing the launcher lost them, and each tab is truncated to 300 lines anyway. The concrete cost showed up on 2026-07-31 — the question *"is LOCK still ticking during a docking run?"* (point 4 of `research-log/21-points-a-creuser/`) was unanswerable even though a run that would have answered it had already happened; the logs simply weren't kept. Grep by tab to answer that class of question directly:
+
+```bash
+grep '\[T2\].*\[LOCK\]' shortcuts/logs/session-*.log     # was LOCK active during the run?
+grep '\[T5\]' shortcuts/logs/session-*.log                # everything the docking node said
+```
+
+Best-effort by construction: a write error never brings the GUI down. But it is **not silent** — if the file cannot be opened, a line goes to stderr saying so, because a log that isn't written without saying so is worse than no log at all (you believe you have the data and you don't). `shortcuts/logs/` is gitignored.
+
+---
+
+## `lever_arm_bearing.py`
+
+**Quoi** — calcule, pour un decalage `d` entre centre de rotation du chassis et centre optique de la camera, le changement apparent de gisement d'une cible fixe apres une rotation sur place.
+
+**Pourquoi** — le 2026-07-30, un run ALIGN a montre le gisement de la balise passer de +6.3 a +18.2 deg (environ +12) sur ~97 deg de rotation chassis, alors que `yaw_ground` restait plat (-142.3 -> -142.4) : la camera n'a donc PAS tourne dans le repere monde, et le changement ne peut pas venir d'une rotation camera. Deux causes candidates (point 2 de `research-log/21-points-a-creuser/`) : geometrie du bras de levier, ou glissement lateral Mecanum reel. Ce script chiffre la premiere pour savoir s'il reste quelque chose a expliquer.
+
+**Usage**
+```bash
+python3 shortcuts/lever_arm_bearing.py            # resout l'inverse sur le run du 2026-07-30
+python3 shortcuts/lever_arm_bearing.py --d 0.12   # predit pour un d mesure (metres)
+```
+
+Sans `--d`, il repond a la question utile avant toute mesure : *quel bras de levier faudrait-il pour expliquer TOUT le changement observe ?* Reponse pour le run du 2026-07-30 : **12.3 cm** — une valeur physiquement plausible sur un S1, donc la geometrie est une explication complete credible et il suffit d'un metre-ruban pour trancher.
+
+Avec `--d`, il donne la borne superieure (deplacement entierement perpendiculaire a la ligne de visee) puis le modele exact pour plusieurs orientations de depart. A noter : le signe depend fortement de l'orientation — a 12 cm le modele va de -6.8 a +11.8 deg selon l'angle de depart de la camera autour du centre de rotation. C'est en soi une prediction testable.
+
+**Attendu** — un nombre en degres a comparer aux +12 deg observes. S'il explique l'essentiel, la question du glissement Mecanum disparait sans avoir besoin d'y repondre ; s'il n'explique qu'une fraction, le reste demande une autre cause (glissement, ou intrinseques fausses — points 2 et 14).
+
+**Limite** — modele de translation pure. Ne dit rien des intrinseques ni du solveur ; ne remplace pas la mesure de `d`, il la rend exploitable en 30 secondes.
+
 ---
 
 ## `save_session.sh`
@@ -167,9 +198,11 @@ cp saves/2026-06-24-20-10/carolus_ws__src__robomaster_cam__scripts__rm_cam_beaco
    carolus_ws/src/robomaster_cam/scripts/rm_cam_beacon.py
 ```
 
-**Files saved:** `carolus_launcher.py`, `cam_view_helper.py`, `map_editor.py`, `rm_cam_beacon.py`, `testcarolus.launch`, plus the workspace's 5 `CMakeLists.txt` files (`src/`, `libuvgs_astrobee/`, `ff_msgs/`, `robomaster_cam/`, `carolus_node/`) — added 2026-07-13 to cover the CLAUDE.md rule that lists them as critical files.
+**Files saved:** `carolus_launcher.py`, `cam_view_helper.py`, `map_editor.py`, `rm_cam_beacon.py`, **`beacon_docking.py`**, **`beacon_absolute_pose.py`**, `testcarolus.launch`, plus the workspace's 5 `CMakeLists.txt` files (`src/`, `libuvgs_astrobee/`, `ff_msgs/`, `robomaster_cam/`, `carolus_node/`) — the `CMakeLists.txt` set was added 2026-07-13 to cover the CLAUDE.md rule listing them as critical files; the two docking scripts were added **2026-07-28**.
 
-**Expected:** a `saves/YYYY-MM-DD-HH-MM/` folder created with 10 files + `NOTE.txt`.
+> **Why the two docking scripts were added (2026-07-28):** they were absent from the list while being the most heavily modified files of the docking work, so every backup during that work had to be made **by hand** — twice in a single session. A backup script that silently omits the file you are actually editing is worse than no script, because it gives the impression of a safety net that is not there. **Rule going forward: any source file under active modification must be in `FILES` before the work starts, not after it bites.**
+
+**Expected:** a `saves/YYYY-MM-DD-HH-MM/` folder created with 12 files + `NOTE.txt`.
 
 ---
 
@@ -233,7 +266,7 @@ bash shortcuts/leak_scan.sh specific/path         # scan one specific folder
 | `LOCK ON` / `LOCK OFF` | Publishes `"ON"`/`"OFF"` on `/carolus/gimbal_lock` (periodic re-centering) |
 | `LOCKPERIOD 5.0` | Publishes `"5.0"` on `/carolus/gimbal_lock_period` (period in seconds, falls back to default if invalid) |
 | `RECENTER` | Publishes `"RECENTER"` on `/carolus/gimbal_recenter` (gimbal base position, 2026-07-23) |
-| `DOCK CALIBRATE` / `DOCK START` / `DOCK ABORT` | Publishes `"CALIBRATE"`/`"START"`/`"ABORT"` on `/carolus/dock` (consumed by `beacon_docking.py`, T5, 2026-07-27) |
+| `DOCK CALIBRATE` / `DOCK CALSTEP2` / `DOCK START` / `DOCK ABORT` | Publishes `"CALIBRATE"`/`"CALSTEP2"`/`"START"`/`"ABORT"` on `/carolus/dock` (consumed by `beacon_docking.py`, T5, 2026-07-27) |
 
 **Usage:** (automatic, via the launcher) — manual for debugging:
 ```bash

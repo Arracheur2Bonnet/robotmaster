@@ -13,6 +13,11 @@ FILES=(
     "shortcuts/cam_view_helper.py"
     "shortcuts/map_editor.py"
     "carolus_ws/src/robomaster_cam/scripts/rm_cam_beacon.py"
+    # 2026-07-28 : ajoutes apres avoir du les sauvegarder A LA MAIN deux fois
+    # dans la meme session (docking). Tout fichier source activement modifie
+    # doit etre ici, sinon la sauvegarde donne une fausse impression de filet.
+    "carolus_ws/src/robomaster_cam/scripts/beacon_docking.py"
+    "carolus_ws/src/carolus_node/scripts/beacon_absolute_pose.py"
     "carolus_ws/src/carolus_node/launch/testcarolus.launch"
     "carolus_ws/src/CMakeLists.txt"
     "carolus_ws/src/libuvgs_astrobee/CMakeLists.txt"

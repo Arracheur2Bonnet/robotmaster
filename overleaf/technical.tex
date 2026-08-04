@@ -618,11 +618,14 @@ scripts. Clone the project's repository directly onto the Pi:
 git clone git@github.com:Arracheur2Bonnet/robotmaster.git carolus_ws
 \end{lstlisting}
 
-This is a private repository; you need an SSH key registered against it
-(ask the project supervisor for collaborator access if you do not already
-have it) --- do not substitute a personal access token pasted into the
-clone URL for this. If cloning over SSH is not set up, an HTTPS clone with
-your own GitHub credentials works the same way:
+This uses an SSH key registered against \emph{your own} GitHub account
+(Chapter~\ref{ch:carolus-node} covers generating and registering one). If
+the repository is private you will also need collaborator access --- ask the
+project supervisor. Either way, \textbf{do not paste a shared personal
+access token into the clone URL}: it grants whoever reads it the full rights
+of the account that made it, and cannot be traced back to an individual. If
+SSH is not set up, an HTTPS clone with your own GitHub credentials works the
+same way:
 
 \begin{lstlisting}[style=shell]
 git clone https://github.com/Arracheur2Bonnet/robotmaster.git carolus_ws
@@ -1155,19 +1158,24 @@ git clone git@github.com:Arracheur2Bonnet/robotmaster.git carolus_ws
 Repository web address:
 \url{https://github.com/Arracheur2Bonnet/robotmaster}
 
-\subsection{Requesting access}
+\subsection{If the clone fails, or the link shows 404}
 
-\textbf{This is a private repository.} If you open the link above without
-having been granted access, GitHub returns \textbf{404 Not Found}, not
-``403 Forbidden'' --- this is deliberate on GitHub's part (it avoids
-confirming that a private repository exists at all), so a 404 here means
-``you do not have access yet'', not ``the link is wrong''.
+The repository may be private. \textbf{If you open the link above and get
+404 Not Found}, that does not mean the address is wrong --- GitHub answers
+404 rather than ``403 Forbidden'' for a private repository you have no
+access to, deliberately, so that the existence of private repositories is
+not confirmed to strangers. A 404 here reads as ``you do not have access
+yet''.
 
 To get access, ask the repository owner or the project supervisor to add
 your GitHub account as a collaborator (\emph{Settings $\to$ Collaborators
-$\to$ Add people} on the repository). You will need to give them your GitHub
-username. Once added, you will receive an email invitation that must be
-accepted before cloning works.
+$\to$ Add people}). You will need to give them your GitHub username, and
+you must accept the emailed invitation before cloning works.
+
+If the repository is public, both clone commands above work as-is with no
+access request --- but the SSH setup below is still worth doing, since it
+avoids retyping credentials on every push and is required if you are ever
+given write access.
 
 \subsection{Setting up an SSH key}
 

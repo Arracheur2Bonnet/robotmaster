@@ -3,6 +3,7 @@
 """Carolus Launcher v3 — GUI sequentiel, dashboard live, mode MANUEL ZQSD."""
 
 import os
+import sys
 import re
 import json
 import math
@@ -221,6 +222,15 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
+        # Log de session sur disque (2026-07-31) — ouvert EN PREMIER, avant tout
+        # ce qui pourrait appeler _log(). Meme precaution que BUG-065/BUG-068
+        # (publisher/timer utilises avant leur creation) : ici _log_fh doit
+        # exister avant le premier _log_to_disk, sinon AttributeError dans un
+        # chemin de log, c'est-a-dire au pire moment possible.
+        self._log_fh = None
+        self._session_log_path = None
+        self._open_session_log()
+
         self.title("Carolus Launcher")
         self.configure(bg=BG)
         self.resizable(False, False)
@@ -234,7 +244,7 @@ class App(tk.Tk):
         self._chassis_release_pending = {}   # touche -> id after() en attente (debounce X11)
         self._gim_release_pending     = {}   # idem pour le numpad nacelle
         self._stop_monitor   = False
-        self._launch_cancelled = [False, False, False, False]   # annulation wait_for_*
+        self._launch_cancelled = [False, False, False, False, False]   # annulation wait_for_*
         self._log_queue  = queue.Queue()       # lignes T2 integre -> main thread
         self._chassis_btns = {}                # label widgets touches ZQSD
         self._gimbal_btns  = {}                # label widgets numpad 8/4/5/6/2
@@ -253,6 +263,7 @@ class App(tk.Tk):
         self._last_robot_pos = (0.0, 0.0)   # dernière pos sub_position (m)
         self._last_robot_yaw = 0.0          # dernière orientation robot (deg, sub_attitude)
         self._last_beacon_ts = 0.0          # horodatage dernier [BEACONPOS] recu
+        self._t5_dock_ready = False         # 1er [DOCKSTATUS] vu -> abonnements T5 etablis
         self._build()
         self._bind_keys()
         self._refresh_cam()
@@ -453,14 +464,33 @@ class App(tk.Tk):
         # cam_view_helper.py, meme mecanisme que RECENTER), statut lu depuis les
         # logs de T5 ([DOCKSTATUS], meme mecanisme que [BEACON]). ---
         tk.Label(right, text="DOCKING BALISE", bg=BG2, fg=ACCENT, anchor="w", font=FONT).pack(anchor="w", pady=(10, 0))
-        dock_row = tk.Frame(right, bg=BG2)
-        dock_row.pack(fill="x", pady=(2, 0))
-        tk.Button(dock_row, text="CALIBRATE", bg=BG3, fg=FG, relief="flat",
+        # Calibration en 2 clics independants (2026-07-27) : pas de minuteur bloquant
+        # entre les deux mesures -- chaque etape attend un clic explicite, a lire sur
+        # le statut GUI plutot que de guetter un message dans un log qui defile.
+        dock_cal_row = tk.Frame(right, bg=BG2)
+        dock_cal_row.pack(fill="x", pady=(2, 0))
+        tk.Button(dock_cal_row, text="CALIBRATE (1)", bg=BG3, fg=FG, relief="flat",
                   activebackground=COL_ALIGN, activeforeground=FG, font=FONT,
                   command=lambda: self._on_dock_cmd("CALIBRATE")).pack(side="left", fill="x", expand=True, padx=(0, 2))
+        tk.Button(dock_cal_row, text="CAL STEP 2", bg=BG3, fg=FG, relief="flat",
+                  activebackground=COL_ALIGN, activeforeground=FG, font=FONT,
+                  command=lambda: self._on_dock_cmd("CALSTEP2")).pack(side="left", fill="x", expand=True, padx=(2, 0))
+        # Tests isoles (2026-07-28) : ALIGN_ONLY tourne le chassis SANS jamais
+        # avancer ; APPROACH_ONLY avance SANS jamais tourner le chassis (et
+        # refuse si le chassis n'est pas deja aligne -- voir beacon_docking.py).
+        dock_test_row = tk.Frame(right, bg=BG2)
+        dock_test_row.pack(fill="x", pady=(2, 0))
+        tk.Button(dock_test_row, text="ALIGN ONLY", bg=BG3, fg=FG, relief="flat",
+                  activebackground=COL_ALIGN, activeforeground=FG, font=FONT,
+                  command=lambda: self._on_dock_cmd("ALIGN_ONLY")).pack(side="left", fill="x", expand=True, padx=(0, 2))
+        tk.Button(dock_test_row, text="APPROACH ONLY", bg=BG3, fg=FG, relief="flat",
+                  activebackground=COL_ALIGN, activeforeground=FG, font=FONT,
+                  command=lambda: self._on_dock_cmd("APPROACH_ONLY")).pack(side="left", fill="x", expand=True, padx=(2, 0))
+        dock_row = tk.Frame(right, bg=BG2)
+        dock_row.pack(fill="x", pady=(2, 0))
         tk.Button(dock_row, text="START", bg=BG3, fg=FG, relief="flat",
                   activebackground=COL_OK, activeforeground=FG, font=FONT,
-                  command=lambda: self._on_dock_cmd("START")).pack(side="left", fill="x", expand=True, padx=2)
+                  command=lambda: self._on_dock_cmd("START")).pack(side="left", fill="x", expand=True, padx=(0, 2))
         tk.Button(dock_row, text="ABORT", bg=BG3, fg=COL_KO, relief="flat",
                   activebackground=COL_KO, activeforeground=FG, font=FONT,
                   command=lambda: self._on_dock_cmd("ABORT")).pack(side="left", fill="x", expand=True, padx=(2, 0))
@@ -662,11 +692,23 @@ class App(tk.Tk):
     def _on_dock_status(self, status, yaw_validated):
         """Parse [DOCKSTATUS] status=... yaw_validated=... (~1Hz, T5) : met a jour
         le label. Meme mecanisme que _on_beacon_status pour [BEACON]."""
-        if status in ("DOCKED",):
+        if status in ("DOCKED", "CAL_DONE", "RANGE_ONLY", "ALIGN_DONE", "APPROACH_DONE"):
             color = COL_OK
-        elif status in ("ABORTED", "ERROR", "CAL_FAILED", "NO_BEACON", "NOT_CONVERGED"):
+        elif status in ("ABORTED", "ERROR", "CAL_FAILED", "CAL_INCONCLUSIVE", "NO_BEACON",
+                        "NOT_CONVERGED", "GIMBAL_ALIGN_FAILED", "NOT_ALIGNED",
+                        # 2026-07-30 : CHASSIS_ALIGN_FAILED et SEQUENCE_TIMEOUT
+                        # sont emis par beacon_docking.py depuis le 2026-07-28
+                        # mais n'ont jamais figure ici -- ils tombaient donc en
+                        # gris "inconnu" au lieu de rouge. CHASSIS_ALIGN_FAILED
+                        # est precisement le statut de la cascade du 2026-07-29.
+                        "CHASSIS_ALIGN_FAILED", "SEQUENCE_TIMEOUT",
+                        # nouveau statut de la boucle d'alignement verifiee
+                        "ALIGN_NOT_CONVERGED"):
             color = COL_KO
-        elif status in ("DOCKING", "CALIBRATING"):
+        elif status in ("DOCKING", "CALIBRATING", "CAL_STEP1_DONE",
+                        # ni succes franc ni echec : yaw_rel a converge mais la
+                        # mesure de controle n'a pas pu etre faite (2026-07-30)
+                        "ALIGN_DONE_UNVERIFIED"):
             color = COL_ALIGN
         else:
             color = FG_DIM
@@ -790,9 +832,76 @@ class App(tk.Tk):
 
     # ── logs ─────────────────────────────────────────────────────────────────
 
+    # Nom des onglets pour le prefixe disque. Aligne sur `tab_labels` (~ligne 511)
+    # mais volontairement court : ces prefixes sont faits pour etre grepes.
+    _LOG_TAGS = ["T1", "T2", "T3", "T4", "T5"]
+
+    def _log_to_disk(self, msg, tab):
+        """Ecrit une ligne dans le log de session (2026-07-31).
+
+        Un seul fichier par lancement du launcher, sous `logs/`, horodate au
+        demarrage : `logs/session-YYYY-MM-DD-HH-MM-SS.log`. Chaque ligne porte
+        l'heure et l'onglet d'origine (`T1`..`T5`, ou `--` pour un evenement
+        global diffuse partout), pour pouvoir grep un terminal precis apres coup
+        sans avoir a rejouer la session.
+
+        Best-effort par construction : toute erreur d'ecriture (disque plein,
+        permission, chemin disparu) est avalee. Un log qui ne s'ecrit pas est un
+        desagrement ; une GUI de pilotage qui tombe pendant que le robot roule
+        n'en est pas un. Meme raisonnement que les `except Exception` deja en
+        place autour des appels subprocess/SSH de ce fichier.
+        """
+        try:
+            if self._log_fh is None:
+                return
+            tag = "--" if tab is None else self._LOG_TAGS[tab] if tab < len(self._LOG_TAGS) else f"T{tab+1}"
+            self._log_fh.write(f"{time.strftime('%H:%M:%S')} [{tag}] {msg}\n")
+            self._log_fh.flush()   # flush a chaque ligne : un crash ne doit pas
+                                   # emporter le buffer, c'est justement dans ce
+                                   # cas qu'on relira le fichier
+        except Exception:
+            pass
+
+    def _open_session_log(self):
+        """Ouvre le fichier de log de session. Appele une fois au demarrage.
+        En cas d'echec, `_log_fh` reste None et `_log_to_disk` devient un no-op
+        silencieux -- le launcher fonctionne exactement comme avant."""
+        self._log_fh = None
+        try:
+            log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+            os.makedirs(log_dir, exist_ok=True)
+            path = os.path.join(log_dir, time.strftime("session-%Y-%m-%d-%H-%M-%S.log"))
+            self._log_fh = open(path, "a", encoding="utf-8")
+            self._log_fh.write(f"# Carolus launcher session log — started {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            self._log_fh.flush()
+            self._session_log_path = path
+        except Exception as e:
+            # Echec best-effort, MAIS pas silencieux (2026-07-31). Un log qui ne
+            # s'ecrit pas sans le dire est pire que pas de log du tout : on croit
+            # avoir les donnees et on ne les a pas. C'est exactement le mode de
+            # defaillance releve toute la journee (BUG-087 : solveur non converge
+            # publie comme valide). stderr et pas la GUI, parce qu'a ce stade de
+            # __init__ les widgets de log n'existent pas encore.
+            self._log_fh = None
+            self._session_log_path = None
+            print(f"[LAUNCHER] session log unavailable ({e}) — "
+                  f"logs will stay in-memory only", file=sys.stderr)
+
     def _log(self, msg, tab=None):
         # tab=None -> diffuse le message (evenement global) dans les 4 onglets ;
         # tab=i -> ecrit uniquement dans l'onglet du terminal Ti+1 concerne.
+
+        # Persistance disque (2026-07-31). Avant ca, les logs ne vivaient QUE
+        # dans les widgets tkinter : fermer le launcher les perdait, et chaque
+        # onglet est de toute facon tronque a 300 lignes (ci-dessous). Le cout
+        # concret constate le 2026-07-31 : la question "LOCK tourne-t-il encore
+        # pendant un docking ?" (point 4 de 21-points-a-creuser) est restee sans
+        # reponse alors que la reponse etait dans les logs T2 d'un run deja
+        # effectue -- il suffisait de les avoir gardes. Un seul fichier par
+        # session, prefixe par l'onglet, ecrit best-effort : une erreur d'ecriture
+        # ne doit jamais faire tomber la GUI.
+        self._log_to_disk(msg, tab)
+
         boxes = self.log_boxes if tab is None else [self.log_boxes[tab]]
         for box in boxes:
             # Text est en state="disabled" (BUG-061) : repasser en "normal" le temps
@@ -1077,6 +1186,7 @@ class App(tk.Tk):
                 self._live_map.add_auto_beacon(wx, wy, face_deg)
                 self._last_beacon_ts = time.time()
         if "[DOCKSTATUS]" in line:
+            self._t5_dock_ready = True   # premiere ligne vue -> T5 a fini son __init__
             m = RE_DOCKSTATUS.search(line)
             if m:
                 self._on_dock_status(m.group(1), m.group(2) == "True")
@@ -1202,6 +1312,9 @@ class App(tk.Tk):
             except Exception:
                 pass
 
+        if i == 4:
+            self._t5_dock_ready = False   # nouveau process : reinitialise l'attente
+
         self.procs[i] = subprocess.Popen(
             self._cmd_integrated(i),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -1233,6 +1346,23 @@ class App(tk.Tk):
         elif i == 3:
             self.after(0, self._log, "> T4 lance - TF broadcaster actif (quaternion corrige, BUG-048)", i)
         elif i == 4:
+            # Attente reelle avant de debloquer les boutons DOCK (2026-07-27,
+            # BUG trouve en test : sans cette attente, START pouvait etre envoye
+            # avant que l'abonnement ROS de beacon_docking.py a /carolus/dock
+            # soit etabli -> commande silencieusement perdue, aucune erreur).
+            # Meme logique que _wait_for_roscore/_wait_for_camera pour T1/T2 :
+            # on attend un signe de vie reel du node (son 1er [DOCKSTATUS]),
+            # pas juste que le process ait demarre.
+            self.after(0, self._log, "> Attente que beacon_docking.py soit pret (1er DOCKSTATUS)...", i)
+            deadline = time.time() + 15
+            while time.time() < deadline and not self._t5_dock_ready:
+                if self._launch_cancelled[i]:
+                    self.after(0, self._log, "> Annule", i)
+                    return
+                time.sleep(0.2)
+            if not self._t5_dock_ready:
+                self.after(0, self._log, "> Timeout — T5 ne repond pas, Kill pour reinitialiser", i)
+                return
             self.after(0, self._log, "> T5 lance - docking pret (attend /pose, /odom, /carolus/gimbal_yaw_rel)", i)
 
         self._set_status(i, S_OK)
@@ -1255,6 +1385,7 @@ class App(tk.Tk):
             if t == 4:
                 local_kill("beacon_docking.py")
                 self._close_terminal(4)
+                self._t5_dock_ready = False
                 self.after(0, lambda: self._dock_status_lbl.config(text="DOCK: —", fg=FG_DIM))
             elif t == 3:
                 ssh_kill("pkill -9 -f carolus_tf_broadcaster.py")
