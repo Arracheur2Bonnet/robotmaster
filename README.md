@@ -25,7 +25,8 @@ inherited code, then new versions/changes on top):
   message definitions, a build dependency of the inherited code), and the
   original top-level `launch/`/`moveuvgs.cc`/`dockerROS1`. History preserved
   from the original repository (29 commits).
-- **Branch `main`** (tag `v1` at the current tip) — this stage's
+- **Branch `nawfel-legacy`** (tag `v1` at the current tip, and the
+  repository's default branch) — this stage's
   contribution on top of the legacy branch: `carolus_node` (TF broadcasting,
   `robot_localization` EKF integration, absolute pose from beacon
   detection), `robomaster_cam` (RoboMaster S1 SDK bridge,
