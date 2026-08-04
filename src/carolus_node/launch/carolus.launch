@@ -1,0 +1,60 @@
+<launch>
+    <!-- ====================================================================
+         Carolus / uVGS-2 — generic launch file.
+
+         Nothing in here is specific to any robot or camera. All hardware
+         values (camera intrinsics, beacon geometry, blob-detection tuning)
+         live in the YAML profile passed via the `config` argument.
+
+         Run on the project's RoboMaster S1 (default):
+             roslaunch carolus_node carolus.launch
+
+         Run on different hardware:
+             roslaunch carolus_node carolus.launch \
+                 config:=/path/to/my_robot.yaml \
+                 camera_topic:=/my/camera/image_raw
+
+         Start from config/robomaster_s1.yaml as a template — it documents
+         which values must be re-measured for your own camera and beacon.
+         ==================================================================== -->
+
+    <!-- Hardware profile. Copy config/robomaster_s1.yaml and edit it. -->
+    <arg name="config"
+         default="$(find carolus_node)/config/robomaster_s1.yaml" />
+
+    <!-- Camera image topic Carolus subscribes to. -->
+    <arg name="camera_topic" default="/camera/color/image_raw" />
+
+    <!-- Topic the annotated detection image is published on. -->
+    <arg name="processed_image_topic" default="/postprocessed/image" />
+
+    <!-- Ubuntu 22.04 only. ROS Noetic officially targets 20.04; a binary
+         compiled on 22.04 links liblog4cxx.so.12 / libtinyxml2.so.9 while
+         ROS expects .so.10 / .so.6, which segfaults inside
+         ros::console::initialize(). Set to false on 20.04 (including the
+         Raspberry Pi), where no preload is needed. -->
+    <arg name="ubuntu2204_preload" default="true" />
+
+    <node name="carolus_astrobee_rex" pkg="carolus_astrobee"
+          type="carolus_astrobee" output="screen">
+
+        <env if="$(arg ubuntu2204_preload)" name="LD_PRELOAD"
+             value="/usr/lib/x86_64-linux-gnu/liblog4cxx.so.10:/usr/lib/x86_64-linux-gnu/libtinyxml2.so.6" />
+
+        <!-- All hardware-specific values come from the profile. -->
+        <rosparam command="load" file="$(arg config)" />
+
+        <!-- Topic wiring, overridable per robot without touching the profile. -->
+        <param name="nav_cam_topic" value="$(arg camera_topic)" />
+        <param name="processed_image_topic" value="$(arg processed_image_topic)" />
+        <param name="dock_cam_topic" value="/hw/cam_dock" />
+
+        <!-- Must stay different from /pose: the node advertises pose_topic_ as
+             ff_msgs/VisualLandmarks and /pose as geometry_msgs/PoseStamped. If
+             the two names coincide, only one publisher survives and the other
+             silently never publishes. -->
+        <param name="pose_topic" value="/loc/ar/features" />
+
+    </node>
+
+</launch>

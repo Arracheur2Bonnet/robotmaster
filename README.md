@@ -40,6 +40,47 @@ See `shortcuts/README.md` for the operational scripts (launcher, deployment,
 leak scan) and `cmake_shims/` for the Ubuntu 22.04 build workarounds (no
 `sudo` required).
 
+## Running Carolus on a different robot
+
+Carolus itself is **robot-agnostic**: the detection and P4P solver
+(`src/libuvgs_astrobee/`) contain no reference to DJI, RoboMaster or RNDIS.
+It takes a camera image on a ROS topic and publishes a pose. Everything
+specific to one robot lives in a YAML profile, not in the source.
+
+To run it on other hardware, you need three things — none of which requires
+editing any code:
+
+1. **Calibrate your camera.** You need `fx`, `fy`, `cx`, `cy` and the
+   plumb_bob distortion coefficients. The MATLAB Camera Calibration Toolbox
+   procedure is documented in `overleaf/technical.pdf` (calibration chapter),
+   along with a Kalibr alternative.
+
+2. **Measure your beacon.** Four LED positions in metres, in Carolus's
+   left-handed frame, with **one point deliberately off the plane of the
+   other three** — P4P needs that to resolve pose unambiguously.
+
+3. **Write your profile.** Copy `src/carolus_node/config/robomaster_s1.yaml`,
+   substitute your values, and launch:
+
+```bash
+roslaunch carolus_node carolus.launch \
+    config:=$(rospack find carolus_node)/config/my_robot.yaml \
+    camera_topic:=/my/camera/image_raw
+```
+
+On Ubuntu 20.04 (including a Raspberry Pi), also pass
+`ubuntu2204_preload:=false` — the `LD_PRELOAD` workaround it controls is
+only needed on 22.04, which is not an officially supported ROS Noetic
+target.
+
+The `robomaster_cam/` package is the DJI SDK bridge for this specific robot
+and is **not** needed on other hardware — supply the camera stream however
+your platform already does, and point `camera_topic` at it.
+
+`testcarolus.launch` remains the RoboMaster S1 entry point: it loads the S1
+profile and adds an S1-specific static transform, then delegates to
+`carolus.launch`.
+
 ## Testing
 
 Full step-by-step reproduction guide (fresh Pi/S1 to first launch):

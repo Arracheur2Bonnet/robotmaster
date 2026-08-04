@@ -1320,84 +1320,107 @@ cmake -U <pkg>_DIR
 \section{Launching Carolus}
 \label{sec:launching}
 
-The current launch file, \texttt{src/carolus\_node/launch/testcarolus.launch},
-reproduced below with its comments translated to English (every parameter and
-value is exactly as in the repository; a disabled RViz block at the end of the
-real file is omitted here):
+Carolus's parameters are split in two, so the node can run on other robots
+without editing any code:
 
-\begin{lstlisting}[style=code,language=XML]
-<launch>
-    <node name="carolus_astrobee_rex" pkg="carolus_astrobee" type="carolus_astrobee" output="screen">
+\begin{itemize}
+  \item \texttt{src/carolus\_node/config/robomaster\_s1.yaml} --- everything
+  specific to \emph{this} robot and \emph{this} beacon: camera intrinsics,
+  distortion, beacon geometry, blob-detection tuning.
+  \item \texttt{src/carolus\_node/launch/carolus.launch} --- the generic
+  launch file. It contains no hardware values at all; it loads a profile and
+  wires up topics.
+\end{itemize}
 
-        <!-- Ubuntu 22.04 runtime fix -- see Fix 5 above -->
-        <env name="LD_PRELOAD"
-             value="/usr/lib/x86_64-linux-gnu/liblog4cxx.so.10:/usr/lib/x86_64-linux-gnu/libtinyxml2.so.6" />
+\texttt{testcarolus.launch} is the RoboMaster S1 entry point: it selects the
+S1 profile, adds an S1-specific static transform, and delegates to
+\texttt{carolus.launch}.
 
-        <!-- Execution -->
-        <param name="num_threads" value="1" />
-        <param name="queue_size" value="10" />
+\subsection{The hardware profile}
 
-        <!-- Blob filtering -->
-        <param name="min_circularity" value="0.6" />
-        <param name="saturation_threshold" value="80" />
-        <param name="min_area" value="8.0" />
-        <param name="max_area" value="1800.0" />
-        <param name="max_distance_lim" value="1000.0" />
-        <!-- Blue LEDs: OpenCV hue (0-180) is approximately 100-140.
-             Tune live against /postprocessed/image if the beacon color changes. -->
-        <param name="lb_hue" value="90.0" />
-        <param name="ub_hue" value="140.0" />
+The values below are this robot's. \textbf{Every one of them must be
+re-measured for different hardware} --- see Chapter~\ref{ch:calibration} for
+the camera intrinsics, and the note on \texttt{known\_points} at the end of
+this chapter for the beacon.
 
-        <!-- Preprocessing -->
-        <param name="kernel_size_gaussian" value="3" />
-        <param name="kernel_size_morph" value="3" />
-        <param name="image_threshold" value="190" />
+\begin{lstlisting}[style=code]
+# --- Camera intrinsics (MEASURE THESE FOR YOUR OWN CAMERA) ---
+fx: 546.1957
+fy: 547.0838
+cx: 575.6041
+cy: 372.1876
+distortion: "-0.1479, 0.1452, -0.0023, 0.0025, 0.0070"   # k1 k2 p1 p2 k3
 
-        <!-- Camera selection -->
-        <param name="nav_cam" value="true" />
-        <param name="dock_cam" value="false" />
-        <param name="fisheye" value="false" />
-        <param name="fov" value="true" />
-        <param name="mono" value="false" />
+# --- Beacon geometry (MEASURE THIS FOR YOUR OWN BEACON) ---
+# Four LED positions in metres, Carolus's left-handed frame. One point is
+# deliberately off the plane of the other three -- P4P needs that.
+known_points: "0.0825 0.0 0.0 -0.0825 0.0 0.0 0.0 0.072 0.0 0.0 0.0 0.0555"
 
-        <!-- Robot label -- a legacy name from the Astrobee simulation template
-             this launch file was originally derived from. It has no functional
-             effect on this robot; left as-is rather than renamed. -->
-        <param name="bot_name" value="wannabee" />
+# --- Blob detection ---
+min_circularity: 0.6
+saturation_threshold: 80
+min_area: 8.0
+max_area: 1800.0
+max_distance_lim: 1000.0
+lb_hue: 90.0        # OpenCV 0-180 scale, NOT 0-360. Blue LEDs here.
+ub_hue: 140.0
 
-        <!-- Camera intrinsics -- see Chapter on Calibration -->
-        <param name="fx" value="546.1957" />
-        <param name="fy" value="547.0838" />
-        <param name="cx" value="575.6041" />
-        <param name="cy" value="372.1876" />
-        <param name="distortion" value="-0.1479, 0.1452, -0.0023, 0.0025, 0.0070" />
+# --- Preprocessing ---
+kernel_size_gaussian: 3
+kernel_size_morph: 3
+image_threshold: 190
 
-        <!-- Topics -->
-        <param name="dock_cam_topic" value="/hw/cam_dock" />
-        <param name="nav_cam_topic" value="/camera/color/image_raw" />
-        <param name="processed_image_topic" value="/postprocessed/image" />
-        <!-- pose_topic must stay different from /pose: the C++ node advertises
-             pose_topic_ as ff_msgs/VisualLandmarks and /pose as PoseStamped;
-             if the two names coincide, only one publisher survives. -->
-        <param name="pose_topic" value="/loc/ar/features" />
+# --- Outlier rejection (moving window over successive poses) ---
+filter_size: 7
+translation_threshold: 0.5
+rotation_threshold: 0.3
+fifo_on: true
 
-        <param name="benchtest" value="true" />
+# --- Execution ---
+num_threads: 1
+queue_size: 10
+benchtest: true
 
-        <!-- Outlier rejection (a moving-window filter on successive poses) -->
-        <param name="filter_size" value="7" />
-        <param name="translation_threshold" value="0.5" />
-        <param name="rotation_threshold" value="0.3" />
-        <param name="fifo_on" value="true" />
-
-        <!-- Known beacon geometry, metres, in Carolus's own (left-handed) frame -->
-        <param name="known_points" value="0.0825 0.0 0.0 -0.0825 0.0 0.0 0.0 0.072 0.0 0.0 0.0 0.0555" />
-
-    </node>
-
-    <node pkg="tf2_ros" type="static_transform_publisher" name="static_honey_body_tf"
-          args="0 0 0 0 0 0 camera_link honey/body" />
-</launch>
+# --- Camera selection (Astrobee-era flags, kept for compatibility) ---
+nav_cam: true
+dock_cam: false
+fisheye: false
+fov: true
+mono: false
+bot_name: "wannabee"   # inert legacy label, no functional effect
 \end{lstlisting}
+
+\subsection{Launching}
+
+On this robot, nothing changes --- the entry point is the same as before:
+
+\begin{lstlisting}[style=shell]
+roslaunch carolus_node testcarolus.launch
+\end{lstlisting}
+
+\textbf{On Ubuntu 20.04, including the Raspberry Pi}, disable the
+\texttt{LD\_PRELOAD} workaround: it exists only to work around the 22.04
+library mismatch described in Fix 5 above, and is unnecessary --- and
+wrong-architecture --- anywhere else:
+
+\begin{lstlisting}[style=shell]
+roslaunch carolus_node testcarolus.launch ubuntu2204_preload:=false
+\end{lstlisting}
+
+\textbf{On a different robot entirely}, copy the profile, substitute your own
+measured values, and point Carolus at your own camera topic. No source file
+and no launch file needs editing:
+
+\begin{lstlisting}[style=shell]
+roslaunch carolus_node carolus.launch \
+    config:=$(rospack find carolus_node)/config/my_robot.yaml \
+    camera_topic:=/my/camera/image_raw \
+    ubuntu2204_preload:=false
+\end{lstlisting}
+
+The \texttt{robomaster\_cam} package (Chapter~\ref{ch:camera}) is the DJI SDK
+bridge for this specific robot and is \textbf{not} needed on other hardware
+--- supply the camera stream however your own platform already does.
 
 Launch it (after sourcing the workspace):
 

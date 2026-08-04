@@ -41,7 +41,6 @@ catkin_install_python(PROGRAMS
 ###########
 
 include_directories(
-  include
   ${catkin_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIRS}
   ${CERES_INCLUDE_DIRS}

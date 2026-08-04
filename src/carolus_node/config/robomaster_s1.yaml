@@ -1,0 +1,75 @@
+# Carolus configuration profile — DJI RoboMaster S1 (this project's robot)
+#
+# Everything in this file is specific to ONE physical robot and ONE physical
+# beacon. To run Carolus on different hardware, copy this file, replace the
+# values below with your own measurements, and pass it to carolus.launch:
+#
+#     roslaunch carolus_node carolus.launch \
+#         config:=$(rospack find carolus_node)/config/my_robot.yaml \
+#         camera_topic:=/my/camera/image_raw
+#
+# Nothing else in the Carolus source needs changing — the detection and P4P
+# solver are camera- and robot-agnostic.
+
+# --- Camera intrinsics -------------------------------------------------------
+# MEASURE THESE FOR YOUR OWN CAMERA. Values below come from
+# robomaster_cam/config/camera_info.yaml (camera_name: robomaster_s1,
+# 1280x720), validated pragmatically rather than by a formal calibration
+# campaign. See the technical manual's calibration chapter for the procedure.
+fx: 546.1957
+fy: 547.0838
+cx: 575.6041
+cy: 372.1876
+
+# plumb_bob distortion: k1 k2 p1 p2 k3
+distortion: "-0.1479, 0.1452, -0.0023, 0.0025, 0.0070"
+
+# --- Beacon geometry ---------------------------------------------------------
+# MEASURE THIS FOR YOUR OWN BEACON. Four LED positions in metres, in Carolus's
+# own (left-handed) frame. One point is deliberately off the plane of the other
+# three — this is required for P4P to resolve pose unambiguously, so keep that
+# property if you build a different beacon.
+known_points: "0.0825 0.0 0.0 -0.0825 0.0 0.0 0.0 0.072 0.0 0.0 0.0 0.0555"
+
+# --- Blob detection ----------------------------------------------------------
+# Tune these against /postprocessed/image for your own LEDs and lighting.
+min_circularity: 0.6
+saturation_threshold: 80
+min_area: 8.0
+max_area: 1800.0
+max_distance_lim: 1000.0
+
+# Hue window, in OpenCV's 0-180 scale (NOT 0-360). The node compares the blob's
+# mean hue against these bounds on that same 0-180 scale, so a value taken from
+# the 0-360 convention silently rejects every blob and no pose is ever
+# published. Reference: red ~0-10 and ~170-180, green ~50-80, blue ~100-140.
+# This robot uses blue LEDs.
+lb_hue: 90.0
+ub_hue: 140.0
+
+# --- Preprocessing -----------------------------------------------------------
+kernel_size_gaussian: 3
+kernel_size_morph: 3
+image_threshold: 190
+
+# --- Outlier rejection (moving-window filter over successive poses) ----------
+filter_size: 7
+translation_threshold: 0.5
+rotation_threshold: 0.3
+fifo_on: true
+
+# --- Execution ---------------------------------------------------------------
+num_threads: 1
+queue_size: 10
+benchtest: true
+
+# --- Camera selection (Astrobee-era flags, kept for compatibility) -----------
+nav_cam: true
+dock_cam: false
+fisheye: false
+fov: true
+mono: false
+
+# Legacy label inherited from the Astrobee simulation template this node came
+# from. No functional effect; left as-is rather than renamed.
+bot_name: "wannabee"
