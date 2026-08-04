@@ -1085,14 +1085,53 @@ Two points support the move beyond the bottleneck argument:
   does not.
 \end{itemize}
 
-\textbf{Not yet done, and deliberately not documented as if it were:}
-Carolus has not yet been built or benchmarked on the Raspberry Pi on this
-project. Until a Pi-side build is compiled and its actual pose rate
-measured, the procedure below --- which is what has genuinely been run ---
-targets the lab PC. The build steps themselves are not architecture-specific
-(the same \texttt{catkin\_make} sequence applies), so the Ubuntu 20.04
-instructions in the next section are the relevant ones for a Pi build; the
-22.04 fixes after them are lab-PC-specific and should be skipped.
+\subsection{Measured on the Pi, 2026-08-04}
+\label{sec:pi-benchmark}
+
+Carolus was built and run on the Raspberry Pi 4B. The results settle the
+question in favour of the Pi:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Measurement & Lab PC & Raspberry Pi 4B \\
+\midrule
+Camera publish rate & 10--15\,Hz & \textbf{30.0\,Hz} \\
+Carolus frames processed & $\sim$2.5/s & \textbf{$\sim$24/s} \\
+CPU load while processing & --- & $\sim$61\% user, 16\% idle \\
+Build & 5 compatibility fixes & \textbf{none needed} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{This is roughly ten times the lab-PC rate, and more than twice the
+10\,Hz target}, which confirms the diagnosis above: the bottleneck was the
+network transport, not the P4P/Ceres computation. On the Pi the frames never
+leave the machine that captures them, and the camera itself publishes at its
+full 30\,Hz instead of the 10--15\,Hz that survived the network hop.
+
+The build needed \textbf{no} compatibility workarounds. The Pi runs
+Ubuntu 20.04.6 with Ceres 1.14, Eigen 3.3.7 and OpenCV 4.2 already present;
+\texttt{catkin\_make} completed and linked the binary directly on
+\texttt{aarch64}. Available memory (7.6\,GB) was never a constraint.
+
+\textbf{Two caveats on the figure, stated so it is not over-read.} The
+$\sim$24 frames/s is a \emph{processing} rate, counted from the node's
+per-frame log output with no beacon in view; a run with four LEDs visible
+also executes the P4P solve per frame, which was not part of this
+measurement. And the pose rate visible to a consumer is additionally gated
+by the outlier filter (\texttt{filter\_size}, \texttt{fifo\_on}). The
+headroom over 10\,Hz is large enough that neither is likely to be
+disqualifying, but a beacon-in-view measurement of \texttt{/pose} itself
+remains to be done.
+
+\textbf{What has not yet been done:} running the full autonomous pipeline
+from the Pi end to end, and deciding where the operator GUI should then
+live. The procedure in the rest of this chapter still describes the lab-PC
+build, which is what the rest of this project's tooling currently assumes.
+For a Pi build, follow the Ubuntu 20.04 instructions in the next section and
+skip the 22.04 fixes entirely, passing
+\texttt{ubuntu2204\_preload:=false} at launch.
 
 \section{Getting this project's code onto the lab PC}
 
