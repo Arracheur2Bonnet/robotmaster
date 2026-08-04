@@ -145,6 +145,13 @@ TF_BROADCASTER_PI = "/home/ubuntu/carolus_ws/src/carolus_node/scripts/carolus_tf
 # propre (commande via /carolus/cmd_vel, deja relaye par rm_cam_beacon.py), donc
 # pas de contrainte "un seul proprietaire SDK" ici, meme raisonnement que T3.
 DOCKING_SCRIPT = os.path.join(WS, "src/robomaster_cam/scripts/beacon_docking.py")
+# MINS (2026-08-04) : tourne sur le Pi, dans son propre workspace, volontairement
+# separe de carolus_ws (bac a sable jetable tant que MINS n'est pas integre).
+# Mesure du 2026-08-04 : simulation.launch marche et est precis (RMSE 0.113 deg /
+# 0.082 m) mais tourne a 0.3-0.4x temps reel AVEC la charge capteur de la simu
+# (2 cameras + LIDAR + IMU 200Hz) -- bien plus lourde que la notre.
+MINS_WS_PI    = "/home/ubuntu/mins_sandbox_ws"
+MINS_LAUNCH   = "simulation.launch"
 SSH_KEY  = os.path.expanduser("~/.ssh/carolus_nopass")
 SSH_OPTS = ["-i", SSH_KEY, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no"]
 
@@ -242,7 +249,7 @@ class App(tk.Tk):
         self.title("Carolus Launcher")
         self.configure(bg=BG)
         self.resizable(False, False)
-        self.procs      = [None, None, None, None, None]   # Popen T1 / T2 / T3 / T4 / T5
+        self.procs      = [None, None, None, None, None, None]   # Popen T1..T6
         self.cam_proc   = None                 # Popen helper video (stdin=PIPE)
         self.cam_img    = None                 # reference PhotoImage (anti-GC)
         self.last_state = None
@@ -277,6 +284,9 @@ class App(tk.Tk):
         self._refresh_cam()
         self.after(100, self._flush_log_queue)
         self.after(300, self._check_beacon_freshness)
+        # Sonde Pi : premier tir a 2s (laisse la fenetre s'afficher d'abord),
+        # puis toutes les PI_PROBE_PERIOD_MS. Voir _pi_state_probe.
+        self.after(2000, self._pi_state_tick)
         # Auto-chargement de la carte par défaut
         if os.path.exists(MAPV1):
             self._live_map.load_map(MAPV1)
@@ -323,6 +333,10 @@ class App(tk.Tk):
             ("3  Carolus Astrobee",          False),
             ("4  TF Broadcaster (quat fix)", False),
             ("5  Beacon Docking",            False),
+            # T6 : independant du reste (tourne sur le Pi, sur son propre
+            # roscore local). Laisse activable des le depart -- il n'attend
+            # aucun topic de notre pipeline tant qu'il tourne sa simulation.
+            ("6  MINS (simulation, Pi)",      True),
         ]
         body = tk.Frame(left_col, bg=BG)
         body.pack(fill="x", padx=12, pady=8)
@@ -436,6 +450,19 @@ class App(tk.Tk):
         self.tof_lbl = tk.Label(left, text="N/A", bg=BG2, fg=FG, font=FONT_MONO, anchor="w")
         self.tof_lbl.pack(anchor="w")
 
+        # --- Etat du Raspberry Pi (2026-08-04) -------------------------------
+        # Temperature/charge/RAM du Pi, pas du robot : sur ce projet le Pi porte
+        # desormais TOUT le pipeline de perception (camera + Carolus, et a terme
+        # MINS), donc c'est lui qui sature en premier. Le test MINS du 2026-08-04
+        # a mesure un coeur a 100-118% pendant que trois restaient au repos --
+        # une info invisible depuis le robot, et decisive pour comprendre un
+        # ralentissement. Lu par SSH, pas par ROS : ca reste vrai meme si la
+        # stack ROS est arretee ou plantee.
+        tk.Label(left, text="Raspberry Pi", bg=BG2, fg=FG_DIM, anchor="w", font=FONT).pack(anchor="w", pady=(6, 0))
+        self.pi_lbl = tk.Label(left, text="temp --  load --  ram --",
+                               bg=BG2, fg=FG_DIM, font=FONT_MONO, anchor="w")
+        self.pi_lbl.pack(anchor="w")
+
         right = tk.Frame(dash, bg=BG2)
         right.grid(row=0, column=1, sticky="ne", ipadx=4, ipady=4)
         tk.Label(right, text="CAMERA (apercu ~20 Hz)", bg=BG2, fg=ACCENT, anchor="w", font=FONT).pack(anchor="w")
@@ -526,7 +553,7 @@ class App(tk.Tk):
         self.log_nb.pack(padx=12, pady=(2, 12), fill="both", expand=True)
 
         self.log_boxes = []
-        tab_labels = ["T1 roscore+Pi", "T2 Camera+Beacon", "T3 Carolus Astrobee", "T4 TF Broadcaster", "T5 Docking"]
+        tab_labels = ["T1 roscore+Pi", "T2 Camera+Beacon", "T3 Carolus Astrobee", "T4 TF Broadcaster", "T5 Docking", "T6 MINS"]
         for label in tab_labels:
             box = tk.Text(self.log_nb, height=16, width=66, bg=BG2, fg=FG,
                           insertbackground=FG, relief="flat", padx=6, pady=4,
@@ -842,7 +869,52 @@ class App(tk.Tk):
 
     # Nom des onglets pour le prefixe disque. Aligne sur `tab_labels` (~ligne 511)
     # mais volontairement court : ces prefixes sont faits pour etre grepes.
-    _LOG_TAGS = ["T1", "T2", "T3", "T4", "T5"]
+    # ---------------------------------------------------------------- Pi state
+    # Sonde SSH periodique (2026-08-04). Trois precautions, chacune pour une
+    # panne deja vue sur ce projet :
+    #   - THREAD separe : le 2026-08-04 le Pi a repondu au ping tout en laissant
+    #     SSH pendre indefiniment. Une lecture synchrone aurait fige la GUI.
+    #   - timeout DUR sur ssh (BatchMode + ConnectTimeout) : sans lui la commande
+    #     attend un mot de passe qui ne viendra jamais et ne rend jamais la main.
+    #   - periode LENTE (20 s) : c'est une info de contexte, pas une telemetrie
+    #     temps reel ; une sonde rapide ajouterait de la charge SSH a un Pi qu'on
+    #     surveille precisement parce qu'il sature.
+    PI_PROBE_PERIOD_MS = 20000
+
+    def _pi_state_tick(self):
+        """Relance la sonde puis se re-arme. Ne bloque jamais le thread GUI."""
+        threading.Thread(target=self._pi_state_probe, daemon=True).start()
+        self.after(self.PI_PROBE_PERIOD_MS, self._pi_state_tick)
+
+    def _pi_state_probe(self):
+        """Lit temperature / charge / RAM / frequence du Pi par SSH.
+
+        Tout est lu depuis /sys et /proc : disponible sur Ubuntu, contrairement
+        a `vcgencmd` qui n'existe que sous Raspberry Pi OS (verifie 2026-08-04).
+        """
+        cmd = ("cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null; echo '|';"
+               "cut -d' ' -f1 /proc/loadavg; echo '|';"
+               "free -m | awk '/Mem:/{print $3\" \"$2}'; echo '|';"
+               "cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null")
+        try:
+            out = subprocess.run(
+                ["ssh", *SSH_OPTS, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", PI, cmd],
+                capture_output=True, text=True, timeout=12).stdout
+            parts = [p.strip() for p in out.split("|")]
+            temp = f"{int(parts[0]) / 1000:.0f}C" if parts[0].isdigit() else "--"
+            load = parts[1] or "--"
+            used, total = (parts[2].split() + ["", ""])[:2]
+            ram = f"{int(used) * 100 // int(total)}%" if used.isdigit() and total.isdigit() else "--"
+            freq = f"{int(parts[3]) // 1000}MHz" if len(parts) > 3 and parts[3].isdigit() else ""
+            txt = f"temp {temp}  load {load}  ram {ram}  {freq}".rstrip()
+            # Seuils Pi 4B : throttling thermique a 80C, on alerte avant.
+            t = int(parts[0]) / 1000 if parts[0].isdigit() else 0
+            col = COL_KO if t >= 75 else (ACCENT if t >= 65 else FG)
+        except Exception:
+            txt, col = "unreachable", FG_DIM
+        self.after(0, lambda: self.pi_lbl.config(text=txt, fg=col))
+
+    _LOG_TAGS = ["T1", "T2", "T3", "T4", "T5", "T6"]
 
     def _log_to_disk(self, msg, tab):
         """Ecrit une ligne dans le log de session (2026-07-31).
@@ -1287,6 +1359,17 @@ class App(tk.Tk):
                     "export ROS_MASTER_URI=http://192.168.0.103:11311 && "
                     "export ROS_IP=192.168.0.100 && "
                     f"stdbuf -oL -eL python3 -u {DOCKING_SCRIPT} 2>&1"]
+        if i == 5:
+            # MINS tourne SUR LE PI (contrairement a T3/T5) : c'est la machine
+            # qui porte les capteurs, et la seule sous Ubuntu 20.04, la cible
+            # officielle de ROS Noetic. Lance sa propre simulation pour l'instant
+            # -- l'etape suivante est de le brancher sur nos vrais topics.
+            return ["ssh", "-tt"] + SSH_OPTS + ["-o", "ConnectTimeout=5", PI,
+                    "source /opt/ros/noetic/setup.bash; "
+                    "export ROS_MASTER_URI=http://localhost:11311; "
+                    "export ROS_IP=192.168.0.103; "
+                    f"cd {MINS_WS_PI} && source devel/setup.bash; "
+                    f"stdbuf -oL -eL roslaunch mins {MINS_LAUNCH} 2>&1"]
         return ["bash", "-c",
                 "source /opt/ros/noetic/setup.bash && "
                 "export ROS_MASTER_URI=http://192.168.0.103:11311 && "
