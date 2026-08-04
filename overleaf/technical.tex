@@ -676,6 +676,21 @@ ip -br addr
 \textbf{Never assign \texttt{192.168.42.2} to the Pi} --- that address
 belongs to the robot.
 
+\subsection{If you intend to automate this over SSH}
+
+Typing the two commands by hand prompts for a password, which is fine
+interactively. \textbf{Any script that brings the interface up over SSH needs
+passwordless \texttt{sudo} on the Pi}, otherwise it hangs silently waiting
+for a prompt it cannot display --- the process simply appears frozen, with no
+error. Check before automating anything:
+
+\begin{lstlisting}[style=shell]
+ssh <user>@<pi> 'sudo -n true && echo "passwordless sudo OK"'
+\end{lstlisting}
+
+If it fails, grant it with \texttt{visudo} on the Pi (scope it to the two
+\texttt{ip} commands rather than granting blanket rights).
+
 \section{Verifying the link}
 
 \begin{lstlisting}[style=shell]
@@ -1472,6 +1487,32 @@ With a beacon visible to the camera, \texttt{/pose} publishes a
 \texttt{geometry\_msgs/PoseStamped}. Visualize blob detection in RViz by
 adding an \textbf{Image} display on \texttt{/postprocessed/image}: correctly
 detected blobs appear as small circles over the live feed.
+
+\section{Warnings you can safely ignore}
+
+Three messages appear routinely on a healthy system. They are listed here so
+that nobody spends an afternoon diagnosing them, which has happened on this
+project more than once.
+
+\begin{itemize}
+  \item \texttt{bash: .../catkin\_ws/devel/setup.bash: No such file or
+  directory} --- a leftover line in a shell profile referring to a workspace
+  that no longer exists. Harmless; remove the line from \texttt{\textasciitilde/.bashrc}
+  if it bothers you.
+
+  \item \texttt{WARNING: disk usage in log directory [...] is over 1GB} ---
+  accumulated ROS logs. Clear them when convenient:
+
+\begin{lstlisting}[style=shell]
+rosclean purge
+\end{lstlisting}
+
+  \item \texttt{imageio 2.35.1 has requirement pillow>=8.3.2, but you'll have
+  pillow 7.0.0} --- printed while installing the \texttt{robomaster} SDK. It
+  comes from \texttt{myqr}, a transitive dependency used only for generating
+  Wi-Fi QR codes, which this RNDIS-based setup never uses. The version
+  conflict has no effect here.
+\end{itemize}
 
 \section{Beacon geometry and blob-filtering parameters}
 
