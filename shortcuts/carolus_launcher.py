@@ -129,18 +129,26 @@ class _LiveMapCanvas(tk.Frame):
 
 PI       = "ubuntu@192.168.0.103"
 PI_HOST  = "192.168.0.103"
-WS       = "~/carolus_ws"
+
+# Chemins derives de l'emplacement du script, pas codes en dur (2026-08-04).
+# WS pointait vers un chemin absolu sous le home d'un seul poste : le launcher
+# etait donc inutilisable ailleurs, et ce chemin exposait un nom d'utilisateur
+# local dans un depot destine a devenir public. Le launcher vit dans
+# <projet>/shortcuts/, donc le workspace est <projet>/carolus_ws. Surchargeable
+# par CAROLUS_WS si la disposition differe.
+HERE     = os.path.dirname(os.path.abspath(__file__))
+_ROOT    = os.path.dirname(HERE)
+WS       = os.environ.get("CAROLUS_WS", os.path.join(_ROOT, "carolus_ws"))
 BEACON_PI = "/home/ubuntu/carolus_ws/src/robomaster_cam/scripts/rm_cam_beacon.py"
 TF_BROADCASTER_PI = "/home/ubuntu/carolus_ws/src/carolus_node/scripts/carolus_tf_broadcaster.py"
 # Docking (2026-07-27) : tourne sur le PC labo, pas le Pi -- pas de connexion SDK
 # propre (commande via /carolus/cmd_vel, deja relaye par rm_cam_beacon.py), donc
 # pas de contrainte "un seul proprietaire SDK" ici, meme raisonnement que T3.
-DOCKING_SCRIPT = "~/carolus_ws/src/robomaster_cam/scripts/beacon_docking.py"
+DOCKING_SCRIPT = os.path.join(WS, "src/robomaster_cam/scripts/beacon_docking.py")
 SSH_KEY  = os.path.expanduser("~/.ssh/carolus_nopass")
 SSH_OPTS = ["-i", SSH_KEY, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no"]
 
-HERE    = os.path.dirname(os.path.abspath(__file__))
-HELPER  = os.path.join(HERE, "cam_view_helper.py")
+HELPER  = os.path.join(HERE, "cam_view_helper.py")   # HERE defini plus haut
 CAM_PNG = "/tmp/carolus_cam.png"
 
 # ── statuts ───────────────────────────────────────────────────────────────────
