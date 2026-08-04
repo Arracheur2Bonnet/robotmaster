@@ -59,4 +59,14 @@ void CobrasFumantes::computeAndValidatePosesWithRefinement(
     // UPDATE BEST POSE
     bestPose.R = computeRotationMatrix(camera_params[3], camera_params[4], camera_params[5]);
     bestPose.t = Eigen::Vector3d(camera_params[0], camera_params[1], camera_params[2]);
+
+    // BUG-087 (2026-08-03) — surface what Ceres already told us.
+    // `summary` was filled on every solve and never read, so a run that hit
+    // max_num_iterations without converging returned a finite, plausible pose
+    // indistinguishable from a good one. The pose written above is UNCHANGED;
+    // only the diagnostics are new. Deciding whether to reject on them comes
+    // after we know how often non-convergence actually occurs.
+    bestPose.solver_converged  = (summary.termination_type == ceres::CONVERGENCE);
+    bestPose.solver_final_cost = summary.final_cost;
+    bestPose.solver_iterations = static_cast<int>(summary.iterations.size());
 }

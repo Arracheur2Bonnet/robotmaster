@@ -45,6 +45,14 @@
 }
 \lstset{style=shell}
 
+% --- "which machine" banner, used at the top of each chapter -------------
+\newcommand{\runson}[1]{%
+  \begin{center}
+  \fcolorbox{black}{codebg}{\parbox{0.94\textwidth}{\textbf{Runs on:} #1}}
+  \end{center}
+}
+
+
 \title{Carolus / RoboMaster S1 --- Complete Technical Manual}
 \author{}
 \date{\today}
@@ -94,9 +102,12 @@ point it occurs.
   connected to the robot over USB via RNDIS (a virtual Ethernet link over
   USB). The Pi holds the single connection to the robot's SDK and runs the
   camera/beacon-tracking node.
-  \item \textbf{Lab PC:} runs the operator GUI, the Carolus pose-estimation
-  node, and (planned) the localization back end. Not physically connected to
-  the robot; communicates with the Pi over the local network.
+  \item \textbf{Lab PC:} runs the operator GUI and, in the
+  currently-validated configuration, the Carolus pose-estimation node. Not
+  physically connected to the robot; communicates with the Pi over the local
+  network. \textbf{Carolus is intended to move onto the Raspberry Pi} so the
+  robot can operate without a network link to the PC ---
+  see Section~\ref{sec:where-carolus-runs}.
   \item \textbf{Camera:} the S1's own internal camera (built into the
   gimbal/head), streamed over the SDK. This project does not use an external
   Intel RealSense D455 --- some inherited reference material describes a
@@ -183,6 +194,8 @@ project today.
 
 \chapter{Powering On the Robot}
 \label{ch:poweron}
+
+\runson{the \textbf{robot itself} (physical handling). The Raspberry Pi and lab PC are not involved until Chapter~\ref{ch:raspberrypi}.}
 
 \section{Before you start}
 
@@ -286,6 +299,8 @@ needed.
 
 \chapter{Rooting the S1}
 \label{ch:rooting}
+
+\runson{a \textbf{Windows or macOS computer} connected to the robot by micro-USB. Not the Raspberry Pi, not the Ubuntu lab PC --- the RoboMaster app required for this step does not run on Linux.}
 
 If Chapter~\ref{ch:poweron}'s double-chime check already confirmed the robot
 is rooted, this chapter is informational only --- do not re-run it.
@@ -412,6 +427,8 @@ re-push a corrected \texttt{patch.sh} and restart the robot again.
 
 \chapter{Setting Up the Raspberry Pi}
 \label{ch:raspberrypi}
+
+\runson{the \textbf{Raspberry Pi 4B} (mounted on the robot), with a keyboard/monitor for first boot or over SSH from the lab PC afterwards.}
 
 This chapter takes a blank Raspberry Pi~4B to a working Ubuntu~20.04
 installation with Python~3.7, the RoboMaster SDK, ROS Noetic, and SSH
@@ -624,6 +641,8 @@ two commands to run at the start of every session.
 \chapter{Network Setup (RNDIS)}
 \label{ch:network}
 
+\runson{the \textbf{Raspberry Pi} for the interface commands; one step at the end runs on the \textbf{lab PC} and is marked as such.}
+
 The robot exposes an RNDIS virtual Ethernet interface over the same USB
 cable used for the SDK connection. The robot holds a fixed address,
 \texttt{192.168.42.2}; the Raspberry Pi must be configured on the same
@@ -708,6 +727,8 @@ a different network; find it with \texttt{hostname -I} run on the Pi
 
 \chapter{The Camera and Robot Bridge}
 \label{ch:camera}
+
+\runson{the \textbf{Raspberry Pi} --- this is the only machine that ever connects to the robot SDK. The verification commands at the end run from the \textbf{lab PC}.}
 
 \section{Design: a single SDK connection}
 
@@ -832,6 +853,8 @@ where that material remains genuinely useful (the calibration
 
 \chapter{Camera Calibration}
 \label{ch:calibration}
+
+\runson{the \textbf{lab PC} (or any machine with MATLAB / a Kalibr install). Images and rosbags come from the robot camera over the network.}
 
 \section{Current values in use}
 
@@ -1001,20 +1024,88 @@ filter.
 \chapter{Building and Launching Carolus}
 \label{ch:carolus-node}
 
-Carolus (the ROS package name is \texttt{carolus\_astrobee}) is built on the
-\textbf{lab PC}, not the Pi. It has no SDK connection of its own --- it only
-consumes \texttt{/camera/color/image\_raw} (published by
-\texttt{rm\_cam\_beacon.py} over the network from the Pi, Chapter~\ref{ch:camera})
-and publishes a pose.
+\runson{the \textbf{lab PC} in the configuration documented here --- see Section~\ref{sec:where-carolus-runs} for why, and for the planned move onto the Raspberry Pi.}
+
+Carolus (the ROS package name is \texttt{carolus\_astrobee}) is built and run
+on the \textbf{lab PC} in the configuration this manual documents. It has no
+SDK connection of its own --- it only consumes
+\texttt{/camera/color/image\_raw} (published by \texttt{rm\_cam\_beacon.py}
+over the network from the Pi, Chapter~\ref{ch:camera}) and publishes a pose.
+
+\section{Where Carolus runs, and why it should move to the Pi}
+\label{sec:where-carolus-runs}
+
+\textbf{Running Carolus on the lab PC is the currently-validated
+configuration, not the recommended end state.} It has a structural cost that
+matters for autonomous operation, and the intended target is the Raspberry
+Pi. Both are stated here rather than presenting the current setup as
+settled.
+
+\subsection{The cost of running it on the PC}
+
+Two consequences follow directly from the split:
+
+\begin{itemize}
+  \item \textbf{The robot cannot operate away from the PC.} Every pose
+  estimate depends on a live network link to the lab PC, so the robot must
+  stay within network reach at all times --- incompatible with genuinely
+  autonomous operation.
+  \item \textbf{It is very likely the throughput bottleneck.} Carolus
+  currently publishes poses at roughly 2.5\,Hz on this setup.
+  \texttt{/camera/color/image\_raw} is published as \emph{uncompressed}
+  \texttt{sensor\_msgs/Image} at $1280\times720$ --- about 2.76\,MB per frame
+  in BGR8 --- and every frame must cross the Pi$\to$PC link before Carolus
+  can process it. Published uVGS-2 benchmarks on comparable CPU hardware
+  report throughput roughly $40\times$ higher than what is observed here,
+  which places the P4P/Ceres computation itself well within budget and
+  points at the image transport path instead.
+\end{itemize}
+
+\textbf{This is a reasoned diagnosis, not a measurement.} The network link
+has not been instrumented directly; the conclusion rests on the frame size,
+the observed rate, and the published benchmark figures. It should be treated
+as the leading hypothesis, not an established fact.
+
+\subsection{The intended target: build and run on the Raspberry Pi}
+
+Running Carolus on the Pi removes the network hop entirely --- the camera
+frames never leave the machine that captures them --- which addresses both
+problems above at once. The target update rate for useful autonomous
+operation is \textbf{at least 10 pose updates per second}.
+
+Two points support the move beyond the bottleneck argument:
+
+\begin{itemize}
+  \item The Pi runs Ubuntu 20.04, which is the officially supported target
+  for ROS Noetic. The lab PC runs 22.04 and needs the five compatibility
+  fixes documented below purely as a consequence; a Pi-side build should not
+  need any of them.
+  \item Planned visual-inertial work (MINS) is likewise tested only on
+  Ubuntu 18/20 with Melodic/Noetic, so the Pi qualifies and the 22.04 lab PC
+  does not.
+\end{itemize}
+
+\textbf{Not yet done, and deliberately not documented as if it were:}
+Carolus has not yet been built or benchmarked on the Raspberry Pi on this
+project. Until a Pi-side build is compiled and its actual pose rate
+measured, the procedure below --- which is what has genuinely been run ---
+targets the lab PC. The build steps themselves are not architecture-specific
+(the same \texttt{catkin\_make} sequence applies), so the Ubuntu 20.04
+instructions in the next section are the relevant ones for a Pi build; the
+22.04 fixes after them are lab-PC-specific and should be skipped.
 
 \section{Getting this project's code onto the lab PC}
 
-Clone the project's repository onto the lab PC --- it contains
-\texttt{carolus\_node/} (the launch files and configuration),
-\texttt{libuvgs\_astrobee/} (Carolus's own C++ source, already patched for
-this robot), \texttt{ff\_msgs/} (a message-definition dependency), and
+Clone the project's repository onto the lab PC. Cloning into a directory
+named \texttt{carolus\_ws} gives a standard catkin workspace layout, with
+the ROS packages under \texttt{src/}:
+\texttt{src/carolus\_node/} (the launch files and configuration),
+\texttt{src/libuvgs\_astrobee/} (Carolus's own C++ source, already patched
+for this robot), \texttt{src/ff\_msgs/} (a message-definition dependency),
+\texttt{src/robomaster\_cam/} (the Pi-side bridge, Chapter~\ref{ch:camera}),
+plus \texttt{cmake\_shims/} (Ubuntu 22.04 build fixes, see below) and
 \texttt{shortcuts/} (this project's operator tooling, not covered in this
-manual):
+manual) at the top level:
 
 \begin{lstlisting}[style=shell]
 git clone git@github.com:Arracheur2Bonnet/robotmaster.git carolus_ws
@@ -1022,9 +1113,73 @@ git clone git@github.com:Arracheur2Bonnet/robotmaster.git carolus_ws
 # git clone https://github.com/Arracheur2Bonnet/robotmaster.git carolus_ws
 \end{lstlisting}
 
-This is a private repository; you need collaborator access (ask the project
-supervisor) and an SSH key or GitHub credentials of your own --- never a
-token pasted directly into a clone command shared between people.
+Repository web address:
+\url{https://github.com/Arracheur2Bonnet/robotmaster}
+
+\subsection{Requesting access}
+
+\textbf{This is a private repository.} If you open the link above without
+having been granted access, GitHub returns \textbf{404 Not Found}, not
+``403 Forbidden'' --- this is deliberate on GitHub's part (it avoids
+confirming that a private repository exists at all), so a 404 here means
+``you do not have access yet'', not ``the link is wrong''.
+
+To get access, ask the repository owner or the project supervisor to add
+your GitHub account as a collaborator (\emph{Settings $\to$ Collaborators
+$\to$ Add people} on the repository). You will need to give them your GitHub
+username. Once added, you will receive an email invitation that must be
+accepted before cloning works.
+
+\subsection{Setting up an SSH key}
+
+Cloning over SSH (the first command above) needs an SSH key registered
+against \emph{your own} GitHub account. This is a one-time setup per
+machine, and it is what replaces the practice --- found in some older
+inherited documents --- of pasting a shared personal access token directly
+into a clone command. A shared token grants whoever holds it the full
+access rights of the account that created it, cannot be attributed to an
+individual, and stays valid in every copy of the document that carries it.
+
+\begin{enumerate}
+  \item Generate a key on the machine that will clone the repository (the
+  Raspberry Pi and the lab PC each need their own):
+
+\begin{lstlisting}[style=shell]
+ssh-keygen -t ed25519 -C "your_email@example.com"
+# Press Enter to accept the default path (~/.ssh/id_ed25519).
+# A passphrase is optional but recommended.
+\end{lstlisting}
+
+  \item Display the \textbf{public} half of the key --- this is the only
+  part that ever leaves the machine. Never share the file without the
+  \texttt{.pub} extension:
+
+\begin{lstlisting}[style=shell]
+cat ~/.ssh/id_ed25519.pub
+\end{lstlisting}
+
+  \item On GitHub: \emph{profile photo $\to$ Settings $\to$ SSH and GPG keys
+  $\to$ New SSH key}. Give it a title identifying the machine (e.g.\
+  ``RoboMaster Pi''), paste the full line printed above, and save.
+
+  \item Verify the key works before attempting the clone:
+
+\begin{lstlisting}[style=shell]
+ssh -T git@github.com
+\end{lstlisting}
+
+  A successful setup answers with
+  \texttt{Hi <username>! You've successfully authenticated, but GitHub does
+  not provide shell access.} --- that message is the expected result, not an
+  error.
+\end{enumerate}
+
+If you prefer HTTPS to SSH, use the second clone command instead and
+authenticate with your GitHub username and a personal access token
+\emph{that you generate for your own account} --- created under
+\emph{Settings $\to$ Developer settings $\to$ Personal access tokens}, scoped
+to repository read access, and never shared with anyone else or written into
+a document.
 
 \section{Building on Ubuntu 20.04}
 
@@ -1165,7 +1320,10 @@ cmake -U <pkg>_DIR
 \section{Launching Carolus}
 \label{sec:launching}
 
-The full, current launch file, \texttt{carolus\_node/launch/testcarolus.launch}:
+The current launch file, \texttt{src/carolus\_node/launch/testcarolus.launch},
+reproduced below with its comments translated to English (every parameter and
+value is exactly as in the repository; a disabled RViz block at the end of the
+real file is omitted here):
 
 \begin{lstlisting}[style=code,language=XML]
 <launch>
@@ -1274,10 +1432,20 @@ Parameter & Meaning \\
 \texttt{saturation\_threshold} & Rejects low-saturation pixels (in HSV) before hue filtering. \\
 \texttt{min\_area}, \texttt{max\_area} & Rejects contours outside this pixel-area range. \\
 \texttt{max\_distance\_lim} & Rejects candidate 4-blob groups whose pairwise distances exceed this. \\
-\texttt{lb\_hue}, \texttt{ub\_hue} & Hue range (degrees, 0--360) the beacon's LEDs must fall within. \\
+\texttt{lb\_hue}, \texttt{ub\_hue} & Hue range the beacon's LEDs must fall within, in \textbf{OpenCV's 0--180 scale}, not 0--360. \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+\textbf{The hue scale is worth stating explicitly, because getting it wrong
+silently kills all detection.} OpenCV stores hue on 0--180 (half the usual
+0--360 degree circle, so it fits in one byte), and the node compares the
+blob's mean hue against \texttt{lb\_hue}/\texttt{ub\_hue} on that same
+0--180 scale. Rough reference points: red $\approx$ 0--10 and 170--180,
+green $\approx$ 50--80, blue $\approx$ 100--140. This project's beacon uses
+blue LEDs, hence the 90--140 window in the launch file. If you enter a value
+from the 0--360 convention (e.g.\ 240 for blue), every blob is rejected and
+the node runs normally while never publishing a pose.
 
 \texttt{known\_points} is the beacon's four LED positions in metres, in
 Carolus's own left-handed frame, with one point deliberately off the plane

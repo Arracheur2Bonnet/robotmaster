@@ -1123,6 +1123,19 @@ private:
 
 
 
+    // BUG-087 (2026-08-03) — report non-convergence instead of hiding it.
+    // Deliberately a WARNING and not a rejection: the pose is still published
+    // exactly as before, because we do not yet know how often this fires. If it
+    // turns out to be rare, rejecting becomes the right fix; if it is common,
+    // rejecting would silence the pipeline. Throttled so a persistent failure
+    // cannot flood the log at frame rate.
+    if (!bestPose.solver_converged) {
+        ROS_WARN_THROTTLE(2.0,
+            "[P4P] solver did NOT converge (iterations=%d, final_cost=%.6g) — "
+            "pose still published, treat with suspicion",
+            bestPose.solver_iterations, bestPose.solver_final_cost);
+    }
+
     if (bestPose.R.allFinite() && bestPose.t.allFinite()) {
         CameraPose filteredPose = getFilteredPose(bestPose, timestamp);
         if (fifo){

@@ -21,7 +21,7 @@ import tf2_ros
 import tf.transformations as tft
 from robomaster import robot
 from robomaster.battery import BatterySubject as _BatBase
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, Imu
 from geometry_msgs.msg import PoseStamped, Twist, TransformStamped
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String, Float32
@@ -398,6 +398,19 @@ class EPCameraBeaconFollower:
         except Exception as e:
             rospy.logwarn(f"[STATUS] sub_status failed: {e}")
 
+        # IMU brute (accelero + gyro), 2026-07-30 (prerequis calibration MINS,
+        # cf. research-log/20-protocole-calibration-camera-imu-kalibr.md) — best-effort.
+        # freq=50 : seule valeur vue utilisee sur cette famille S1 rootee (exemple
+        # ROS2 communautaire, s1_sdk_hack_v0.0.5/.../ros2_robot.py:42) ; pas confirme
+        # comme le plafond reel du SDK. La doc officielle OpenVINS demande 200-500Hz
+        # pour une bonne calibration Kalibr (docs.openvins.com/gs-calibration.html) —
+        # a re-verifier avant la session de calibration si 50Hz s'avere insuffisant.
+        try:
+            self.chassis.sub_imu(freq=50, callback=self._imu_cb)
+            rospy.loginfo("[IMU] sub_imu OK")
+        except Exception as e:
+            rospy.logwarn(f"[IMU] sub_imu failed: {e}")
+
         # Distance TOF (capteur IR frontal, évitement réactif) — best-effort
         try:
             self.ep.sensor.sub_distance(freq=10, callback=self._dist_cb)
@@ -424,6 +437,8 @@ class EPCameraBeaconFollower:
         # une orientation absolue — suffisant pour une mesure de derive relative comme
         # ici ; a verifier avant reutilisation dans l'EKF robot_localization de F3).
         self.pub_odom = rospy.Publisher("/odom", Odometry, queue_size=10)
+        # IMU brute pour la calibration Kalibr / MINS (2026-07-30) — voir _imu_cb.
+        self.pub_imu = rospy.Publisher("/imu", Imu, queue_size=50)
         # pub_gimbal_yaw / pub_gimbal_yaw_ground crees plus haut (avant sub_angle,
         # cf. commentaire ligne ~311) — pas de re-creation ici.
         rospy.Subscriber("/pose",               PoseStamped, self._pose_cb)
@@ -687,6 +702,39 @@ class EPCameraBeaconFollower:
                 }
         except Exception:
             pass
+
+    def _imu_cb(self, sub_info):
+        """IMU brute (2026-07-30, prerequis calibration MINS). Republie directement
+        sur /imu, sans passer par self._telem (contrairement aux autres sub_* de ce
+        bloc) : un consommateur type Kalibr/MINS a besoin de chaque echantillon
+        avec son propre timestamp, pas d'un dernier-etat interroge a la demande.
+
+        Ordre de retour (ax, ay, az, wx, wy, wz) confirme par un exemple ROS2
+        communautaire pour cette meme famille S1 rootee (sub_imu(freq=50), voir
+        s1_sdk_hack_v0.0.5/.../ros2_robot.py:83-91) — mais les UNITES ne sont PAS
+        confirmees (m/s^2 et rad/s supposes par analogie avec sensor_msgs/Imu, pas
+        verifie contre la doc SDK ni sur materiel). A verifier avant la session de
+        calibration : comparer une lecture au repos (gravite attendue ~9.81 sur un
+        axe) et une rotation connue au gyro. Meme reserve deja appliquee ailleurs
+        dans ce fichier aux conventions de signe SDK non confirmees.
+        orientation_covariance[0]=-1 : convention ROS standard pour "pas de
+        donnee d'orientation" (sub_imu ne donne que accelero+gyro).
+        """
+        try:
+            ax, ay, az, wx, wy, wz = sub_info
+        except (TypeError, ValueError):
+            return
+        msg = Imu()
+        msg.header.stamp = rospy.Time.now()
+        msg.header.frame_id = "base_link"
+        msg.orientation_covariance[0] = -1.0
+        msg.linear_acceleration.x = float(ax)
+        msg.linear_acceleration.y = float(ay)
+        msg.linear_acceleration.z = float(az)
+        msg.angular_velocity.x = float(wx)
+        msg.angular_velocity.y = float(wy)
+        msg.angular_velocity.z = float(wz)
+        self.pub_imu.publish(msg)
 
     def _dist_cb(self, sub_info):
         try:
@@ -1301,6 +1349,10 @@ class EPCameraBeaconFollower:
             pass
         try:
             self.chassis.unsub_status()
+        except Exception:
+            pass
+        try:
+            self.chassis.unsub_imu()
         except Exception:
             pass
         try:
