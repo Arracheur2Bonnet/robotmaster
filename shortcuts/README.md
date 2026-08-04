@@ -316,3 +316,29 @@ python3 shortcuts/cam_view_helper.py /tmp/carolus_cam.png
 - The robot is positioned at the grid's geometric center by default (column 13, row ~10.5 — 21 rows is odd, so the exact center isn't a whole cell — on a 26×21 grid, since the 2026-06-30 enlargement — previously at the bottom of the 20×15 grid).
 
 **Expected:** the blue robot overlay (■▲) moves live via `update_robot()`, a temporary orange dot via `update_beacon()`, persistent beacons via `add_auto_beacon()`. Zoom with the wheel, pan with right-click drag. An optimized hover ghost (cached per cell/rotation — no redraw if the mouse stays in the same cell).
+
+---
+
+## sync_repo.sh
+
+**What** — reconciles `carolus_repo/` (the published git repo) with the live working files, reporting drift by checksum.
+
+**Why** — `carolus_repo/` is not a checkout of the working tree; it is a hand-assembled subset pulled from three separate places (`carolus_ws/src/`, `carolus_ws/cmake_shims/`, and `shortcuts/` at the project root). Nothing reconciled them, so the published repo drifted silently — on 2026-08-04 it was still carrying the *old* `leak_scan.sh`, blind to PDF/DOCX, which would have reported "nothing found" to anyone who ran it.
+
+**Usage**
+```bash
+bash shortcuts/sync_repo.sh          # DRY RUN: report drift, change nothing
+bash shortcuts/sync_repo.sh --apply  # copy live -> repo, then report
+```
+
+| Source | Destination |
+|---|---|
+| `carolus_ws/src/` | `carolus_repo/src/` (minus `robot_localization`, minus the root `CMakeLists.txt` symlink) |
+| `carolus_ws/cmake_shims/` | `carolus_repo/cmake_shims/` |
+| `shortcuts/` | `carolus_repo/shortcuts/` |
+
+`overleaf/` and the repo's `README.md` exist only in the repo and are never touched.
+
+**Expected** — `RESULT: repo matches the working files.` once in sync. Dry run is the default on purpose: a blind copy could clobber a repo-only edit, so always read the report before passing `--apply`.
+
+---
