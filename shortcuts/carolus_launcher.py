@@ -22,7 +22,7 @@ MAPV1 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mapv1.js
 # ── Carte live embarquée ──────────────────────────────────────────────────────
 
 class _LiveMapCanvas(tk.Frame):
-    """Mini-canvas de carte 2D lecture seule, embarqué dans le launcher."""
+    """Small read-only 2D map canvas, embedded in the launcher."""
     CELL = 20          # px par case
     CELL_M = 0.40      # mètre par case
 
@@ -130,26 +130,27 @@ class _LiveMapCanvas(tk.Frame):
 PI       = "ubuntu@192.168.0.103"
 PI_HOST  = "192.168.0.103"
 
-# Chemins derives de l'emplacement du script, pas codes en dur (2026-08-04).
-# WS pointait vers un chemin absolu sous le home d'un seul poste : le launcher
-# etait donc inutilisable ailleurs, et ce chemin exposait un nom d'utilisateur
-# local dans un depot destine a devenir public. Le launcher vit dans
-# <projet>/shortcuts/, donc le workspace est <projet>/carolus_ws. Surchargeable
-# par CAROLUS_WS si la disposition differe.
+# Paths derived from the script's own location, not hardcoded (2026-08-04).
+# WS used to point at an absolute path under one machine's home directory: the
+# launcher was therefore unusable anywhere else, and that path leaked a local
+# username into a repository about to be made public. The launcher lives in
+# <project>/shortcuts/, so the workspace is <project>/carolus_ws. Override with
+# CAROLUS_WS if your layout differs.
 HERE     = os.path.dirname(os.path.abspath(__file__))
 _ROOT    = os.path.dirname(HERE)
 WS       = os.environ.get("CAROLUS_WS", os.path.join(_ROOT, "carolus_ws"))
 BEACON_PI = "/home/ubuntu/carolus_ws/src/robomaster_cam/scripts/rm_cam_beacon.py"
 TF_BROADCASTER_PI = "/home/ubuntu/carolus_ws/src/carolus_node/scripts/carolus_tf_broadcaster.py"
-# Docking (2026-07-27) : tourne sur le PC labo, pas le Pi -- pas de connexion SDK
-# propre (commande via /carolus/cmd_vel, deja relaye par rm_cam_beacon.py), donc
-# pas de contrainte "un seul proprietaire SDK" ici, meme raisonnement que T3.
+# Docking (2026-07-27): runs on the lab PC, not the Pi -- it holds no SDK
+# connection of its own (it commands through /carolus/cmd_vel, already relayed by
+# rm_cam_beacon.py), so the "single SDK owner" constraint does not apply here.
 DOCKING_SCRIPT = os.path.join(WS, "src/robomaster_cam/scripts/beacon_docking.py")
-# MINS (2026-08-04) : tourne sur le Pi, dans son propre workspace, volontairement
-# separe de carolus_ws (bac a sable jetable tant que MINS n'est pas integre).
-# Mesure du 2026-08-04 : simulation.launch marche et est precis (RMSE 0.113 deg /
-# 0.082 m) mais tourne a 0.3-0.4x temps reel AVEC la charge capteur de la simu
-# (2 cameras + LIDAR + IMU 200Hz) -- bien plus lourde que la notre.
+# MINS (2026-08-04): runs on the Pi, in its own workspace, deliberately kept
+# separate from carolus_ws (a disposable sandbox while MINS is not integrated).
+# Measured 2026-08-04: simulation.launch works and is accurate (RMSE 0.113 deg /
+# 0.082 m) but runs at 0.3-0.4x real time UNDER THE SIMULATION's sensor load
+# (2 cameras + LIDAR + IMU at 200 Hz), far heavier than ours. On our own recorded
+# data, one camera and no LIDAR, it reached 0.7x -- still short of real time.
 MINS_WS_PI    = "/home/ubuntu/mins_sandbox_ws"
 MINS_LAUNCH   = "simulation.launch"
 SSH_KEY  = os.path.expanduser("~/.ssh/carolus_nopass")
@@ -181,11 +182,11 @@ COL_IDLE     = "#3a3a3a"
 COL_MANUAL   = "#1f6feb"
 COL_OK       = "#2e8b2e"
 COL_KO       = "#cc0000"
-COL_KEY_ACT  = "#d4a017"   # or de touche active (ZQSD / numpad)
+COL_KEY_ACT  = "#d4a017"   # gold, for an active key (ZQSD / numpad)
 
-# Lignes de telemetrie haute frequence : dashboard uniquement, ne pas encombrer le log texte
+# High-rate telemetry lines: dashboard only, kept out of the text log
 _LOG_SUPPRESS = frozenset({"[ESC]", "[ATTI]", "[POS]", "[BAT]", "[VEL]", "[TOF]", "[BEACON]"})
-# [BEACONPOS] volontairement hors du filtre : valeurs brutes utiles pour diagnostiquer l'orientation
+# [BEACONPOS] deliberately excluded from the filter: the raw values are useful for diagnosing orientation
 
 RE_DEPTH     = re.compile(r"depth=([0-9.]+)m")
 RE_BAT       = re.compile(r"\[BAT\]\s*(\d+)%\s*temp=([+-]?[0-9.]+)C\s*cur=(-?\d+)mA\s*adc=(\d+)")
@@ -200,16 +201,16 @@ RE_OBSTACLE  = re.compile(r"\[OBSTACLE\]\s*(.+)")
 RE_BEACON    = re.compile(r"\[BEACON\]\s*status=(DETECTED|LOST)(?:\s*yaw_err=([+-]?[0-9.]+)\s*pitch_err=([+-]?[0-9.]+))?")
 RE_DOCKSTATUS = re.compile(r"\[DOCKSTATUS\]\s*status=(\S+)\s*yaw_validated=(True|False)")
 
-BEACON_FRESH_S = 1.5   # doit matcher POSE_TIMEOUT_S dans rm_cam_beacon.py
+BEACON_FRESH_S = 1.5   # must match POSE_TIMEOUT_S in rm_cam_beacon.py
 
 # Polices nommees SANS taille explicite (taille explicite -> crash X11 BadLength, cf journal 2026-06-23)
 FONT      = ("TkDefaultFont",)
 FONT_MONO = ("TkFixedFont",)
 
-# Debounce anti auto-repeat X11 (2026-07-23, Perplexity 11 pt.6) : X11 emet un
-# KeyRelease immediatement suivi d'un KeyPress pendant qu'une touche est tenue
-# -- sans filtre, chaque relachement declenchait un STOP/re-envoi parasite,
-# produisant le dents-de-scie observe sur /carolus/cmd_vel (x: 0.2/0.0/0.2/0.0...).
+# X11 auto-repeat debounce (2026-07-23): while a key is held, X11 emits a
+# KeyRelease immediately followed by a KeyPress. Without filtering, every one of
+# those releases triggered a spurious STOP and re-send, producing the sawtooth
+# observed on /carolus/cmd_vel (x: 0.2/0.0/0.2/0.0...).
 KEY_REPEAT_DEBOUNCE_MS = 40
 
 MANUAL_VX    = 0.20   # m/s avant/arriere en mode manuel
@@ -220,11 +221,62 @@ GIMBAL_YAW   = 40.0   # deg/s yaw gimbal (numpad 4/6)
 
 # ── Kill distants (SSH) / locaux ────────────────────────────────────────────────
 
+def _bracketed(pattern):
+    """Turn 'rm_cam_beacon' into '[r]m_cam_beacon'.
+
+    BUG-095 (2026-08-04): ssh runs the command inside a remote shell whose own
+    /proc cmdline CONTAINS the pattern being matched. A plain
+    'pkill -9 -f rm_cam_beacon' therefore matches that shell and kills it --
+    possibly BEFORE reaching the real target, depending on PID scan order.
+    Silent and non-deterministic. The bracket class '[r]m...' matches the
+    target's cmdline but not the literal text in our own.
+
+    Same defect fixed earlier the same day in measure_pi_pose.sh (BUG-090, then
+    BUG-094). Third occurrence, three files -- hence this single helper, so the
+    pattern is never hand-written again.
+    """
+    return "[" + pattern[0] + "]" + pattern[1:] if pattern else pattern
+
+
 def ssh_kill(cmd):
+    """Legacy path: still accepts a full shell command."""
     subprocess.run(
         ["ssh"] + SSH_OPTS + ["-o", "ConnectTimeout=3", PI, cmd],
         capture_output=True
     )
+
+
+def remote_kill(*patterns, verify=True):
+    """Kill processes on the Pi and VERIFY they are gone.
+
+    Returns the patterns still alive afterwards (empty = everything died). We
+    verify because BUG-095's failure mode was silent: the Kill button returned
+    looking as though it had worked.
+    """
+    if not patterns:
+        return []
+    kills = "; ".join(f'pkill -9 -f "{_bracketed(p)}"' for p in patterns)
+    check = "|".join(_bracketed(p) for p in patterns)
+    cmd = f'{kills}; sleep 1; pgrep -f "{check}" >/dev/null && echo ALIVE || echo CLEAN'
+    r = subprocess.run(
+        ["ssh"] + SSH_OPTS + ["-o", "ConnectTimeout=3", PI, cmd],
+        capture_output=True, text=True
+    )
+    if not verify:
+        return []
+    if "CLEAN" in (r.stdout or ""):
+        return []
+    # Second pass: identify precisely what survived.
+    survivors = []
+    for p in patterns:
+        rr = subprocess.run(
+            ["ssh"] + SSH_OPTS + ["-o", "ConnectTimeout=3", PI,
+             f'pgrep -f "{_bracketed(p)}" >/dev/null && echo YES || echo NO'],
+            capture_output=True, text=True
+        )
+        if "YES" in (rr.stdout or ""):
+            survivors.append(p)
+    return survivors
 
 
 def local_kill(pattern):
@@ -237,11 +289,11 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        # Log de session sur disque (2026-07-31) — ouvert EN PREMIER, avant tout
-        # ce qui pourrait appeler _log(). Meme precaution que BUG-065/BUG-068
-        # (publisher/timer utilises avant leur creation) : ici _log_fh doit
-        # exister avant le premier _log_to_disk, sinon AttributeError dans un
-        # chemin de log, c'est-a-dire au pire moment possible.
+        # On-disk session log (2026-07-31) -- opened FIRST, before anything that
+        # could call _log(). Same precaution as BUG-065/BUG-068 (a publisher or
+        # timer used before it was created): _log_fh must exist before the first
+        # _log_to_disk, otherwise an AttributeError fires inside a logging path,
+        # i.e. at the worst possible moment.
         self._log_fh = None
         self._session_log_path = None
         self._open_session_log()
@@ -257,7 +309,7 @@ class App(tk.Tk):
         self._keys_down = set()
         self._gim_down  = set()
         self._chassis_release_pending = {}   # touche -> id after() en attente (debounce X11)
-        self._gim_release_pending     = {}   # idem pour le numpad nacelle
+        self._gim_release_pending     = {}   # same, for the gimbal numpad
         self._stop_monitor   = False
         self._launch_cancelled = [False, False, False, False, False]   # annulation wait_for_*
         self._log_queue  = queue.Queue()       # lignes T2 integre -> main thread
@@ -267,12 +319,12 @@ class App(tk.Tk):
         self._map_editor     = None    # instance MapEditor si ouverte
         self._live_map       = None    # _LiveMapCanvas (construit dans _build)
         self._locate_active  = False   # mode LOCALISER actif
-        # Apercu camera GUI : OFF par defaut (2026-07-23) — gagner en fluidite de
-        # pilotage (Tkinter mainloop moins charge, cf. Perplexity 11 pt.5) ET
-        # liberer de la bande passante reseau : cam_view_helper.py s'abonne au meme
-        # topic /camera/color/image_raw que Carolus, deja identifie comme goulot
-        # (Perplexity 11 pt.4) — un abonne ROS en moins sur ce topic = moins de
-        # trafic duplique sur le lien Pi<->labo.
+        # GUI camera preview: OFF by default (2026-07-23) -- both for smoother
+        # piloting (a less loaded Tkinter mainloop) and to free network bandwidth:
+        # cam_view_helper.py subscribes to the same /camera/color/image_raw topic
+        # as Carolus, already identified as the bottleneck. One fewer ROS
+        # subscriber on that topic means less duplicated traffic on the Pi <-> lab
+        # PC link.
         self._camera_enabled = False
         self._gimbal_lock_active = False   # lock balise actif (centrage periodique, mode MANUEL uniquement)
         self._last_robot_pos = (0.0, 0.0)   # dernière pos sub_position (m)
@@ -285,14 +337,14 @@ class App(tk.Tk):
         self.after(100, self._flush_log_queue)
         self.after(300, self._check_beacon_freshness)
         # Sonde Pi : premier tir a 2s (laisse la fenetre s'afficher d'abord),
-        # puis toutes les PI_PROBE_PERIOD_MS. Voir _pi_state_probe.
+        # then every PI_PROBE_PERIOD_MS. See _pi_state_probe.
         self.after(2000, self._pi_state_tick)
         # Auto-chargement de la carte par défaut
         if os.path.exists(MAPV1):
             self._live_map.load_map(MAPV1)
         threading.Thread(target=self._conn_monitor, daemon=True).start()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
-        # Plein ecran (2026-07-23) : F11 pour basculer, Echap pour sortir.
+        # Fullscreen (2026-07-23): F11 toggles, Escape exits.
         self._is_fullscreen = False
         self.bind("<F11>", self._toggle_fullscreen)
         self.bind("<Escape>", self._exit_fullscreen)
@@ -333,9 +385,9 @@ class App(tk.Tk):
             ("3  Carolus Astrobee",          False),
             ("4  TF Broadcaster (quat fix)", False),
             ("5  Beacon Docking",            False),
-            # T6 : independant du reste (tourne sur le Pi, sur son propre
-            # roscore local). Laisse activable des le depart -- il n'attend
-            # aucun topic de notre pipeline tant qu'il tourne sa simulation.
+            # T6: independent of the rest (runs on the Pi, against its own local
+            # roscore). Left enabled from the start -- it waits on no topic from
+            # our pipeline while running its own simulation.
             ("6  MINS (simulation, Pi)",      True),
         ]
         body = tk.Frame(left_col, bg=BG)
@@ -377,10 +429,10 @@ class App(tk.Tk):
                                    activebackground=COL_ALIGN, activeforeground=FG, font=FONT,
                                    command=self._toggle_gimbal_lock)
         self._lock_btn.pack(side="left", fill="x", expand=True, padx=(4, 4))
-        # Periode de centrage LOCK, configurable en direct (2026-07-23) : champ de
-        # saisie en SECONDES uniquement, defaut 2s. Une valeur invalide n'est jamais
-        # bloquante -- rm_cam_beacon.py retombe silencieusement sur 2.0s (cf.
-        # _gimbal_lock_period_cb), comme un champ de formulaire web classique.
+        # LOCK re-centring period, live-configurable (2026-07-23): an input field
+        # in SECONDS only, default 2 s. An invalid value is never blocking --
+        # rm_cam_beacon.py falls back silently to 2.0 s (see
+        # _gimbal_lock_period_cb), like an ordinary web form field.
         self._lock_period_entry = tk.Entry(ctrl, width=4, bg=BG3, fg=FG,
                                            insertbackground=FG, relief="flat", font=FONT_MONO,
                                            justify="center")
@@ -450,14 +502,14 @@ class App(tk.Tk):
         self.tof_lbl = tk.Label(left, text="N/A", bg=BG2, fg=FG, font=FONT_MONO, anchor="w")
         self.tof_lbl.pack(anchor="w")
 
-        # --- Etat du Raspberry Pi (2026-08-04) -------------------------------
-        # Temperature/charge/RAM du Pi, pas du robot : sur ce projet le Pi porte
-        # desormais TOUT le pipeline de perception (camera + Carolus, et a terme
-        # MINS), donc c'est lui qui sature en premier. Le test MINS du 2026-08-04
-        # a mesure un coeur a 100-118% pendant que trois restaient au repos --
-        # une info invisible depuis le robot, et decisive pour comprendre un
-        # ralentissement. Lu par SSH, pas par ROS : ca reste vrai meme si la
-        # stack ROS est arretee ou plantee.
+        # --- Raspberry Pi status (2026-08-04) --------------------------------
+        # The Pi's temperature/load/RAM, not the robot's: on this project the Pi
+        # now carries the WHOLE perception pipeline (camera + Carolus, and MINS
+        # eventually), so it is what saturates first. The 2026-08-04 MINS test
+        # measured one core at 100-118% while three sat idle -- information
+        # invisible from the robot, and decisive when diagnosing a slowdown. Read
+        # over SSH rather than through ROS, so it stays true even when the ROS
+        # stack is stopped or has crashed.
         tk.Label(left, text="Raspberry Pi", bg=BG2, fg=FG_DIM, anchor="w", font=FONT).pack(anchor="w", pady=(6, 0))
         self.pi_lbl = tk.Label(left, text="temp --  load --  ram --",
                                bg=BG2, fg=FG_DIM, font=FONT_MONO, anchor="w")
@@ -495,13 +547,13 @@ class App(tk.Tk):
                                        font=FONT, command=self._on_gimbal_recenter)
         self._recenter_btn.pack(fill="x", pady=(6, 0))
 
-        # --- Docking (2026-07-27) : commandes sur /carolus/dock (relayees par
-        # cam_view_helper.py, meme mecanisme que RECENTER), statut lu depuis les
-        # logs de T5 ([DOCKSTATUS], meme mecanisme que [BEACON]). ---
+        # --- Docking (2026-07-27): commands on /carolus/dock (relayed by
+        # cam_view_helper.py, same mechanism as RECENTER), status read from T5's
+        # logs ([DOCKSTATUS], same mechanism as [BEACON]). ---
         tk.Label(right, text="DOCKING BALISE", bg=BG2, fg=ACCENT, anchor="w", font=FONT).pack(anchor="w", pady=(10, 0))
-        # Calibration en 2 clics independants (2026-07-27) : pas de minuteur bloquant
-        # entre les deux mesures -- chaque etape attend un clic explicite, a lire sur
-        # le statut GUI plutot que de guetter un message dans un log qui defile.
+        # Two independent-click calibration (2026-07-27): no blocking timer between
+        # the two measurements -- each step waits for an explicit click, read from the
+        # GUI status rather than by watching for a message in a scrolling log.
         dock_cal_row = tk.Frame(right, bg=BG2)
         dock_cal_row.pack(fill="x", pady=(2, 0))
         tk.Button(dock_cal_row, text="CALIBRATE (1)", bg=BG3, fg=FG, relief="flat",
@@ -510,9 +562,9 @@ class App(tk.Tk):
         tk.Button(dock_cal_row, text="CAL STEP 2", bg=BG3, fg=FG, relief="flat",
                   activebackground=COL_ALIGN, activeforeground=FG, font=FONT,
                   command=lambda: self._on_dock_cmd("CALSTEP2")).pack(side="left", fill="x", expand=True, padx=(2, 0))
-        # Tests isoles (2026-07-28) : ALIGN_ONLY tourne le chassis SANS jamais
-        # avancer ; APPROACH_ONLY avance SANS jamais tourner le chassis (et
-        # refuse si le chassis n'est pas deja aligne -- voir beacon_docking.py).
+        # Isolated tests (2026-07-28): ALIGN_ONLY rotates the chassis WITHOUT ever
+        # advancing; APPROACH_ONLY advances WITHOUT ever rotating the chassis (and
+        # refuses if the chassis is not already aligned -- see beacon_docking.py).
         dock_test_row = tk.Frame(right, bg=BG2)
         dock_test_row.pack(fill="x", pady=(2, 0))
         tk.Button(dock_test_row, text="ALIGN ONLY", bg=BG3, fg=FG, relief="flat",
@@ -553,21 +605,27 @@ class App(tk.Tk):
         self.log_nb.pack(padx=12, pady=(2, 12), fill="both", expand=True)
 
         self.log_boxes = []
-        tab_labels = ["T1 roscore+Pi", "T2 Camera+Beacon", "T3 Carolus Astrobee", "T4 TF Broadcaster", "T5 Docking", "T6 MINS"]
+        # The machine is in the label, deliberately. On 2026-08-04 a /pose
+        # measurement was attributed to the Pi while Carolus was running on the
+        # lab PC: the ROS master lives on the Pi in both cases, so nothing on
+        # screen distinguished them. The machine name is the most useful thing
+        # on the tab -- it comes first.
+        tab_labels = ["T1 roscore [Pi]", "T2 Camera+Beacon [Pi]", "T3 Carolus [Pi]",
+                      "T4 TF Broadcaster [Pi]", "T5 Docking [PC]", "T6 MINS [Pi]"]
         for label in tab_labels:
             box = tk.Text(self.log_nb, height=16, width=66, bg=BG2, fg=FG,
                           insertbackground=FG, relief="flat", padx=6, pady=4,
                           font=FONT_MONO, wrap="none", state="disabled")
-            # lecture seule MAIS selectionnable/copiable. state="disabled" (2026-07-23,
-            # BUG-061) : avant ce fix, _block_edit laissait passer Z/Q/S/D/numpad vers le
-            # root (pour piloter le robot depuis un onglet de logs focus) mais ca laissait
-            # AUSSI le binding par defaut de Text inserer le caractere dans le log — les
-            # touches de pilotage s'affichaient litteralement dans le texte, et la charge
-            # d'edition (insert + reflow) sur le thread Tkinter ajoutait de la latence
-            # perceptible au pilotage. Text disabled refuse tout insert/delete (y compris
-            # le notre : _log() doit temporairement repasser en "normal" pour ecrire),
-            # mais tag_add (selection, Ctrl+A) et .get() (copie) ne sont PAS bloques par
-            # cet etat — le copier/selectionner reste fonctionnel.
+            # Read-only BUT still selectable and copyable. state="disabled"
+            # (2026-07-23, BUG-061): before this fix _block_edit let Z/Q/S/D and the
+            # numpad through to the root window (so the robot could be driven from a
+            # focused log tab), but it ALSO let Text's default binding insert the
+            # character into the log -- the piloting keys appeared literally in the
+            # text, and the editing cost (insert + reflow) on the Tkinter thread added
+            # latency perceptible while driving. A disabled Text refuses every
+            # insert/delete, including ours (_log() flips back to "normal" for the
+            # duration of a write), but tag_add (selection, Ctrl+A) and .get() (copy)
+            # are NOT blocked by that state -- copy and select still work.
             box.bind("<Key>", self._block_edit)
             box.bind("<Control-a>", lambda e, b=box: self._select_all_logs(e, b))
             box.bind("<Control-A>", lambda e, b=box: self._select_all_logs(e, b))
@@ -618,11 +676,11 @@ class App(tk.Tk):
                  anchor="w", font=FONT).pack(anchor="w", pady=(0, 4))
         wr_keys = tk.Frame(wr, bg=BG2)
         wr_keys.pack()
-        # Avant (roues arriere poussent, avant se leve)
+        # Forward (rear wheels push, the front lifts)
         b_av = tk.Label(wr_keys, text="AV↑", width=4, height=1,
                         bg=BG3, fg=FG, font=FONT_MONO, bd=1, relief="raised")
         b_av.grid(row=0, column=0, padx=3, pady=3)
-        # Stop roues
+        # Wheel stop
         b_st = tk.Label(wr_keys, text="■", width=4, height=1,
                         bg=BG3, fg=COL_KO, font=FONT_MONO, bd=1, relief="raised")
         b_st.grid(row=0, column=1, padx=3, pady=3)
@@ -690,10 +748,11 @@ class App(tk.Tk):
             self._send_to_helper("MODE AUTO")
 
     def _toggle_gimbal_lock(self):
-        # Actif uniquement en mode MANUEL cote rm_cam_beacon.py (ignore silencieusement
-        # en AUTO/LOCATE) — le bouton reste utilisable dans tous les modes sans risque.
-        # Centrage periodique (cf. rm_cam_beacon.py::_gimbal_lock_tick), pas un servo
-        # continu -- l'ancien LOCK BALISE (servo continu) a ete retire le 2026-07-23.
+        # Active only in MANUAL mode on the rm_cam_beacon.py side (silently ignored
+        # in AUTO/LOCATE) -- the button stays usable in every mode with no risk.
+        # Periodic re-centring (see rm_cam_beacon.py::_gimbal_lock_tick), not a
+        # continuous servo -- the old continuous-servo BEACON LOCK was removed on
+        # 2026-07-23.
         self._gimbal_lock_active = not self._gimbal_lock_active
         if self._gimbal_lock_active:
             self._lock_btn.config(text="LOCK : ON", bg=COL_ALIGN, fg=FG)
@@ -702,57 +761,57 @@ class App(tk.Tk):
         else:
             self._lock_btn.config(text="LOCK : OFF", bg=BG3, fg=FG_DIM)
             self._send_to_helper("LOCK OFF")
-            self.after(0, self._log, "> Lock balise OFF")
+            self.after(0, self._log, "> Beacon lock OFF")
 
     def _on_lock_period_changed(self, event=None):
-        # Periode configurable en direct (2026-07-23), SECONDES uniquement. Aucune
-        # validation bloquante ici : on envoie tel quel, rm_cam_beacon.py retombe sur
-        # 2.0s si ce n'est pas un nombre valide (cf. _gimbal_lock_period_cb) -- comme
-        # un champ de formulaire web qui ignore une saisie incorrecte sans planter.
+        # Live-configurable period (2026-07-23), SECONDS only. No blocking validation
+        # here: the value is sent as typed and rm_cam_beacon.py falls back to 2.0 s if
+        # it is not a valid number (see _gimbal_lock_period_cb) -- like a web form
+        # field that ignores bad input without crashing.
         value = self._lock_period_entry.get().strip()
         self._send_to_helper(f"LOCKPERIOD {value}")
-        self.after(0, self._log, f"> Periode de centrage LOCK -> {value}s (ou repli 2s si invalide)")
+        self.after(0, self._log, f"> LOCK re-centring period -> {value}s (falls back to 2s if invalid)")
 
     def _on_gimbal_recenter(self):
         self._send_to_helper("RECENTER")
-        self.after(0, self._log, "> RECENTRER CAM — nacelle vers position de base")
+        self.after(0, self._log, "> RECENTER CAM -- gimbal to its base position")
 
     def _on_dock_cmd(self, cmd):
-        # T5 doit tourner pour que la commande ait un effet (personne n'est
-        # abonne a /carolus/dock sinon) -- pas de garde bloquante ici, le
-        # bouton reste utilisable a tout moment, meme raisonnement que LOCK.
+        # T5 must be running for the command to have any effect (nothing else
+        # subscribes to /carolus/dock) -- no blocking guard here, the button stays
+        # usable at any time, same reasoning as LOCK.
         self._send_to_helper(f"DOCK {cmd}")
         self.after(0, self._log, f"> DOCK {cmd}")
 
     def _on_dock_status(self, status, yaw_validated):
         """Parse [DOCKSTATUS] status=... yaw_validated=... (~1Hz, T5) : met a jour
-        le label. Meme mecanisme que _on_beacon_status pour [BEACON]."""
+        the label. Same mechanism as _on_beacon_status for [BEACON]."""
         if status in ("DOCKED", "CAL_DONE", "RANGE_ONLY", "ALIGN_DONE", "APPROACH_DONE"):
             color = COL_OK
         elif status in ("ABORTED", "ERROR", "CAL_FAILED", "CAL_INCONCLUSIVE", "NO_BEACON",
                         "NOT_CONVERGED", "GIMBAL_ALIGN_FAILED", "NOT_ALIGNED",
-                        # 2026-07-30 : CHASSIS_ALIGN_FAILED et SEQUENCE_TIMEOUT
-                        # sont emis par beacon_docking.py depuis le 2026-07-28
-                        # mais n'ont jamais figure ici -- ils tombaient donc en
-                        # gris "inconnu" au lieu de rouge. CHASSIS_ALIGN_FAILED
-                        # est precisement le statut de la cascade du 2026-07-29.
+                        # 2026-07-30: CHASSIS_ALIGN_FAILED and SEQUENCE_TIMEOUT
+                        # have been emitted by beacon_docking.py since 2026-07-28
+                        # but never appeared here -- so they showed as "unknown"
+                        # grey instead of red. CHASSIS_ALIGN_FAILED is precisely
+                        # the status of the 2026-07-29 failure cascade.
                         "CHASSIS_ALIGN_FAILED", "SEQUENCE_TIMEOUT",
-                        # nouveau statut de la boucle d'alignement verifiee
+                        # new status from the verified alignment loop
                         "ALIGN_NOT_CONVERGED"):
             color = COL_KO
         elif status in ("DOCKING", "CALIBRATING", "CAL_STEP1_DONE",
-                        # ni succes franc ni echec : yaw_rel a converge mais la
+                        # neither a clear success nor a failure: yaw_rel converged but the
                         # mesure de controle n'a pas pu etre faite (2026-07-30)
                         "ALIGN_DONE_UNVERIFIED"):
             color = COL_ALIGN
         else:
             color = FG_DIM
-        suffix = " [YAW OK]" if yaw_validated else " [YAW NON VALIDE]"
+        suffix = " [YAW OK]" if yaw_validated else " [YAW NOT VALIDATED]"
         self._dock_status_lbl.config(text=f"DOCK: {status}{suffix}", fg=color)
 
     def _reset_beacon_ui(self):
-        """Reset visuel complet voyant/minimap -- appele aux memes points que le
-        reset LOCK (entree MANUEL, sortie AUTO, Kill)."""
+        """Full visual reset of the indicator and minimap -- called at the same
+        points as the LOCK reset (entering MANUAL, leaving AUTO, Kill)."""
         self._beacon_detected = False
         self._beacon_dot.itemconfig(self._beacon_dot_id, fill=COL_KO)
         self._beacon_status_lbl.config(text="BEACON: LOST", fg=COL_KO)
@@ -783,10 +842,9 @@ class App(tk.Tk):
             self._minimap.itemconfig(self._minimap_dot, state="hidden")
 
     def _toggle_camera_preview(self):
-        # OFF par defaut (2026-07-23) : coupe l'abonnement /camera/color/image_raw
-        # cote helper (pas juste l'affichage) -- gagne en fluidite clavier ET
-        # libere de la bande passante reseau sur un topic deja identifie comme
-        # goulot (Perplexity 11).
+        # OFF by default (2026-07-23): this cuts the helper's /camera/color/image_raw
+        # subscription, not merely the display -- it buys keyboard smoothness AND
+        # frees network bandwidth on a topic already identified as the bottleneck.
         self._camera_enabled = not self._camera_enabled
         if self._camera_enabled:
             self._cam_btn.config(text="APERCU CAM : ON", bg=ACCENT, fg=BG)
@@ -867,29 +925,29 @@ class App(tk.Tk):
 
     # ── logs ─────────────────────────────────────────────────────────────────
 
-    # Nom des onglets pour le prefixe disque. Aligne sur `tab_labels` (~ligne 511)
-    # mais volontairement court : ces prefixes sont faits pour etre grepes.
+    # Tab names used as the on-disk prefix. Aligned with `tab_labels` (~line 511)
+    # but deliberately short: these prefixes exist to be grepped.
     # ---------------------------------------------------------------- Pi state
-    # Sonde SSH periodique (2026-08-04). Trois precautions, chacune pour une
-    # panne deja vue sur ce projet :
-    #   - THREAD separe : le 2026-08-04 le Pi a repondu au ping tout en laissant
-    #     SSH pendre indefiniment. Une lecture synchrone aurait fige la GUI.
-    #   - timeout DUR sur ssh (BatchMode + ConnectTimeout) : sans lui la commande
-    #     attend un mot de passe qui ne viendra jamais et ne rend jamais la main.
-    #   - periode LENTE (20 s) : c'est une info de contexte, pas une telemetrie
-    #     temps reel ; une sonde rapide ajouterait de la charge SSH a un Pi qu'on
-    #     surveille precisement parce qu'il sature.
+    # Periodic SSH probe (2026-08-04). Three precautions, each for a failure
+    # already seen on this project:
+    #   - A SEPARATE THREAD: on 2026-08-04 the Pi answered pings while leaving SSH
+    #     hanging indefinitely. A synchronous read would have frozen the GUI.
+    #   - A HARD ssh timeout (BatchMode + ConnectTimeout): without it the command
+    #     waits for a password that will never come and never returns.
+    #   - A SLOW period (20 s): this is context, not real-time telemetry, and a
+    #     fast probe would add SSH load to a Pi being watched precisely because it
+    #     saturates.
     PI_PROBE_PERIOD_MS = 20000
 
     def _pi_state_tick(self):
-        """Relance la sonde puis se re-arme. Ne bloque jamais le thread GUI."""
+        """Fire the probe, then re-arm. Never blocks the GUI thread."""
         threading.Thread(target=self._pi_state_probe, daemon=True).start()
         self.after(self.PI_PROBE_PERIOD_MS, self._pi_state_tick)
 
     def _pi_state_probe(self):
         """Lit temperature / charge / RAM / frequence du Pi par SSH.
 
-        Tout est lu depuis /sys et /proc : disponible sur Ubuntu, contrairement
+        Everything is read from /sys and /proc: available on Ubuntu, unlike
         a `vcgencmd` qui n'existe que sous Raspberry Pi OS (verifie 2026-08-04).
         """
         cmd = ("cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null; echo '|';"
@@ -917,35 +975,35 @@ class App(tk.Tk):
     _LOG_TAGS = ["T1", "T2", "T3", "T4", "T5", "T6"]
 
     def _log_to_disk(self, msg, tab):
-        """Ecrit une ligne dans le log de session (2026-07-31).
+        """Write one line to the session log (2026-07-31).
 
-        Un seul fichier par lancement du launcher, sous `logs/`, horodate au
-        demarrage : `logs/session-YYYY-MM-DD-HH-MM-SS.log`. Chaque ligne porte
-        l'heure et l'onglet d'origine (`T1`..`T5`, ou `--` pour un evenement
-        global diffuse partout), pour pouvoir grep un terminal precis apres coup
-        sans avoir a rejouer la session.
+        One file per launcher run, under `logs/`, timestamped at startup:
+        `logs/session-YYYY-MM-DD-HH-MM-SS.log`. Every line carries the time and
+        its originating tab (`T1`..`T5`, or `--` for a global event broadcast
+        everywhere), so a specific terminal can be grepped afterwards without
+        replaying the session.
 
-        Best-effort par construction : toute erreur d'ecriture (disque plein,
-        permission, chemin disparu) est avalee. Un log qui ne s'ecrit pas est un
-        desagrement ; une GUI de pilotage qui tombe pendant que le robot roule
-        n'en est pas un. Meme raisonnement que les `except Exception` deja en
-        place autour des appels subprocess/SSH de ce fichier.
+        Best-effort by construction: any write error (disk full, permissions, a
+        path that vanished) is swallowed. A log that fails to write is an
+        annoyance; a piloting GUI that dies while the robot is moving is not.
+        Same reasoning as the `except Exception` blocks already wrapped around
+        this file's subprocess/SSH calls.
         """
         try:
             if self._log_fh is None:
                 return
             tag = "--" if tab is None else self._LOG_TAGS[tab] if tab < len(self._LOG_TAGS) else f"T{tab+1}"
             self._log_fh.write(f"{time.strftime('%H:%M:%S')} [{tag}] {msg}\n")
-            self._log_fh.flush()   # flush a chaque ligne : un crash ne doit pas
-                                   # emporter le buffer, c'est justement dans ce
-                                   # cas qu'on relira le fichier
+            self._log_fh.flush()   # flush every line: a crash must not take the
+                                   # buffer with it -- a crash is exactly when the
+                                   # file will be read back
         except Exception:
             pass
 
     def _open_session_log(self):
-        """Ouvre le fichier de log de session. Appele une fois au demarrage.
-        En cas d'echec, `_log_fh` reste None et `_log_to_disk` devient un no-op
-        silencieux -- le launcher fonctionne exactement comme avant."""
+        """Open the session log file. Called once at startup. On failure,
+        `_log_fh` stays None and `_log_to_disk` becomes a silent no-op -- the
+        launcher behaves exactly as it did before."""
         self._log_fh = None
         try:
             log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
@@ -956,36 +1014,35 @@ class App(tk.Tk):
             self._log_fh.flush()
             self._session_log_path = path
         except Exception as e:
-            # Echec best-effort, MAIS pas silencieux (2026-07-31). Un log qui ne
-            # s'ecrit pas sans le dire est pire que pas de log du tout : on croit
-            # avoir les donnees et on ne les a pas. C'est exactement le mode de
-            # defaillance releve toute la journee (BUG-087 : solveur non converge
-            # publie comme valide). stderr et pas la GUI, parce qu'a ce stade de
-            # __init__ les widgets de log n'existent pas encore.
+            # Best-effort failure, BUT not a silent one (2026-07-31). A log that
+            # fails to write without saying so is worse than no log at all: you
+            # believe you have the data and you do not. That is exactly the failure
+            # mode this project keeps hitting (BUG-087: a non-converged solve
+            # published as valid). Written to stderr rather than the GUI, because at
+            # this point in __init__ the log widgets do not exist yet.
             self._log_fh = None
             self._session_log_path = None
             print(f"[LAUNCHER] session log unavailable ({e}) — "
                   f"logs will stay in-memory only", file=sys.stderr)
 
     def _log(self, msg, tab=None):
-        # tab=None -> diffuse le message (evenement global) dans les 4 onglets ;
-        # tab=i -> ecrit uniquement dans l'onglet du terminal Ti+1 concerne.
+        # tab=None -> broadcast the message (a global event) to every tab;
+        # tab=i    -> write only to the tab of terminal Ti+1.
 
-        # Persistance disque (2026-07-31). Avant ca, les logs ne vivaient QUE
-        # dans les widgets tkinter : fermer le launcher les perdait, et chaque
-        # onglet est de toute facon tronque a 300 lignes (ci-dessous). Le cout
-        # concret constate le 2026-07-31 : la question "LOCK tourne-t-il encore
-        # pendant un docking ?" (point 4 de 21-points-a-creuser) est restee sans
-        # reponse alors que la reponse etait dans les logs T2 d'un run deja
-        # effectue -- il suffisait de les avoir gardes. Un seul fichier par
-        # session, prefixe par l'onglet, ecrit best-effort : une erreur d'ecriture
-        # ne doit jamais faire tomber la GUI.
+        # On-disk persistence (2026-07-31). Before this, logs lived ONLY in the
+        # tkinter widgets: closing the launcher lost them, and each tab is truncated
+        # to 300 lines anyway (below). The concrete cost, observed on 2026-07-31:
+        # the question "is LOCK still ticking during a docking run?" went unanswered
+        # while the answer sat in the T2 logs of a run that had already happened --
+        # they simply had not been kept. One file per session, prefixed by tab,
+        # written best-effort: a write error must never bring the GUI down.
         self._log_to_disk(msg, tab)
 
         boxes = self.log_boxes if tab is None else [self.log_boxes[tab]]
         for box in boxes:
-            # Text est en state="disabled" (BUG-061) : repasser en "normal" le temps
-            # de l'ecriture programmatique, sinon insert()/delete() sont refuses.
+            # The Text widget is state="disabled" (BUG-061): flip back to "normal"
+            # for the duration of the programmatic write, or insert()/delete() are
+            # refused.
             box.config(state="normal")
             box.insert("end", msg + "\n")
             n = int(box.index("end-1c").split(".")[0])
@@ -1015,7 +1072,7 @@ class App(tk.Tk):
         txt = self.log_boxes[idx].get("1.0", "end-1c")
         self.clipboard_clear()
         self.clipboard_append(txt)
-        self._log("> Logs copies dans le presse-papier", idx)
+        self._log("> Logs copied to the clipboard", idx)
 
     # ── statut / etat des lignes ──────────────────────────────────────────────
 
@@ -1025,6 +1082,19 @@ class App(tk.Tk):
     def _reset_row(self, i, unlocked):
         self.after(0, lambda: self.rows[i][0].config(state="normal" if unlocked else "disabled"))
         self.after(0, lambda: self.rows[i][1].config(text=S_IDLE if unlocked else S_LOCKED))
+
+    def _kill_on_pi(self, tab, *patterns):
+        """Kill on the Pi, verify, and LOG if anything survives.
+
+        Before BUG-095 (2026-08-04) the Kill buttons sent an unbracketed
+        'pkill -f <pattern>' that could kill its own ssh shell before reaching
+        the target -- with nothing reporting it. We no longer trust the
+        command's return: we read the Pi's state back.
+        """
+        survivors = remote_kill(*patterns)
+        if survivors:
+            self._log(f"> !! STILL ALIVE on the Pi: {', '.join(survivors)}", tab)
+        return survivors
 
     def _close_terminal(self, i):
         if self.procs[i] is not None:
@@ -1101,7 +1171,7 @@ class App(tk.Tk):
         self.conn_lbl.config(text=f"OK ({PI_HOST})" if ok else f"injoignable ({PI_HOST})",
                              fg=ACCENT if ok else COL_KO)
 
-    # ── verifications avec timeout et annulation ──────────────────────────────
+    # -- checks with timeout and cancellation ----------------------------------
 
     def _wait_for_roscore(self, idx, timeout=60):
         deadline = time.time() + timeout
@@ -1161,7 +1231,7 @@ class App(tk.Tk):
         # Lignes de telemetrie haute frequence : dashboard uniquement, log texte epargne
         if not any(t in line for t in _LOG_SUPPRESS):
             self._log(line, idx)
-        # parsing dashboard (pertinent pour rm_cam_beacon ; inoffensif pour les autres)
+        # dashboard parsing (relevant for rm_cam_beacon; harmless for the others)
         if "Reached target -> STOP" in line:
             self._set_robot_state("STOP")
         elif "-> SEARCH" in line or "State: SEARCH" in line:
@@ -1251,7 +1321,7 @@ class App(tk.Tk):
                 byaw   = float(m.group(3)) if m.group(3) else 0.0
                 yaw_r = math.radians(self._last_robot_yaw)
                 rx, ry = self._last_robot_pos
-                # Carolus publie la pose camera-dans-repère-balise (Z négatif = balise devant).
+                # Carolus publishes the camera-in-beacon-frame pose (negative Z = beacon ahead).
                 # depth = -rel_z (positif = balise devant), lateral = rel_x (positif = droite).
                 # Yaw DJI : CW positif depuis nord.
                 wx = rx - rel_z * math.cos(yaw_r) - rel_x * math.sin(yaw_r)
@@ -1272,21 +1342,22 @@ class App(tk.Tk):
                 self._on_dock_status(m.group(1), m.group(2) == "True")
 
     def _check_beacon_freshness(self):
-        """Cache le marqueur balise sur la live map si aucune detection recente
-        (evite de laisser un point jaune affiche alors que le robot ne voit plus la balise)."""
+        """Hide the beacon marker on the live map if no recent detection
+        (avoids leaving a yellow dot displayed when the robot no longer sees the beacon)."""
         if self._last_beacon_ts and (time.time() - self._last_beacon_ts > BEACON_FRESH_S):
             self._live_map.hide_beacon()
             self._last_beacon_ts = 0.0
         self.after(300, self._check_beacon_freshness)
 
-    # ── flux video (boucle main thread) ───────────────────────────────────────
+    # -- video stream (main-thread loop) ---------------------------------------
 
     def _refresh_cam(self):
-        # Rien a faire si l'apercu est desactive (2026-07-23) : le helper n'ecrit
-        # plus de PNG (desabonne de /camera/color/image_raw), et on ne veut pas
-        # decoder/redessiner un fichier perime -- gagne en fluidite clavier.
+        # Nothing to do while the preview is disabled (2026-07-23): the helper no
+        # longer writes a PNG (it has unsubscribed from /camera/color/image_raw), and
+        # we do not want to
+        # decode/redraw a stale file -- buys keyboard smoothness.
         if not self._camera_enabled:
-            self.after(200, self._refresh_cam)   # cadence basse : juste pour re-detecter une reactivation
+            self.after(200, self._refresh_cam)   # low rate: just to detect a re-activation
             return
         try:
             if os.path.exists(CAM_PNG):
@@ -1298,8 +1369,9 @@ class App(tk.Tk):
         except Exception:
             pass
         # Rafraichissement apercu GUI (2026-07-22 : 500->50 ms, soit 2->20 Hz).
-        # Cosmetique : lit la vignette PNG ecrite par cam_view_helper. N'affecte pas
-        # le flux Carolus. Aligne sur la cadence d'ecriture du helper (THROTTLE_S=0.05).
+        # Cosmetic: reads the PNG thumbnail written by cam_view_helper. Does not
+        # affect the Carolus stream. Aligned with the helper's write rate
+        # (THROTTLE_S=0.05).
         self.after(50, self._refresh_cam)
 
     def _start_cam_helper(self):
@@ -1351,9 +1423,9 @@ class App(tk.Tk):
                     "export ROS_IP=192.168.0.103; "
                     f"stdbuf -oL -eL python3 -u {TF_BROADCASTER_PI} 2>&1"]
         if i == 4:
-            # Tourne sur le PC labo (pas le Pi) : pas de connexion SDK propre,
+            # Runs on the lab PC, not the Pi: it holds no SDK connection of its own,
             # commande via /carolus/cmd_vel deja relaye par rm_cam_beacon.py --
-            # meme raisonnement que T3 (roslaunch carolus_node, aussi sur le PC).
+            # commanding through /carolus/cmd_vel, already relayed by rm_cam_beacon.py.
             return ["bash", "-c",
                     "source /opt/ros/noetic/setup.bash && "
                     "export ROS_MASTER_URI=http://192.168.0.103:11311 && "
@@ -1361,21 +1433,41 @@ class App(tk.Tk):
                     f"stdbuf -oL -eL python3 -u {DOCKING_SCRIPT} 2>&1"]
         if i == 5:
             # MINS tourne SUR LE PI (contrairement a T3/T5) : c'est la machine
-            # qui porte les capteurs, et la seule sous Ubuntu 20.04, la cible
-            # officielle de ROS Noetic. Lance sa propre simulation pour l'instant
-            # -- l'etape suivante est de le brancher sur nos vrais topics.
+            # that carries the sensors, and the only one on Ubuntu 20.04, ROS
+            # Noetic's official target. Runs its own simulation for now -- the next
+            # step is pointing it at our real topics.
             return ["ssh", "-tt"] + SSH_OPTS + ["-o", "ConnectTimeout=5", PI,
                     "source /opt/ros/noetic/setup.bash; "
                     "export ROS_MASTER_URI=http://localhost:11311; "
                     "export ROS_IP=192.168.0.103; "
                     f"cd {MINS_WS_PI} && source devel/setup.bash; "
                     f"stdbuf -oL -eL roslaunch mins {MINS_LAUNCH} 2>&1"]
-        return ["bash", "-c",
-                "source /opt/ros/noetic/setup.bash && "
-                "export ROS_MASTER_URI=http://192.168.0.103:11311 && "
-                "export ROS_IP=192.168.0.100 && "
-                f"cd {WS} && source devel/setup.bash && "
-                "stdbuf -oL -eL roslaunch carolus_node testcarolus.launch 2>&1"]
+        # T3 -- CAROLUS, ON THE PI since 2026-08-04.
+        #
+        # It ran on the lab PC until then (local bash -c, ROS_IP=.100). Measured
+        # 2026-08-04, same beacon at 1.00 m, same afternoon:
+        #     /pose on the lab PC : 2.19 Hz
+        #     /pose on the Pi     : 13.04 Hz   (x5.95)
+        # On the PC every frame is an UNCOMPRESSED 1280x720 sensor_msgs/Image
+        # (~2.76 MB) crossing the network before Carolus can touch it; on the Pi
+        # it never leaves the machine that captured it.
+        #
+        # ubuntu2204_preload:=false is MANDATORY here: the LD_PRELOAD this
+        # argument disables exists only for Ubuntu 22.04's library conflict and
+        # hardcodes x86_64 paths -- leaving it on under aarch64 would be wrong,
+        # not merely useless.
+        #
+        # The lab PC remains the right machine for DEVELOPMENT (compiling is
+        # faster than over SSH): in that case run roslaunch by hand in a
+        # terminal, not through this tab. This launcher is the OPERATIONS tool,
+        # and operations run on the Pi.
+        return ["ssh", "-tt"] + SSH_OPTS + ["-o", "ConnectTimeout=5", PI,
+                "source /opt/ros/noetic/setup.bash; "
+                "export ROS_MASTER_URI=http://localhost:11311; "
+                "export ROS_IP=192.168.0.103; "
+                "cd ~/carolus_ws && source devel/setup.bash; "
+                "stdbuf -oL -eL roslaunch carolus_node testcarolus.launch "
+                "ubuntu2204_preload:=false 2>&1"]
 
     # ── launch ─────────────────────────────────────────────────────────────────
 
@@ -1386,20 +1478,20 @@ class App(tk.Tk):
 
     def _run_launch(self, i):
         tag = f"T{i+1}"
-        # Tous les terminaux sont integres depuis le 2026-07-20 (onglet de logs dedie par terminal)
+        # Every terminal has been integrated since 2026-07-20 (one log tab per terminal)
         self.after(0, self._log, "> Lancement...", i)
 
         # Garde-fou anti double-connexion SDK (2026-07-22, BUG-057) : avant de lancer
         # T2, tuer toute instance residuelle de rm_cam_beacon.py sur le Pi. Deux
         # instances = deux ep.initialize() -> commandes de mouvement bloquees. Motif
-        # crochete [r]m_... pour que le shell distant ne se tue pas lui-meme.
+        # bracketed [r]m_... so the remote shell does not kill itself.
         if i == 1:
             try:
                 subprocess.run(
                     ["ssh"] + SSH_OPTS + ["-o", "ConnectTimeout=4", PI,
                      "ps -eo pid,args | awk '/[r]m_cam_beacon\\.py/{print $1}' | xargs -r kill -9"],
                     capture_output=True, timeout=8)
-                self.after(0, self._log, "> (pre-kill) instances rm_cam_beacon.py residuelles nettoyees sur le Pi", i)
+                self.after(0, self._log, "> (pre-kill) leftover rm_cam_beacon.py instances cleared on the Pi", i)
             except Exception:
                 pass
 
@@ -1425,34 +1517,35 @@ class App(tk.Tk):
                 return
             self.after(0, self._log, "> OK - Camera prete", i)
             self._start_cam_helper()
-            # Mode MANUEL par defaut au demarrage de T2 (2026-07-21, demande utilisateur) —
-            # remplace l'ancien auto-LOCATE (sweep automatique). LOCATE reste disponible
-            # via le bouton LOCALISER si besoin, juste plus declenche automatiquement.
-            # Passe par _ensure_manual_default (pas _toggle_mode direct) pour re-verifier
-            # l'etat a l'instant du tir : evite qu'un KILL dans la fenetre de 500ms
-            # (qui force AUTO) ne soit re-bascule en MANUEL contre une pile deja tuee.
+            # MANUAL mode by default when T2 starts (2026-07-21, user request) --
+            # replaces the old auto-LOCATE (automatic sweep). LOCATE is still available
+            # through the LOCATE button, it is just no longer triggered automatically.
+            # Goes through _ensure_manual_default rather than _toggle_mode directly, to
+            # re-check the state at firing time: this prevents a KILL inside the 500 ms
+            # window (which forces AUTO) from being flipped back to MANUAL against an
+            # already-dead stack.
             self.after(500, self._ensure_manual_default)
         elif i == 2:
-            self.after(0, self._log, "> T3 lance - attends RPY dans les logs", i)
+            self.after(0, self._log, "> T3 launched - watch for RPY in the logs", i)
         elif i == 3:
-            self.after(0, self._log, "> T4 lance - TF broadcaster actif (quaternion corrige, BUG-048)", i)
+            self.after(0, self._log, "> T4 launched - TF broadcaster active (quaternion fixed, BUG-048)", i)
         elif i == 4:
-            # Attente reelle avant de debloquer les boutons DOCK (2026-07-27,
-            # BUG trouve en test : sans cette attente, START pouvait etre envoye
-            # avant que l'abonnement ROS de beacon_docking.py a /carolus/dock
-            # soit etabli -> commande silencieusement perdue, aucune erreur).
-            # Meme logique que _wait_for_roscore/_wait_for_camera pour T1/T2 :
-            # on attend un signe de vie reel du node (son 1er [DOCKSTATUS]),
-            # pas juste que le process ait demarre.
-            self.after(0, self._log, "> Attente que beacon_docking.py soit pret (1er DOCKSTATUS)...", i)
+            # A real wait before unlocking the DOCK buttons (2026-07-27, a bug
+            # found in testing: without it, START could be sent before
+            # beacon_docking.py's ROS subscription to /carolus/dock was established
+            # -> the command was silently lost, with no error). Same logic as
+            # _wait_for_roscore/_wait_for_camera for T1/T2: wait for a real sign of
+            # life from the node (its first [DOCKSTATUS]), not merely for the
+            # process to have started.
+            self.after(0, self._log, "> Waiting for beacon_docking.py to be ready (first DOCKSTATUS)...", i)
             deadline = time.time() + 15
             while time.time() < deadline and not self._t5_dock_ready:
                 if self._launch_cancelled[i]:
-                    self.after(0, self._log, "> Annule", i)
+                    self.after(0, self._log, "> Cancelled", i)
                     return
                 time.sleep(0.2)
             if not self._t5_dock_ready:
-                self.after(0, self._log, "> Timeout — T5 ne repond pas, Kill pour reinitialiser", i)
+                self.after(0, self._log, "> Timeout -- T5 is not responding, use Kill to reset", i)
                 return
             self.after(0, self._log, "> T5 lance - docking pret (attend /pose, /odom, /carolus/gimbal_yaw_rel)", i)
 
@@ -1468,10 +1561,10 @@ class App(tk.Tk):
 
     def _run_kill(self, i):
         targets = [i] if i >= 0 else [0, 1, 2, 3, 4]
-        # annule les wait_for_* en cours pour ces cibles
+        # cancel any in-flight wait_for_* for these targets
         for t in targets:
             self._launch_cancelled[t] = True
-        time.sleep(0.1)   # laisse les threads voir le flag
+        time.sleep(0.1)   # let the threads see the flag
         for t in sorted(targets, reverse=True):
             if t == 4:
                 local_kill("beacon_docking.py")
@@ -1479,21 +1572,25 @@ class App(tk.Tk):
                 self._t5_dock_ready = False
                 self.after(0, lambda: self._dock_status_lbl.config(text="DOCK: —", fg=FG_DIM))
             elif t == 3:
-                ssh_kill("pkill -9 -f carolus_tf_broadcaster.py")
+                self._kill_on_pi(3, "carolus_tf_broadcaster.py")
                 self._close_terminal(3)
             elif t == 2:
+                # T3 runs ON THE PI since 2026-08-04; we also kill locally to
+                # clear any leftover instance on the lab PC.
                 local_kill("carolus_astrobee")
                 local_kill("roslaunch")
-                ssh_kill("pkill -9 -f carolus_astrobee")
+                self._kill_on_pi(2, "carolus_astrobee", "roslaunch")
                 self._close_terminal(2)
             elif t == 1:
-                ssh_kill("pkill -9 -f rm_cam_beacon.py")
+                self._kill_on_pi(1, "rm_cam_beacon.py")
                 self._close_terminal(1)
                 self._stop_cam_helper()
                 self.after(0, self._reset_dashboard)
                 self.after(0, self._force_auto_mode)
             elif t == 0:
-                ssh_kill("pkill -9 -f rm_cam_beacon.py; pkill -9 -f roscore; pkill -9 -f rosmaster; pkill -9 -f carolus_tf_broadcaster.py")
+                self._kill_on_pi(0, "rm_cam_beacon.py", "carolus_astrobee",
+                                 "roslaunch", "carolus_tf_broadcaster.py",
+                                 "roscore", "rosmaster")
                 local_kill("carolus_astrobee")
                 local_kill("roslaunch")
                 self._stop_cam_helper()
@@ -1512,7 +1609,7 @@ class App(tk.Tk):
         self._reset_row(killed_from, unlocked=True)
         for j in range(killed_from + 1, len(self.rows)):
             self._reset_row(j, unlocked=False)
-        self.after(0, self._log, "> OK - Arrete. Relance avec le bouton.")
+        self.after(0, self._log, "> OK - Stopped. Relaunch with the button.")
 
     # ── mode AUTO / MANUEL ───────────────────────────────────────────────────
 
@@ -1528,18 +1625,18 @@ class App(tk.Tk):
     def _toggle_mode(self):
         if self.gui_mode == "AUTO":
             self.gui_mode = "MANUAL"
-            self.focus_set()   # force le focus sur la fenetre root (ZQSD/numpad actifs meme si un onglet de logs est clique)
-            self.mode_btn.config(text="MODE : MANUEL  (ZQSD actif)", bg=COL_APPROACH)
-            # Lock balise remis a OFF a chaque ENTREE en MANUEL : garantit qu'une
-            # session de test demarre toujours gimbal fixe, et neutralise un LOCK ON
-            # qui aurait ete clique par erreur en AUTO/LOCATE (sans effet la-bas mais
-            # qui aurait sinon persiste jusqu'ici).
+            self.focus_set()   # force focus on the root window (ZQSD/numpad stay active even when a log tab is clicked)
+            self.mode_btn.config(text="MODE: MANUAL  (ZQSD active)", bg=COL_APPROACH)
+            # Beacon lock reset to OFF on every ENTRY into MANUAL: guarantees a test
+            # session always starts with a fixed gimbal, and neutralises a LOCK ON
+            # clicked by mistake in AUTO/LOCATE (a no-op there, but it would otherwise
+            # have persisted to here).
             self._gimbal_lock_active = False
             self._lock_btn.config(text="LOCK : OFF", bg=BG3, fg=FG_DIM)
             self._reset_beacon_ui()
             self._send_to_helper("MODE MANUAL")
             self._send_to_helper("LOCK OFF")
-            # dashboard : refleter le mode MANUEL sur le point d'etat (BUG-014)
+            # dashboard: reflect MANUAL mode on the state dot (BUG-014)
             self.last_state = "MANUAL"
             self.state_dot.itemconfig(self._dot, fill=COL_MANUAL)
             self.state_lbl.config(text="MANUEL")
@@ -1561,7 +1658,7 @@ class App(tk.Tk):
             self._lock_btn.config(text="LOCK : OFF", bg=BG3, fg=FG_DIM)
             self._send_to_helper("LOCK OFF")
             self._reset_beacon_ui()
-            # dashboard : reset pour que la prochaine ligne T2 remette l'etat reel (BUG-014)
+            # dashboard: reset so the next T2 line restores the real state (BUG-014)
             self.last_state = None
             self.state_dot.itemconfig(self._dot, fill=COL_IDLE)
             self.state_lbl.config(text="--- (AUTO)")
@@ -1574,17 +1671,17 @@ class App(tk.Tk):
 
     def _bind_keys_to(self, window):
         """Bind chassis/gimbal handlers to any Tk window (root or Toplevel)."""
-        # Reclame le focus clavier des qu'on survole la fenetre : necessaire car
-        # T1/T3 ouvrent des gnome-terminal externes qui volent le focus WM, et
-        # focus_set() n'est sinon appele qu'une fois (au bascule MODE MANUEL).
+        # Reclaim keyboard focus on hover: necessary because T1/T3 open external
+        # gnome-terminal windows that steal WM focus, and focus_set() is otherwise
+        # called only once (when switching to MANUAL mode).
         window.bind("<Enter>", lambda e, w=window: w.focus_set())
-        # BUG (2026-07-21) : si le focus quitte la fenetre pendant qu'une touche est
-        # maintenue (clic ailleurs, live map, dialogue...), le KeyRelease correspondant
-        # ne se delivre jamais -> la touche reste bloquee dans _keys_down/_gim_down
-        # indefiniment -> le chassis/gimbal continue de recevoir la derniere vitesse
-        # non nulle en boucle cote Pi (rotation/mouvement "tout seul"). Filet de
-        # securite : a la perte de focus, on traite comme si toutes les touches
-        # etaient relachees, quelle qu'en soit la cause.
+        # BUG (2026-07-21): if focus leaves the window while a key is held (a click
+        # elsewhere, the live map, a dialogue...), the matching KeyRelease is never
+        # delivered -> the key stays stuck in _keys_down/_gim_down indefinitely -> the
+        # chassis/gimbal keeps receiving the last non-zero speed in a loop on the Pi
+        # side (motion "all by itself"). Safety net: on focus loss, treat it as though
+        # every key
+        # were released, whatever the cause.
         window.bind("<FocusOut>", self._on_focus_out)
         for key in ("z", "q", "s", "d", "Z", "Q", "S", "D"):
             window.bind(f"<KeyPress-{key}>",   self._on_key_press)
@@ -1603,12 +1700,12 @@ class App(tk.Tk):
             return
         if not self._keys_down and not self._gim_down:
             return   # rien a nettoyer, evite un spam STOP a chaque changement de focus normal
-        # <FocusOut> sur un toplevel se declenche AUSSI quand le focus passe a un
-        # widget enfant (bouton, onglet de logs) ou a une autre fenetre de l'appli
-        # (map editor). Dans ces cas le KeyRelease continue d'arriver (les bindings
-        # sont partages via bindtags / re-bindes sur le map editor) : nettoyer serait
-        # un STOP parasite qui couperait le pilotage a chaque clic. On differe donc le
-        # test a after_idle et on ne nettoie que si le focus a REELLEMENT quitte l'appli
+        # <FocusOut> on a toplevel ALSO fires when focus moves to a child widget (a
+        # button, a log tab) or to another window of the app (the map editor). In those
+        # cases the KeyRelease still arrives -- the bindings are shared through bindtags
+        # or re-bound on the map editor -- so clearing would be a spurious STOP that
+        # cut piloting on every click. The test is therefore deferred to after_idle and
+        # only clears if focus has REALLY left the application
         # Tk (focus_get() renvoie None) — le seul cas ou un KeyRelease serait perdu.
         self.after_idle(self._focus_out_cleanup_if_left_app)
 
@@ -1617,11 +1714,11 @@ class App(tk.Tk):
             return
         if not self._keys_down and not self._gim_down:
             return
-        # On ne nettoie (STOP anti-touche-bloquee) QUE si le focus n'est PLUS sur une
-        # fenetre qui possede nos bindings clavier (root ou map editor). Dans ces deux
-        # fenetres le KeyRelease continue d'arriver (handlers partages) -> pas besoin de
-        # STOP, et le faire couperait le pilotage a chaque clic interne. Partout ailleurs
-        # (autre appli, minimisation, filedialog modale sans nos bindings, fenetre
+        # Only clear (the stuck-key STOP) if focus is NO LONGER on a window that owns
+        # our keyboard bindings (root or the map editor). In those two windows the
+        # KeyRelease still arrives (shared handlers), so no STOP is needed and issuing
+        # one would cut piloting on every internal click. Everywhere else (another app,
+        # minimisation, a modal filedialog without our bindings, a window
         # etrangere) le KeyRelease serait perdu -> on nettoie. Robuste au cas filedialog
         # que la version precedente (focus_get() is None) laissait passer.
         try:
@@ -1655,16 +1752,16 @@ class App(tk.Tk):
     def _on_key_press(self, event):
         if self.gui_mode != "MANUAL":
             return
-        # Ne pas interférer si le focus est sur un champ texte (ex: offset rotation map editor)
+        # Do not interfere when focus is on a text field (e.g. the map editor's rotation offset)
         if isinstance(event.widget, (tk.Entry, tk.Text, tk.Spinbox)):
             return
         k = event.keysym.lower()
         if k not in ("z", "q", "s", "d"):
             return
-        # Auto-repeat X11 : ce KeyPress peut etre le "re-appui" synthetique qui
-        # suit immediatement un KeyRelease pendant qu'on tient la touche -- on
-        # annule alors le relachement differe au lieu de re-traiter une pression
-        # (evite le dents-de-scie sur /carolus/cmd_vel, cf. KEY_REPEAT_DEBOUNCE_MS).
+        # X11 auto-repeat: this KeyPress may be the synthetic "re-press" that
+        # immediately follows a KeyRelease while the key is held -- so cancel the
+        # deferred release instead of processing a new press (this is what avoids the
+        # sawtooth on /carolus/cmd_vel, see KEY_REPEAT_DEBOUNCE_MS).
         pending = self._chassis_release_pending.pop(k, None)
         if pending is not None:
             self.after_cancel(pending)
@@ -1702,7 +1799,7 @@ class App(tk.Tk):
         if "d" in self._keys_down: wz -= MANUAL_WZ
         self._send_to_helper(f"VX {vx:.2f} WZ {wz:.1f}")
 
-    # normalise le keysym numpad quel que soit l'etat de NumLock
+    # normalise the numpad keysym regardless of NumLock state
     _NUMPAD_MAP = {
         "KP_8": "up",   "KP_Up":    "up",
         "KP_2": "down", "KP_Down":  "down",
@@ -1719,7 +1816,7 @@ class App(tk.Tk):
         action = self._NUMPAD_MAP.get(event.keysym)
         if not action:
             return
-        # Debounce anti auto-repeat X11 -- meme logique que _on_key_press.
+        # X11 auto-repeat debounce -- same logic as _on_key_press.
         pending = self._gim_release_pending.pop(action, None)
         if pending is not None:
             self.after_cancel(pending)
@@ -1785,14 +1882,20 @@ class App(tk.Tk):
 
     def _on_close(self):
         self._stop_monitor = True
-        # Nettoyage best-effort avant de fermer : sinon les noeuds lances par SSH
-        # SURVIVENT sur le Pi (fermer la fenetre ne tue pas les process distants).
-        # Un rm_cam_beacon.py orphelin garde la connexion SDK -> au prochain lancement,
-        # la nouvelle instance entre en DOUBLE CONNEXION -> commandes de mouvement
-        # bloquees silencieusement (le "mode manuel ne marche plus"). On tue donc les
-        # process Pi + locaux + le helper video avant destroy().
+        # Best-effort cleanup before closing: otherwise the nodes launched over SSH
+        # SURVIVE on the Pi (closing the window does not kill remote processes). An
+        # orphaned rm_cam_beacon.py keeps the SDK connection, so the next launch enters
+        # a DOUBLE CONNECTION -> motion commands are silently blocked (the "manual mode
+        # stopped working" symptom). So we kill the Pi-side and local processes plus the
+        # video helper before destroy().
+        # BUG-095 (2026-08-04): this cleanup was the most critical of the five,
+        # and it was broken. The unbracketed pkill could kill its own ssh shell
+        # before reaching the target -- so the orphan described just above
+        # survived in exactly the case this block exists to prevent.
+        # carolus_astrobee added: T3 runs on the Pi since 2026-08-04.
         try:
-            ssh_kill("pkill -9 -f rm_cam_beacon.py; pkill -9 -f carolus_tf_broadcaster.py")
+            remote_kill("rm_cam_beacon.py", "carolus_tf_broadcaster.py",
+                        "carolus_astrobee", "roslaunch", verify=False)
         except Exception:
             pass
         try:

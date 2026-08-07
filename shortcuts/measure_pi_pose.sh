@@ -45,9 +45,17 @@ remote() { timeout 300 ssh "${SSH_OPTS[@]}" "$PI" "$@" 2>&1 | grep -v "sign_and_
 
 stop_all() {
     echo "Stopping Carolus / camera / roscore on the Pi..."
-    remote 'pkill -f roslaunch; sleep 2; pkill -f carolus_astrobee; sleep 1;
-            pkill -f rm_cam_beacon; sleep 2; pkill -f roscore; sleep 1;
-            pgrep -af "roscore|roslaunch|carolus_astrobee|rm_cam_beacon" | grep -v pgrep \
+    # NOTE (2026-08-04): the bracket in each pattern is not cosmetic. ssh runs
+    # this whole string as one remote shell whose own /proc cmdline contains the
+    # patterns -- a plain `pkill -f rm_cam_beacon` matches that shell and kills
+    # itself before reaching the real target, which is exactly what happened and
+    # left the stack running while reporting nothing. `[r]m_cam_beacon` matches
+    # the target's cmdline but not the literal text in our own.
+    remote 'pkill -f "[r]oslaunch"; sleep 2; pkill -f "[c]arolus_astrobee"; sleep 1;
+            pkill -f "[r]m_cam_beacon"; sleep 2;
+            pkill -f "[r]oscore"; pkill -f "[r]osmaster"; sleep 2;
+            pkill -9 -f "[r]m_cam_beacon"; pkill -9 -f "[r]osmaster"; sleep 1;
+            pgrep -af "[r]oscore|[r]osmaster|[r]oslaunch|[c]arolus_astrobee|[r]m_cam_beacon" \
               || echo "  Pi clean"'
 }
 
@@ -81,10 +89,10 @@ echo "[2/6] RNDIS link checked." | tee -a "$REPORT"
 # interpreter alone has both, so the venv must be activated with ROS sourced.
 remote 'source /opt/ros/noetic/setup.bash
         export ROS_MASTER_URI=http://'"$PI_HOST"':11311 ROS_IP='"$PI_HOST"'
-        pgrep -f roscore >/dev/null || { nohup roscore >/tmp/roscore.log 2>&1 & sleep 6; }
+        pgrep -f "[r]oscore" >/dev/null || { nohup roscore >/tmp/roscore.log 2>&1 & sleep 6; }
         source ~/Python-3.7.17/env/bin/activate
         cd ~/carolus_ws
-        pgrep -f rm_cam_beacon >/dev/null || \
+        pgrep -f "[r]m_cam_beacon" >/dev/null || \
           { nohup python src/robomaster_cam/scripts/rm_cam_beacon.py >/tmp/cam.log 2>&1 & }
         sleep 22
         echo "  nodes:"; rosnode list 2>&1 | sed "s/^/    /"' | tee -a "$REPORT"
@@ -93,7 +101,7 @@ echo "[3/6] Camera bridge up." | tee -a "$REPORT"
 remote 'source /opt/ros/noetic/setup.bash
         export ROS_MASTER_URI=http://'"$PI_HOST"':11311 ROS_IP='"$PI_HOST"'
         cd ~/carolus_ws && source devel/setup.bash
-        pgrep -f carolus_astrobee >/dev/null || \
+        pgrep -f "[c]arolus_astrobee" >/dev/null || \
           { nohup roslaunch carolus_node testcarolus.launch ubuntu2204_preload:=false \
               >/tmp/carolus.log 2>&1 & }
         sleep 20; echo "  carolus started"' | tee -a "$REPORT"

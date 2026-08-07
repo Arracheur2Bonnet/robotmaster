@@ -1,31 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Helper vidéo + passerelle commandes manuelles pour carolus_launcher.py.
+Video helper and manual-command gateway for carolus_launcher.py.
 
-Deux rôles :
-  1. S'abonne à /camera/color/image_raw, écrit une vignette PNG (~2 Hz) dans OUT.
-  2. Lit des commandes sur stdin et les publie sur /carolus/mode et /carolus/cmd_vel.
+Two roles:
+  1. Subscribes to /camera/color/image_raw and writes a PNG thumbnail (~2 Hz) to OUT.
+  2. Reads commands on stdin and publishes them on /carolus/mode, /carolus/cmd_vel, etc.
 
-Usage : cam_view_helper.py [chemin_png_sortie]
-Commandes stdin (une par ligne) :
-  MODE AUTO           → publie "AUTO" sur /carolus/mode
-  MODE MANUAL         → publie "MANUAL" sur /carolus/mode
-  VX 0.20 WZ 5.0     → publie Twist(linear.x, angular.z) sur /carolus/cmd_vel
-  STOP                → publie Twist(0, 0) sur /carolus/cmd_vel
-  GIMBAL pitch yaw    → publie Twist(angular.y, angular.z) sur /carolus/gimbal_vel
-  WHEELS w1 w2 w3 w4  → publie "w1 w2 w3 w4" sur /carolus/wheels
-  WHEELS STOP         → publie "STOP" sur /carolus/wheels
-  LOCK ON / LOCK OFF  → publie "ON"/"OFF" sur /carolus/gimbal_lock (centrage periodique, cf. rm_cam_beacon.py)
-  LOCKPERIOD 5.0      → publie "5.0" sur /carolus/gimbal_lock_period (periode en secondes, repli sur 2.0 si invalide)
-  RECENTER            → publie "RECENTER" sur /carolus/gimbal_recenter (position de base camera)
-  CAM ON / CAM OFF    → (dés)abonne /camera/color/image_raw (OFF par defaut au demarrage)
+Usage: cam_view_helper.py [output_png_path]
+stdin commands (one per line):
+  MODE AUTO           -> publishes "AUTO" on /carolus/mode
+  MODE MANUAL         -> publishes "MANUAL" on /carolus/mode
+  VX 0.20 WZ 5.0      -> publishes Twist(linear.x, angular.z) on /carolus/cmd_vel
+  STOP                -> publishes Twist(0, 0) on /carolus/cmd_vel
+  GIMBAL pitch yaw    -> publishes Twist(angular.y, angular.z) on /carolus/gimbal_vel
+  WHEELS w1 w2 w3 w4  -> publishes "w1 w2 w3 w4" on /carolus/wheels
+  WHEELS STOP         -> publishes "STOP" on /carolus/wheels
+  LOCK ON / LOCK OFF  -> publishes "ON"/"OFF" on /carolus/gimbal_lock (periodic re-centring, see rm_cam_beacon.py)
+  LOCKPERIOD 5.0      -> publishes "5.0" on /carolus/gimbal_lock_period (seconds, falls back to 2.0 if invalid)
+  RECENTER            -> publishes "RECENTER" on /carolus/gimbal_recenter (gimbal base position)
+  CAM ON / CAM OFF    -> subscribes/unsubscribes /camera/color/image_raw (OFF by default at startup)
 
-HUD (2026-07-23, reprojection precise ajoutee le 2026-07-23 (2)) : incruste sur la
-vignette PNG (pas sur /camera/color/image_raw lui-meme, qui reste inchange pour
-Carolus) -- reticule au centre image, marqueur balise (vert si centree, rouge sinon)
-reprojete via les VRAIES intrinseques camera (camera_info.yaml, mises a l'echelle
-1280x720->320x180), pas une estimation qualitative de direction.
+HUD (2026-07-23, exact reprojection added 2026-07-23 (2)): drawn on the PNG
+thumbnail only, never on /camera/color/image_raw itself, which stays untouched for
+Carolus -- a reticle at the image centre plus a beacon marker (green when centred,
+red otherwise) reprojected through the REAL camera intrinsics (camera_info.yaml,
+scaled 1280x720 -> 320x180), not a qualitative direction estimate.
 """
 
 import os
@@ -43,22 +43,22 @@ from std_msgs.msg import String
 from cv_bridge import CvBridge
 
 OUT        = sys.argv[1] if len(sys.argv) > 1 else "/tmp/carolus_cam.png"
-# Cadence d'ecriture de la vignette d'apercu GUI (2026-07-22 : 0.25->0.05, soit
-# 4->20 Hz, au niveau du flux camera natif). PUREMENT COSMETIQUE — n'affecte que
-# l'apercu du launcher, pas le flux /camera/color/image_raw que consomme Carolus.
+# Write rate of the GUI preview thumbnail (2026-07-22: 0.25 -> 0.05, i.e. 4 -> 20 Hz,
+# matching the native camera stream). PURELY COSMETIC -- affects only the launcher's
+# preview, never the /camera/color/image_raw stream Carolus consumes.
 THROTTLE_S = 0.05
 SIZE       = (320, 180)
 
 # HUD (2026-07-23)
 POSE_FRESH_S     = 1.0    # au-dela, pose consideree perimee -> marqueur balise cache
-HUD_CENTERED_DEG = 3.0    # sous ce seuil (les deux axes), marqueur vert plutot que rouge
-# Intrinseques camera (2026-07-23 (2)) : lues depuis camera_info.yaml (pas dupliquees
-# en dur -- evite un desaccord silencieux si le fichier est recalibre), mises a
-# l'echelle pour le resize 320x180 de la vignette (facteur exact 1/4 sur les deux axes
-# -- pas de distorsion d'aspect, 1280/320=720/180=4). Utilisees pour reprojeter le
-# point 3D /pose (camera frame) en position pixel EXACTE, au lieu d'une direction
-# qualitative. Repli sur les valeurs connues (2026-07-23) si le fichier est absent
-# (ex. deploiement partiel) -- ne doit jamais faire planter le HUD.
+HUD_CENTERED_DEG = 3.0    # below this threshold (both axes), green marker rather than red
+# Camera intrinsics (2026-07-23 (2)): read from camera_info.yaml rather than
+# duplicated as literals -- duplicating them would drift silently the day the file is
+# recalibrated. Scaled for the thumbnail's 320x180 resize (exactly 1/4 on both axes,
+# so no aspect distortion: 1280/320 = 720/180 = 4). Used to reproject the 3D /pose
+# point (camera frame) to an EXACT pixel position instead of a qualitative direction.
+# Falls back to the known 2026-07-23 values if the file is missing (e.g. a partial
+# deployment) -- the HUD must never be what crashes.
 _CAM_INFO_PATH = os.path.join(os.path.dirname(__file__), "..", "carolus_ws", "src",
                               "robomaster_cam", "config", "camera_info.yaml")
 try:
@@ -68,8 +68,8 @@ try:
     _cam_m = _cam_info["camera_matrix"]["data"]
     _fx_full, _fy_full, _cx_full, _cy_full = _cam_m[0], _cam_m[4], _cam_m[2], _cam_m[5]
 except Exception as _e:
-    # print (pas rospy.logwarn) : ce bloc s'execute a l'import, avant rospy.init_node()
-    # dans main() -- logguer via rospy trop tot n'est pas garanti fiable.
+    # print, not rospy.logwarn: this block runs at import time, before
+    # rospy.init_node() in main() -- logging through rospy that early is not reliable.
     print(f"[CAMVIEW] camera_info.yaml illisible ({_e}), repli sur intrinseques connues (2026-07-23)")
     _cam_w = 1280.0
     _fx_full, _fy_full, _cx_full, _cy_full = 546.1957, 547.0838, 575.6041, 372.1876
@@ -88,9 +88,9 @@ _pub_gimbal  = None
 _pub_wheels  = None
 _pub_lock    = None
 _pub_lock_period = None
-# Abonnement camera : cree/detruit a la demande (CAM ON/OFF), pas souscrit par
-# defaut (2026-07-23) — evite de dupliquer un abonne sur /camera/color/image_raw,
-# topic deja identifie comme goulot reseau (Perplexity 11) entre le Pi et Carolus.
+# Camera subscription: created and destroyed on demand (CAM ON/OFF), not subscribed
+# by default (2026-07-23) -- avoids a second subscriber on /camera/color/image_raw,
+# a topic already identified as the network bottleneck between the Pi and Carolus.
 _cam_sub     = None
 
 # Queue for async PNG writes: ROS callback enqueues, dedicated thread writes to disk.
@@ -112,7 +112,7 @@ def _png_writer():
             rospy.logwarn_throttle(5.0, f"[CAMVIEW] erreur ecriture PNG: {e}")
 
 
-# ── flux vidéo ────────────────────────────────────────────────────────────────
+# -- video stream --------------------------------------------------------------
 
 def cb_pose(msg):
     _last_pose[0] = msg
@@ -120,25 +120,26 @@ def cb_pose(msg):
 
 
 def _draw_hud(frame):
-    """Incruste le HUD (2026-07-23, reprojection precise ajoutee le 2026-07-23 (2))
-    sur la vignette, en place. Convention Carolus (camera frame, avant remap ROS) :
+    """Draw the HUD (2026-07-23, exact reprojection added 2026-07-23 (2))
+    on the thumbnail, in place. Carolus convention (camera frame, before the ROS remap):
     p.x=droite, p.y=bas, p.z=profondeur (negatif) -- cf. carolus_tf_broadcaster.py.
-    Le marqueur balise est reprojete via les VRAIES intrinseques camera (pinhole,
-    camera_info.yaml), pas une estimation qualitative -- position pixel exacte du
-    centre P4P solve, pas juste une direction approximative.
-    Pas de texte BEACON: DETECTED/LOST ici (2026-07-23 (2)) -- deja affiche par le
-    voyant dedie du launcher, redondant sur l'image.
-    Reticule au CENTRE GEOMETRIQUE de l'image (2026-07-23 nuit, revert) -- le point
-    principal reel decale le reticule du cadrage naturel de la vignette, ce qui rend
-    le HUD illisible/casse visuellement (retour utilisateur). Le marqueur balise reste
-    reprojete via les vraies intrinseques (precis), mais le reticule cadre l'image."""
+    The beacon marker is reprojected through the REAL camera intrinsics (pinhole,
+    camera_info.yaml), not a qualitative estimate -- the exact pixel position of
+    the P4P solve's centre, not merely an approximate direction.
+    No BEACON: DETECTED/LOST text here (2026-07-23 (2)) -- already displayed by the
+    launcher's own indicator, and redundant on the image.
+    Reticle at the image's GEOMETRIC CENTRE (night of 2026-07-23, a revert) -- the
+    real principal point shifts the reticle away from the thumbnail's natural framing,
+    which made the HUD unreadable and visually broken (user feedback). The beacon
+    marker is still reprojected through the real intrinsics (accurate), but the
+    reticle frames the image."""
     h, w = frame.shape[:2]
-    cx, cy = w // 2, h // 2   # centre geometrique de l'image affichee
+    cx, cy = w // 2, h // 2   # geometric centre of the displayed image
     cross_col = (200, 200, 200)
     L = 8
     cv2.line(frame, (cx - L, cy), (cx + L, cy), cross_col, 1)
     cv2.line(frame, (cx, cy - L), (cx, cy + L), cross_col, 1)
-    # anneau de tolerance : rayon pixel correspondant a HUD_CENTERED_DEG (~zone centree)
+    # tolerance ring: the pixel radius corresponding to HUD_CENTERED_DEG (centred zone)
     tol_px = int(CAM_FX * math.tan(math.radians(HUD_CENTERED_DEG)))
     cv2.circle(frame, (cx, cy), max(4, tol_px), (120, 120, 120), 1)
 
@@ -157,8 +158,8 @@ def _draw_hud(frame):
             if 0 <= ox < w and 0 <= oy < h:
                 cv2.circle(frame, (ox, oy), 6, marker_col, -1)
             else:
-                # balise reprojetee hors champ visible (pose extreme/aberrante) --
-                # indication en bord de cadre plutot que rien du tout.
+                # Beacon reprojected outside the visible frame (extreme or aberrant
+                # pose) -- show an edge-of-frame indication rather than nothing.
                 ox_c, oy_c = max(4, min(w - 4, ox)), max(4, min(h - 4, oy))
                 cv2.circle(frame, (ox_c, oy_c), 6, marker_col, 2)
 
@@ -180,7 +181,7 @@ def cb_image(msg):
 
 
 def _set_camera_subscription(enable):
-    """(Dés)abonne /camera/color/image_raw a la demande. Idempotent."""
+    """Subscribe to / unsubscribe from /camera/color/image_raw on demand. Idempotent."""
     global _cam_sub
     if enable and _cam_sub is None:
         _cam_sub = rospy.Subscriber("/camera/color/image_raw", Image, cb_image, queue_size=1)
@@ -191,7 +192,7 @@ def _set_camera_subscription(enable):
         rospy.loginfo("[CAMVIEW] apercu camera OFF (desabonne)")
 
 
-# ── lecteur stdin (thread daemon) ────────────────────────────────────────────
+# -- stdin reader (daemon thread) ----------------------------------------------
 
 def _stdin_reader():
     for raw in sys.stdin:
@@ -223,8 +224,8 @@ def _stdin_reader():
                 payload = line[len("WHEELS"):].strip()   # "w1 w2 w3 w4" ou "STOP"
                 _pub_wheels.publish(String(data=payload))
             elif line.startswith("LOCKPERIOD"):
-                # AVANT "LOCK" ci-dessous : "LOCKPERIOD 5.0".startswith("LOCK") est aussi
-                # vrai, l'ordre des elif compte pour ne pas partir sur le mauvais topic.
+                # BEFORE the "LOCK" branch below: "LOCKPERIOD 5.0".startswith("LOCK")
+                # is also true, so the elif order decides which topic is used.
                 value = line.split()[1]   # ex. "5.0" -- validation faite cote rm_cam_beacon.py
                 _pub_lock_period.publish(String(data=value))
             elif line.startswith("LOCK"):
@@ -242,7 +243,7 @@ def _stdin_reader():
             rospy.logwarn(f"[CAMVIEW] commande mal formee ({line!r}): {e}")
 
 
-# ── main ─────────────────────────────────────────────────────────────────────
+# -- main ----------------------------------------------------------------------
 
 def main():
     global _pub_mode, _pub_cmdvel, _pub_gimbal, _pub_wheels, _pub_lock, _pub_lock_period
@@ -254,32 +255,32 @@ def main():
     _pub_cmdvel = rospy.Publisher("/carolus/cmd_vel",     Twist,  queue_size=1)
     _pub_gimbal = rospy.Publisher("/carolus/gimbal_vel",  Twist,  queue_size=1)
     _pub_wheels = rospy.Publisher("/carolus/wheels",      String, queue_size=1)
-    # Pas de latch (contrairement a /carolus/mode) : le lock balise est un flag de
-    # securite dont le defaut sur (OFF) vit deja cote rm_cam_beacon.py. Latcher "ON"
-    # ferait heriter un noeud qui redemarre d'un auto-suivi actif sans action user —
-    # on prefere qu'un nouveau noeud reparte OFF et attende un clic explicite.
+    # No latch here, unlike /carolus/mode: the beacon lock is a safety flag whose
+    # safe default (OFF) already lives in rm_cam_beacon.py. Latching "ON" would make a
+    # restarting node inherit active auto-tracking with no user action -- we prefer a
+    # fresh node to come up OFF and wait for an explicit click.
     _pub_lock   = rospy.Publisher("/carolus/gimbal_lock", String, queue_size=1)
     _pub_lock_period = rospy.Publisher("/carolus/gimbal_lock_period", String, queue_size=1)
-    # RECENTRER CAM (2026-07-23) : pas de latch, action ponctuelle (pas un etat
-    # persistant a rejouer au redemarrage d'un noeud).
+    # RECENTER CAM (2026-07-23): no latch. It is a one-shot action, not a persistent
+    # state to be replayed when a node restarts.
     _pub_gimbal_recenter = rospy.Publisher("/carolus/gimbal_recenter", String, queue_size=1)
-    # Docking (2026-07-27, beacon_docking.py) : pas de latch, memes raisons que
-    # RECENTER -- une commande START/CALIBRATE/ABORT n'a pas vocation a etre
-    # rejouee automatiquement au redemarrage d'un noeud.
+    # Docking (2026-07-27, beacon_docking.py): no latch, same reason as RECENTER --
+    # a START/CALIBRATE/ABORT command must never be replayed automatically when a
+    # node restarts.
     _pub_dock = rospy.Publisher("/carolus/dock", String, queue_size=1)
 
-    # /pose : toujours souscrit (message leger, pas d'image) pour le HUD -- independant
-    # du toggle CAM ON/OFF qui ne concerne que /camera/color/image_raw (le vrai goulot
-    # reseau, Perplexity 11).
+    # /pose: always subscribed (a light message, no image) for the HUD -- independent
+    # of the CAM ON/OFF toggle, which only concerns /camera/color/image_raw, the actual
+    # network bottleneck.
     rospy.Subscriber("/pose", PoseStamped, cb_pose, queue_size=1)
 
-    # Pas d'abonnement camera par defaut (2026-07-23) : active a la demande via
-    # la commande stdin "CAM ON" (bouton APERCU CAM du launcher, OFF par defaut).
+    # No camera subscription by default (2026-07-23): enabled on demand through the
+    # "CAM ON" stdin command (the launcher's CAM PREVIEW button, OFF by default).
 
-    # Latch le mode initial MANUAL + lock balise OFF au démarrage (2026-07-22, securite
-    # BUG-058) : demarrer en MANUAL evite tout mouvement autonome de la nacelle/chassis
-    # tant que l'utilisateur ne le demande pas explicitement. Coherent avec le defaut
-    # MANUAL cote rm_cam_beacon.py.
+    # Latch the initial MANUAL mode and beacon lock OFF at startup (2026-07-22,
+    # BUG-058 safety): starting in MANUAL prevents any autonomous gimbal or chassis
+    # motion until the user explicitly asks for it. Consistent with rm_cam_beacon.py's
+    # own MANUAL default.
     rospy.sleep(0.3)
     _pub_mode.publish(String(data="MANUAL"))
     _pub_lock.publish(String(data="OFF"))

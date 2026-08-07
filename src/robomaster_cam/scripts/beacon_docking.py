@@ -1,137 +1,139 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Docking balise — position finale FIXE et repetable par rapport a la balise.
+Beacon docking -- a FIXED, repeatable final position relative to the beacon.
 
-Objectif (demande Hector, cf. research-log/07-perplexity/17-docking-position-
-fixe-balise.md) : quel que soit l'angle d'arrivee, le robot doit finir TOUJOURS
-au meme endroit par rapport a la balise — a DOCK_DISTANCE_M devant elle, sur
-l'axe frontal de la balise, face a elle. Analogie utilisateur : une voiture qui
-rentre au garage, alignee, pas de biais.
+Goal (supervisor request): whatever angle the robot arrives from, it must always
+end up in the SAME place relative to the beacon -- DOCK_DISTANCE_M in front of
+it, on the beacon's frontal axis, facing it. The user's analogy: a car parking in
+a garage, square, not at an angle.
 
-Le pipeline existant (SEARCH -> ALIGN -> APPROACH -> STOP dans
-`rm_cam_beacon.py`) s'arrete a "pointe la balise et avance jusqu'a 0.70 m" : il
-n'utilise QUE la position (x,y,z) de la balise, jamais son ORIENTATION. Il
-converge donc vers un cercle de rayon 0.70 m autour de la balise, pas vers un
-point. Ce module ajoute l'etage manquant : l'angle hors-axe.
-
-
-=====================================================================
-ARCHITECTURE — pourquoi un nœud separe et pas un etat de plus
-=====================================================================
-mini-ADR. *Contexte* : le docking a besoin de piloter le chassis, or
-`rm_cam_beacon.py` detient la connexion SDK UNIQUE au robot (tout son entete
-documente que deux connexions simultanees cassent `drive_speed`). *Options* :
-(a) ajouter un etat DOCK dans `rm_cam_beacon.py` — acces direct au SDK, donc
-au deplacement lateral (chassis holonome Mecanum), mais modifie un fichier
-teste et valide sur materiel ; (b) nœud separe qui commande via les topics ROS
-deja exposes (`/carolus/cmd_vel`, `/carolus/gimbal_vel`), sans toucher a
-l'existant. *Choix* : (b) — aucune regression possible sur la chaine validee
-(F3, ALIGN/APPROACH testes materiel), le docking peut etre lance, teste et
-abandonne sans redeployer `rm_cam_beacon.py`.
-*Consequence acceptee* : `/carolus/cmd_vel` n'est cable en mode MANUEL que sur
-vx et wz (`drive_speed(x=vx, y=0.0, z=wz)`) — la translation laterale du
-chassis holonome n'est PAS accessible par ce canal. Le docking est donc traite
-comme un probleme NON-HOLONOME (tourner / avancer / tourner), pas comme un
-recalage lateral direct. Condition qui reviserait ce choix : si un jour
-`rm_cam_beacon.py` relaie `msg.linear.y` vers `drive_speed(y=...)`, la manœuvre
-en 3 segments pourrait etre remplacee par un simple deport lateral.
+The existing pipeline (SEARCH -> ALIGN -> APPROACH -> STOP in `rm_cam_beacon.py`)
+stops at "point at the beacon and drive to 0.70 m": it uses ONLY the beacon's
+position (x, y, z), never its ORIENTATION. It therefore converges to a circle of
+radius 0.70 m around the beacon, not to a point. This module adds the missing
+stage: the off-axis angle.
 
 
 =====================================================================
-STRATEGIE DE COMMANDE — "look-and-move" iteratif, pas de servo continu
+ARCHITECTURE -- why a separate node rather than one more state
 =====================================================================
-mini-ADR. *Contexte* : Carolus publie `/pose` a ~2.5 Hz (goulot = transport
-reseau des images, documente dans `rm_cam_beacon.py`). *Options* : (a) loi de
-commande continue en coordonnees polaires (controle de parking classique
-rho/alpha/beta pour robot unicycle) ; (b) boucle "mesurer a l'arret -> planifier
--> executer en aveugle -> re-mesurer" repetee jusqu'a tolerance. *Choix* : (b).
-Une loi continue asservie a 2.5 Hz sur un angle dont le signe n'est pas confirme
-(cf. section CONVENTIONS) oscille au lieu de converger ; la boucle iterative
-rend chaque segment verifiable, borne l'erreur par la re-mesure, et degrade
-proprement (si une iteration empire les choses, on le VOIT a l'iteration
-suivante et on s'arrete). C'est le meme paradigme "look-and-move" que celui
-deja retenu pour ALIGN (cf. commentaire ALIGN dans `rm_cam_beacon.py`).
-Condition qui reviserait ce choix : Carolus deplace sur le Pi (F0.C du roadmap)
-faisant monter `/pose` a >10 Hz.
-
-
-=====================================================================
-CONVENTIONS DE SIGNE — le vrai risque de ce module
-=====================================================================
-Ce projet a un historique de signes non confirmes (GIM_YAW_SIGN confirme
-seulement le 2026-06-26 par test ; GIM_PITCH_SIGN toujours non confirme apres
-l'incident BUG-058 ; "signe EP non confirme" note pour `/odom` ; meme reserve
-dans `gimbal_bearing.py`). Le docking depend de PLUSIEURS de ces signes, donc :
-
-  * Signe de rotation du chassis (`cmd_vel.angular.z`) -> MESURE AU DEMARRAGE
-    par `_probe_turn_sign()` (petite rotation, on regarde dans quel sens le yaw
-    `/odom` bouge). Aucune constante a deviner.
-  * Signe de rotation du gimbal (`gimbal_vel.angular.z`) -> MESURE de la meme
-    facon par `_probe_gimbal_sign()` sur `/carolus/gimbal_yaw_rel`.
-  * Orientation de la balise (`p.yaw`) -> NE PEUT PAS s'auto-calibrer : il faut
-    savoir ou pointe physiquement la balise. D'ou le mode CALIBRATE (voir
-    ci-dessous), a passer UNE FOIS avant le premier docking reel.
-
-⚠️ Tant que BEACON_YAW_SIGN / BEACON_YAW_OFFSET_DEG n'ont pas ete etablis par
-le mode CALIBRATE, ce module refuse de docker (garde-fou `_yaw_convention_ok`)
-et se rabat sur un simple maintien de distance, comportement equivalent a
-l'APPROACH existant. C'est volontaire : un signe faux ferait tourner le robot
-DANS LE MAUVAIS SENS autour de la balise, en s'eloignant de la solution.
+Mini-ADR. *Context*: docking needs to drive the chassis, but `rm_cam_beacon.py`
+holds the SINGLE SDK connection to the robot (its own header documents that two
+simultaneous connections break `drive_speed`). *Options*: (a) add a DOCK state
+inside `rm_cam_beacon.py` -- direct SDK access, hence access to lateral motion
+(the Mecanum chassis is holonomic), but it modifies a file that is tested and
+validated on hardware; (b) a separate node commanding through the ROS topics
+already exposed (`/carolus/cmd_vel`, `/carolus/gimbal_vel`), touching nothing
+that exists. *Choice*: (b) -- no regression is possible on the validated chain
+(ALIGN/APPROACH, both hardware-tested), and docking can be launched, tested and
+abandoned without redeploying `rm_cam_beacon.py`.
+*Accepted consequence*: `/carolus/cmd_vel` is only wired to vx and wz in MANUAL
+mode (`drive_speed(x=vx, y=0.0, z=wz)`) -- the holonomic chassis's lateral
+translation is NOT reachable through that channel. Docking is therefore treated
+as a NON-HOLONOMIC problem (turn / drive / turn) rather than as a direct lateral
+correction. Condition that would revise this: if `rm_cam_beacon.py` ever relays
+`msg.linear.y` to `drive_speed(y=...)`, the three-segment manoeuvre could be
+replaced by a simple lateral offset.
 
 
 =====================================================================
-UTILISATION
+CONTROL STRATEGY -- iterative "look-and-move", not a continuous servo
 =====================================================================
-Prerequis : `rm_cam_beacon.py` tourne (il fournit `/odom`,
-`/carolus/gimbal_yaw_rel` et consomme `/carolus/cmd_vel`), Carolus tourne (il
-fournit `/pose`), balise visible.
+Mini-ADR. *Context*: when this was written, Carolus published `/pose` at ~2.5 Hz
+(the bottleneck being network transport of the images). *Options*: (a) a
+continuous control law in polar coordinates (the classic rho/alpha/beta parking
+controller for a unicycle robot); (b) a "measure at rest -> plan -> execute
+blind -> re-measure" loop, repeated until tolerance. *Choice*: (b). A continuous
+law closed at 2.5 Hz on an angle whose sign is not confirmed (see the SIGN
+CONVENTIONS section) oscillates instead of converging; the iterative loop makes
+each segment verifiable, bounds the error by re-measuring, and degrades cleanly
+(if one iteration makes things worse, you SEE it on the next one and stop). It is
+the same "look-and-move" paradigm already chosen for ALIGN.
+*Revision condition, now partly met*: moving Carolus onto the Pi (roadmap F0.C)
+raising `/pose` above 10 Hz. That happened on 2026-08-04 -- `/pose` measured
+13.04 Hz on the Pi against 2.19 Hz on the lab PC -- so the continuous-law option
+deserves re-examination. It is NOT reopened here, because the sign conventions
+below remain the dominant risk and a continuous law is precisely what they
+punish.
+
+
+=====================================================================
+SIGN CONVENTIONS -- the real risk in this module
+=====================================================================
+This project has a history of unconfirmed signs (GIM_YAW_SIGN was only confirmed
+by test on 2026-06-26; GIM_PITCH_SIGN is still unconfirmed after the BUG-058
+incident; "EP sign unconfirmed" is noted for `/odom`). Docking depends on
+SEVERAL of those signs, so:
+
+  * Chassis rotation sign (`cmd_vel.angular.z`) -> MEASURED AT STARTUP by
+    `_probe_turn_sign()` (a small rotation, watching which way `/odom` yaw
+    moves). No constant to guess.
+  * Gimbal rotation sign (`gimbal_vel.angular.z`) -> MEASURED the same way by
+    `_probe_gimbal_sign()` on `/carolus/gimbal_yaw_rel`.
+  * Beacon orientation (`p.yaw`) -> CANNOT be self-calibrated: it requires
+    knowing where the beacon physically points. Hence the CALIBRATE mode (see
+    below), to be run ONCE before the first real docking.
+
+WARNING: until BEACON_YAW_SIGN / BEACON_YAW_OFFSET_DEG have been established by
+CALIBRATE mode, this module refuses to dock (the `_yaw_convention_ok` guard) and
+falls back to simple distance-holding, behaviour equivalent to the existing
+APPROACH. That is deliberate: a wrong sign would turn the robot the WRONG WAY
+around the beacon, moving away from the solution.
+
+
+=====================================================================
+USAGE
+=====================================================================
+Prerequisites: `rm_cam_beacon.py` running (it provides `/odom` and
+`/carolus/gimbal_yaw_rel`, and consumes `/carolus/cmd_vel`), Carolus running (it
+provides `/pose`), beacon visible.
 
     python3 beacon_docking.py
 
-**GUI-integre (2026-07-27)** : lance depuis `carolus_launcher.py` (5e terminal
-T5), panneau "DOCKING BALISE" avec boutons CALIBRATE / CAL STEP 2 / START /
-ABORT et un statut live -- voir `shortcuts/README.md`.
+**GUI-integrated (2026-07-27)**: launched from `carolus_launcher.py` (terminal
+T5), "DOCKING BALISE" panel with CALIBRATE / CAL STEP 2 / START / ABORT buttons
+and a live status readout -- see `shortcuts/README.md`.
 
-Ou manuellement, depuis un autre terminal :
+Or manually, from another terminal:
 
-    # calibration de la convention d'orientation balise (a faire une fois,
-    # en 2 clics independants -- pas de minuteur, chaque etape attend l'ordre
-    # explicite suivant, a ton rythme) :
-    #   1. positionner le robot EN FACE de la balise (~1m), puis :
+    # calibrate the beacon orientation convention (once, in two independent
+    # clicks -- no timer, each step waits for the next explicit command, at
+    # your own pace):
+    #   1. place the robot FACING the beacon (~1 m), then:
     rostopic pub -1 /carolus/dock std_msgs/String "data: 'CALIBRATE'"
-    #   2. deplacer le robot d'~30 deg a droite de la balise, puis :
+    #   2. move the robot ~30 deg to the right of the beacon, then:
     rostopic pub -1 /carolus/dock std_msgs/String "data: 'CALSTEP2'"
 
-    # docking complet (phases 1+2+3 enchainees)
+    # full docking (phases 1+2+3 chained)
     rostopic pub -1 /carolus/dock std_msgs/String "data: 'START'"
 
-    # test isole (2026-07-28) : alignement chassis SEUL, n'avance jamais
+    # isolated test (2026-07-28): chassis alignment ONLY, never advances
     rostopic pub -1 /carolus/dock std_msgs/String "data: 'ALIGN_ONLY'"
 
-    # test isole (2026-07-28) : avance SEULE, verifie l'alignement avant de
-    # bouger et refuse (NOT_ALIGNED) si le chassis n'est pas deja aligne --
-    # lancer ALIGN_ONLY avant si besoin
+    # isolated test (2026-07-28): drive ONLY. Verifies alignment before moving
+    # and refuses (NOT_ALIGNED) if the chassis is not already aligned -- run
+    # ALIGN_ONLY first if needed
     rostopic pub -1 /carolus/dock std_msgs/String "data: 'APPROACH_ONLY'"
 
-    # arret d'urgence
+    # emergency stop
     rostopic pub -1 /carolus/dock std_msgs/String "data: 'ABORT'"
 
-Etat publie en continu sur `/carolus/dock_status` (String), et logue en
-`[DOCKSTATUS] status=... yaw_validated=...` (parsable par `carolus_launcher.py`,
-meme mecanisme que `[BEACON]`) en plus des lignes `[DOCK] ...` classiques.
+State is published continuously on `/carolus/dock_status` (String) and logged as
+`[DOCKSTATUS] status=... yaw_validated=...` (parsable by `carolus_launcher.py`,
+same mechanism as `[BEACON]`), alongside the usual `[DOCK] ...` lines.
 
-Ce fichier ne modifie AUCUN fichier existant et n'ouvre AUCUNE connexion SDK.
+This file modifies NO existing file and opens NO SDK connection.
 """
 
 import math
 import threading
 import time
 
-# Imports ROS tolerants : la geometrie de ce module (`plan_maneuver`) est une
-# fonction pure, testable sur une machine sans ROS installe/source
-# (`python3 beacon_docking.py --selftest`). On n'echoue donc qu'au moment de
-# demarrer reellement le nœud, pas a l'import.
+# Tolerant ROS imports: this module's geometry (`plan_maneuver`) is a pure
+# function, testable on a machine with no ROS installed or sourced
+# (`python3 beacon_docking.py --selftest`). So we only fail when the node is
+# actually started, not at import time.
 try:
     import rospy
     from geometry_msgs.msg import PoseStamped, Twist
@@ -152,127 +154,123 @@ DOCK_DISTANCE_M = 0.20    # distance finale robot<->balise (2026-07-27, demande
                           # explicite utilisateur -- avant : 0.70, aligne sur
                           # STOP_DISTANCE_M de rm_cam_beacon.py)
 
-# Mode simplifie (2026-07-27, demande explicite utilisateur pour le premier
-# test materiel) : tourner pour faire face a la balise (bearing -> 0), PUIS
-# avancer tout droit jusqu'a DOCK_DISTANCE_M. Pas d'alignement sur l'axe
-# frontal de la balise (ignore offaxis), pas de boucle iterative -- une seule
-# mesure, un seul tour, une seule avance. La manœuvre complete (plan_maneuver,
-# point de ligne-up, iterations jusqu'a convergence) reste dans le code
-# ci-dessous, desactivee par ce flag -- remettre a False pour la reactiver.
+# Simplified mode (2026-07-27, explicit user request for the first hardware
+# test): turn to face the beacon (bearing -> 0), THEN drive straight to
+# DOCK_DISTANCE_M. No alignment on the beacon's frontal axis (off-axis is
+# ignored), no iterative loop -- one measurement, one turn, one drive. The full
+# manoeuvre (plan_maneuver, line-up point, iterations to convergence) remains in
+# the code below, disabled by this flag -- set it back to False to re-enable.
 SIMPLE_APPROACH_ONLY = True
 
-# ── Tolerances de fin (le docking s'arrete quand les 3 sont satisfaites) ─────
-TOL_RANGE_M      = 0.06   # |range - DOCK_DISTANCE_M| accepte (m)
-TOL_OFFAXIS_DEG  = 8.0    # |angle hors-axe| accepte (deg) — "de face"
-TOL_BEARING_DEG  = 6.0    # |balise pas centree devant le robot| accepte (deg)
+# -- Final tolerances (docking stops when all three are satisfied) -----------
+TOL_RANGE_M      = 0.06   # accepted |range - DOCK_DISTANCE_M| (m)
+TOL_OFFAXIS_DEG  = 8.0    # accepted |off-axis angle| (deg) -- "square on"
+TOL_BEARING_DEG  = 6.0    # accepted |beacon not centred ahead of the robot| (deg)
 
-# ── Boucle iterative ─────────────────────────────────────────────────────────
-MAX_ITERATIONS   = 5      # au-dela : on considere que ca ne converge pas
-MIN_PROGRESS_DEG = 2.0    # si une iteration ne gagne pas au moins ca sur
-                          # l'angle hors-axe, on arrete (evite de tourner en
-                          # rond si un signe est faux malgre la calibration)
+# -- Iterative loop ----------------------------------------------------------
+MAX_ITERATIONS   = 5      # beyond this we consider it is not converging
+MIN_PROGRESS_DEG = 2.0    # if an iteration does not gain at least this on the
+                          # off-axis angle, stop (avoids circling forever if a
+                          # sign is wrong despite calibration)
 
-# ── Mesure (a l'arret, robot immobile) ───────────────────────────────────────
-MEAS_SAMPLES     = 7      # nb de poses agregees par mesure (mediane)
-MEAS_TIMEOUT_S   = 8.0    # abandon si on n'a pas MEAS_SAMPLES a temps
-MEAS_MAX_SPREAD_DEG = 25.0  # dispersion max toleree sur l'angle hors-axe,
-                            # au-dela la mesure est jugee non fiable
+# -- Measurement (at rest, robot stationary) ---------------------------------
+MEAS_SAMPLES     = 7      # poses aggregated per measurement (median)
+MEAS_TIMEOUT_S   = 8.0    # give up if MEAS_SAMPLES are not collected in time
+MEAS_MAX_SPREAD_DEG = 25.0  # max tolerated spread on the off-axis angle;
+                            # beyond it the measurement is deemed unreliable
 
-# ── Vitesses (volontairement basses : manœuvre de precision) ────────────────
-TURN_WZ_DEG_S    = 25.0   # vitesse de rotation chassis pendant la manœuvre
-DRIVE_VX_M_S     = 0.12   # vitesse d'avance pendant la manœuvre
-CMD_RATE_HZ      = 10.0   # republication cmd_vel (recepteur coupe a 0.5s,
-                          # cf. MANUAL_CMDVEL_TIMEOUT dans rm_cam_beacon.py)
+# -- Speeds (deliberately low: this is a precision manoeuvre) ----------------
+TURN_WZ_DEG_S    = 25.0   # chassis rotation speed during the manoeuvre
+DRIVE_VX_M_S     = 0.12   # forward speed during the manoeuvre
+CMD_RATE_HZ      = 10.0   # cmd_vel re-publication rate (the receiver cuts out
+                          # after 0.5 s, see MANUAL_CMDVEL_TIMEOUT in
+                          # rm_cam_beacon.py)
 
-# ── Primitives de mouvement ──────────────────────────────────────────────────
-TURN_TOL_DEG     = 2.0    # precision d'arret d'une rotation
-TURN_TIMEOUT_MAX_S = 15.0 # securite : jamais tourner plus longtemps que ca
-SEQUENCE_TIMEOUT_S = 45.0 # 2026-07-28 : budget global pour phases 1+2+3 du
-                          # pipeline simple, cumule (chaque phase a deja son
-                          # propre timeout, ceci est une securite en plus, pas
-                          # un remplacement) -- valeur de depart a calibrer,
-                          # pas issue d'une mesure existante
-DRIVE_TOL_M      = 0.03   # precision d'arret d'une avance
+# -- Motion primitives -------------------------------------------------------
+TURN_TOL_DEG     = 2.0    # stopping precision of a rotation
+TURN_TIMEOUT_MAX_S = 15.0 # safety: never turn for longer than this
+SEQUENCE_TIMEOUT_S = 45.0 # 2026-07-28: overall budget for phases 1+2+3 of the
+                          # simple pipeline, cumulative (each phase already has
+                          # its own timeout; this is an extra safety net, not a
+                          # replacement) -- a starting value to be calibrated,
+                          # not derived from any existing measurement
+DRIVE_TOL_M      = 0.03   # stopping precision of a drive
 DRIVE_TIMEOUT_MAX_S = 20.0
-MAX_SEGMENT_M    = 2.5    # avance max executee d'un seul tenant. Un plan plus
-                          # long n'est PAS une erreur (un docking tres hors-axe
-                          # a longue portee demande un vrai detour) : on tronque
-                          # et on laisse l'iteration suivante re-planifier depuis
-                          # une mesure fraiche — plus sur que d'avancer 3 m en
-                          # aveugle sur une mesure a 2.5 Hz.
-ABSURD_SEGMENT_M = 10.0   # au-dela, la mesure est forcement fausse -> abandon
+MAX_SEGMENT_M    = 2.5    # longest drive executed in one go. A longer plan is
+                          # NOT an error (a very off-axis docking at long range
+                          # genuinely needs a detour): we truncate and let the
+                          # next iteration re-plan from a fresh measurement --
+                          # safer than driving 3 m blind on a 2.5 Hz measurement.
+ABSURD_SEGMENT_M = 10.0   # beyond this the measurement must be wrong -> abort
 
-# ── Sondage des signes (auto-calibration au demarrage de la manœuvre) ───────
-PROBE_TURN_DEG_S = 20.0   # vitesse de la rotation de sondage
-PROBE_DURATION_S = 0.8    # duree de la rotation de sondage
-PROBE_MIN_DELTA_DEG = 1.5 # en dessous, on considere que rien n'a bouge
+# -- Sign probing (self-calibration at the start of the manoeuvre) -----------
+PROBE_TURN_DEG_S = 20.0   # speed of the probing rotation
+PROBE_DURATION_S = 0.8    # duration of the probing rotation
+PROBE_MIN_DELTA_DEG = 1.5 # below this we consider nothing moved
 
 # ── Gimbal ───────────────────────────────────────────────────────────────────
-# La mesure se fait gimbal aligne sur le chassis (yaw_rel ~ 0) : ainsi le repere
-# camera == le repere chassis, et toute la geometrie ci-dessous se passe du
-# signe de yaw_rel (qui n'est pas confirme). C'est la simplification centrale
-# de ce module.
+# Measurement is taken with the gimbal aligned on the chassis (yaw_rel ~ 0):
+# that makes the camera frame == the chassis frame, so all the geometry below
+# does without the sign of yaw_rel, which is unconfirmed. This is the central
+# simplification of this module.
 GIMBAL_NULL_TOL_DEG  = 3.0
 GIMBAL_NULL_SPEED    = 25.0
 GIMBAL_NULL_TIMEOUT_S = 12.0
-# 2026-07-30 : la phase 1 declarait la nacelle alignee sur UNE seule lecture
-# sous tolerance, alors que la phase 2 exigeait deja 3 lectures consecutives
-# (ALIGN_CONSECUTIVE_OK). C'etait l'inverse de la priorite reelle : la sortie
-# de la phase 1 est LA reference de tout le reste du pipeline, donc celle qui
-# merite le plus d'etre confirmee. Bruit P4P de l'ordre de 1 deg (journal
-# 2026-07-23) pour une tolerance de 3 deg -> une lecture isolee peut passer
-# sous tolerance par bruit seul. Les lectures comptees sont des poses
-# DISTINCTES (stamp different) : a 10 Hz de boucle pour 2.5 Hz de vision, le
-# meme message aurait ete compte 3 fois sinon.
+# 2026-07-30: phase 1 used to declare the gimbal aligned on a SINGLE reading
+# under tolerance, while phase 2 already required 3 consecutive readings
+# (ALIGN_CONSECUTIVE_OK). That inverted the real priority: phase 1's output is
+# THE reference for everything downstream, so it is the one most deserving of
+# confirmation. With P4P noise on the order of 1 deg against a 3 deg tolerance,
+# an isolated reading can fall under tolerance on noise alone. The readings
+# counted are DISTINCT poses (different stamps): at a 10 Hz loop against 2.5 Hz
+# of vision, the same message would otherwise have been counted three times.
 GIMBAL_CONFIRM_OK    = 3
-# Duree sans pose fraiche au-dela de laquelle la phase 1 conclut "balise pas
-# en vue" plutot que "n'a pas converge" -- deux causes distinctes qui
-# produisaient jusqu'ici le meme message de timeout. Cascade du 2026-07-29 :
-# 8 runs sur 11 morts en phase 1, sans que les logs permettent de dire
-# lequel des deux cas s'etait produit.
+# Time without a fresh pose after which phase 1 concludes "beacon not in view"
+# rather than "did not converge" -- two distinct causes that until then produced
+# the same timeout message. In the 2026-07-29 cascade, 8 runs out of 11 died in
+# phase 1 with logs that could not say which of the two had happened.
 GIMBAL_NO_POSE_S     = 4.0
 
-# ── Verification terminale de l'alignement (2026-07-30) ─────────────────────
-# La phase 2 asservit `yaw_rel` -> 0, ce qui signifie "chassis aligne sur la
-# NACELLE". Que le chassis soit aligne sur la BALISE n'en decoule QUE si la
-# nacelle pointe encore la balise a cet instant -- ce qui n'etait jamais
-# verifie. Preuve materielle (2026-07-29, run 1) : SUCCES annonce avec
-# yaw_rel=+0.6 deg alors que l'ecart image valait -26.3 deg au meme instant.
+# -- Terminal alignment verification (2026-07-30) ----------------------------
+# Phase 2 servos `yaw_rel` -> 0, which means "chassis aligned on the GIMBAL".
+# That the chassis is aligned on the BEACON follows ONLY if the gimbal is still
+# pointing at the beacon at that instant -- which was never verified. Hardware
+# proof (2026-07-29, run 1): SUCCESS reported with yaw_rel=+0.6 deg while the
+# image-frame error was -26.3 deg at the same moment.
 #
-# Le correctif n'est PAS de re-bloquer sur l'ecart image (essaye le matin du
-# 2026-07-29, retire l'apres-midi a juste titre : la valeur etait lue pendant
-# la rotation, donc non pertinente au moment de la decision). C'est de
-# MESURER proprement -- robot arrete, stabilise, mesure agregee via _measure()
-# comme partout ailleurs dans ce module -- puis de CORRIGER le residu par une
-# passe supplementaire au lieu de se contenter de le signaler.
-ALIGN_SETTLE_S       = 1.2   # arret complet + renouvellement vision (/pose a
-                             # 2.5 Hz -> ~3 trames) avant de mesurer
-ALIGN_VERIFY_PASSES  = 3     # nb max de passes (nacelle + chassis) enchainees
-ALIGN_VERIFY_MIN_GAIN_DEG = 2.0   # gain minimal exige d'une passe a la
-                                  # suivante, sinon on arrete (une passe de
-                                  # plus ne servirait qu'a user la mecanique)
-# Derive max toleree du cap ABSOLU de la nacelle entre la fin de la phase 1 et
-# la fin de la phase 2. yaw_ground est un temoin fiable et gratuit depuis que
-# H1 est confirmee (2026-07-29 : yaw_ground stable a +0.2 deg pendant que le
-# chassis tournait de 104.8 deg). Si la reference a bouge, la conclusion
-# "chassis aligne sur la balise" ne tient plus, quelle que soit la valeur de
-# yaw_rel.
+# The fix is NOT to gate on the image error again (tried on the morning of
+# 2026-07-29 and rightly removed that afternoon: the value was read DURING the
+# rotation, so it was not meaningful at decision time). It is to MEASURE
+# properly -- robot stopped, settled, aggregated through _measure() as
+# everywhere else in this module -- and then to CORRECT the residual with an
+# extra pass instead of merely reporting it.
+ALIGN_SETTLE_S       = 1.2   # full stop plus vision refresh before measuring
+                             # (at the 2.5 Hz /pose of the time, ~3 frames)
+ALIGN_VERIFY_PASSES  = 3     # max chained passes (gimbal + chassis)
+ALIGN_VERIFY_MIN_GAIN_DEG = 2.0   # minimum gain required from one pass to the
+                                  # next, otherwise stop (a further pass would
+                                  # only wear the mechanics)
+# Max tolerated drift of the gimbal's ABSOLUTE heading between the end of phase
+# 1 and the end of phase 2. yaw_ground is a reliable and free witness, confirmed
+# on 2026-07-29: it stayed stable to +0.2 deg while the chassis rotated 104.8
+# deg. If the reference moved, the conclusion "chassis aligned on the beacon"
+# no longer holds, whatever yaw_rel says.
 ALIGN_REF_DRIFT_MAX_DEG = 8.0
 
-# ── Convention d'orientation balise (A ETABLIR PAR LE MODE CALIBRATE) ───────
+# -- Beacon orientation convention (TO BE ESTABLISHED BY CALIBRATE MODE) -----
 # psi = BEACON_YAW_SIGN * p.yaw + BEACON_YAW_OFFSET_DEG
-# psi est defini comme l'ANGLE HORS-AXE : 0 = le robot est pile sur l'axe
-# frontal de la balise (il la voit de face), != 0 = il la voit de biais.
-# Valeurs etablies par CALIBRATE le 2026-07-27 (yaw_face de reference,
-# delta mesure a +57.2 deg apres un deplacement d'environ 45 deg a droite).
+# psi is defined as the OFF-AXIS ANGLE: 0 means the robot sits exactly on the
+# beacon's frontal axis (it sees the beacon square on), non-zero means it sees
+# it at an angle. Values established by CALIBRATE on 2026-07-27 (reference
+# yaw_face, delta measured at +57.2 deg after moving roughly 45 deg right).
 BEACON_YAW_SIGN       = +1.0
 BEACON_YAW_OFFSET_DEG = +2.4
-# Passer a True UNIQUEMENT apres avoir valide les deux valeurs ci-dessus par
-# le mode CALIBRATE sur le materiel. False = refus de docker (repli sur simple
-# maintien de distance), cf. entete.
+# Set to True ONLY after validating both values above through CALIBRATE mode on
+# the hardware. False means docking is refused (falling back to simple
+# distance-holding), see the header.
 BEACON_YAW_VALIDATED  = True
 
-POSE_TIMEOUT_S = 1.5      # meme valeur que rm_cam_beacon.py
+POSE_TIMEOUT_S = 1.5      # same value as rm_cam_beacon.py
 
 
 # =========================================================
@@ -284,10 +282,10 @@ def clamp(v, vmin, vmax):
 
 
 def angle_diff_deg(a, b):
-    """Plus petite difference angulaire signee a-b, en degres, dans [-180, 180].
-    (Meme helper que `_angle_diff_deg` de rm_cam_beacon.py — duplique
-    volontairement : ce module ne doit importer aucun fichier existant pour
-    rester deployable seul.)"""
+    """Smallest signed angular difference a-b, in degrees, within [-180, 180].
+    (Same helper as rm_cam_beacon.py's `_angle_diff_deg` -- duplicated
+    deliberately: this module must import no existing file so it stays
+    deployable on its own.)"""
     return ((a - b + 180.0) % 360.0) - 180.0
 
 
@@ -302,42 +300,42 @@ def median(values):
     return 0.5 * (s[mid - 1] + s[mid])
 
 
-# 2026-07-28 : logique de decision de `_align_chassis_yaw_rel` extraite en
-# fonctions pures (memes principes que `plan_maneuver`) pour etre testable
-# via --selftest, sans ROS ni robot.
+# 2026-07-28: `_align_chassis_yaw_rel`'s decision logic extracted into pure
+# functions (same principle as `plan_maneuver`) so it can be exercised through
+# --selftest, with neither ROS nor a robot.
 
 def chassis_align_tick(yaw_rel, deadband_deg, consecutive_ok):
-    """Nouveau compteur de lectures consecutives dans la tolerance (0 si hors
-    tolerance -- remet le compteur a zero)."""
+    """New count of consecutive in-tolerance readings (0 when out of tolerance,
+    which resets the counter)."""
     if abs(yaw_rel) < deadband_deg:
         return consecutive_ok + 1
     return 0
 
 
 def chassis_no_progress(err_before, err_now, min_gain_deg):
-    """True si l'erreur absolue n'a pas assez diminue entre deux controles
-    espaces dans le temps (divergence ou stagnation)."""
+    """True if the absolute error has not decreased enough between two checks
+    spaced in time (divergence or stagnation)."""
     return (err_before - err_now) < min_gain_deg
 
 
 def chassis_is_blocked(yaw_rel_ref, yaw_rel_now, min_delta_deg, commands_sent):
-    """True si des commandes non nulles ont deja ete envoyees mais yaw_rel n'a
-    quasi pas bouge depuis la derniere reference -- chassis physiquement
-    bloque (butee, roue coincee, etc.).
+    """True if non-zero commands have already been sent but yaw_rel has barely
+    moved since the last reference -- the chassis is physically stalled
+    (mechanical stop, jammed wheel, etc.).
 
-    2026-07-30 : la comparaison passe desormais par `angle_diff_deg`. Avant,
-    deux angles pourtant deja normalises etaient soustraits directement, ce
-    qui casse au passage de +/-180 deg : un chassis STRICTEMENT immobile a
-    ref=+179 / now=-179 donnait |diff|=358 deg et passait donc pour "en
-    mouvement" -- exactement le cas ou il fallait detecter un blocage."""
+    2026-07-30: the comparison now goes through `angle_diff_deg`. Before, two
+    already-normalised angles were subtracted directly, which breaks across
+    the +/-180 deg wrap: a STRICTLY stationary chassis at ref=+179 / now=-179
+    gave |diff|=358 deg and therefore read as "moving" -- exactly the case
+    where a stall had to be detected."""
     return commands_sent > 0 and \
         abs(angle_diff_deg(yaw_rel_now, yaw_rel_ref)) < min_delta_deg
 
 
 def gimbal_confirm_tick(err_deg, tol_deg, consecutive_ok):
-    """Meme discipline que `chassis_align_tick`, appliquee a l'ecart image de
-    la phase 1 : compteur de lectures consecutives sous tolerance, remis a
-    zero des qu'une lecture sort de la tolerance (2026-07-30)."""
+    """Same discipline as `chassis_align_tick`, applied to phase 1's image
+    error: a count of consecutive in-tolerance readings, reset to zero as soon
+    as one reading falls outside tolerance (2026-07-30)."""
     if abs(err_deg) < tol_deg:
         return consecutive_ok + 1
     return 0
@@ -345,18 +343,18 @@ def gimbal_confirm_tick(err_deg, tol_deg, consecutive_ok):
 
 def align_verify_verdict(residual_deg, tol_deg, prev_residual_deg,
                          min_gain_deg, passes_done, max_passes):
-    """Decide de la suite apres une passe d'alignement verifiee (2026-07-30).
+    """Decide what to do after a verified alignment pass (2026-07-30).
 
-    Fonction PURE (aucun I/O, aucun etat) -- donc couverte par --selftest,
-    comme `plan_maneuver` et les trois helpers `chassis_*`.
+    A PURE function (no I/O, no state), so it is covered by --selftest, like
+    `plan_maneuver` and the three `chassis_*` helpers.
 
-    `residual_deg` est le gisement de la balise mesure dans le repere CHASSIS,
-    robot a l'arret. Renvoie l'une des chaines :
-      * "ok"        -- residu dans la tolerance : alignement reellement atteint
-      * "retry"     -- hors tolerance, budget restant et progres suffisant :
-                       une passe de plus vaut le coup
-      * "no_gain"   -- la passe precedente n'a pas fait gagner min_gain_deg :
-                       insister ne ferait qu'user la mecanique
+    `residual_deg` is the beacon bearing measured in the CHASSIS frame with the
+    robot stopped. Returns one of:
+      * "ok"        -- residual within tolerance: alignment genuinely reached
+      * "retry"     -- outside tolerance, budget left and progress sufficient:
+                       one more pass is worth it
+      * "no_gain"   -- the previous pass did not gain min_gain_deg: insisting
+                       would only wear the mechanics
       * "exhausted" -- budget de passes epuise
     """
     if abs(residual_deg) <= tol_deg:
@@ -370,8 +368,8 @@ def align_verify_verdict(residual_deg, tol_deg, prev_residual_deg,
 
 
 class DockAbort(Exception):
-    """Levee des qu'un ABORT est demande ou qu'une securite se declenche.
-    Remonte jusqu'a `_dock_sequence` qui arrete le robot proprement."""
+    """Raised as soon as an ABORT is requested or a safety trips.
+    Propagates up to `_dock_sequence`, which stops the robot cleanly."""
 
 
 # =========================================================
@@ -386,15 +384,13 @@ class BeaconDocking:
         self._pose_lock = threading.Lock()
         self._yaw_rel = 0.0
         self._yaw_rel_lock = threading.Lock()
-        # 2026-07-29 (BUG-080, instrumentation) : /carolus/gimbal_yaw_ground
-        # existe et est publie par rm_cam_beacon.py depuis 2026-07-27 mais
-        # n'avait jamais ete ecoute ici. On l'ecoute desormais uniquement
-        # pour LOGUER yaw_ground et (yaw_ground - yaw_rel) a chaque etape de
-        # _align_chassis_yaw_rel -- pas pour changer le comportement. But :
-        # que le PROCHAIN run reel sur materiel (quel qu'il soit, pas
-        # necessairement le protocole isole de 18-protocole-discriminant-
-        # bug080.md) capture automatiquement la preuve qui confirme ou
-        # refute H1, sans dependre d'un test dedie pour l'obtenir.
+        # 2026-07-29 (BUG-080, instrumentation): /carolus/gimbal_yaw_ground has
+        # existed and been published by rm_cam_beacon.py since 2026-07-27, but was
+        # never listened to here. It is now subscribed purely to LOG yaw_ground and
+        # (yaw_ground - yaw_rel) at every step of _align_chassis_yaw_rel -- not to
+        # change behaviour. The point: that the NEXT real hardware run, whatever it
+        # is and without needing a dedicated protocol, automatically captures the
+        # evidence confirming or refuting H1.
         self._yaw_ground = 0.0
         self._yaw_ground_lock = threading.Lock()
         self._odom = None          # (x, y, yaw_deg)
@@ -404,29 +400,28 @@ class BeaconDocking:
         self._abort = False
         self._busy = False
         self._turn_sign = None     # +1/-1, determine par _probe_turn_sign()
-        self._gimbal_sign = None   # +1/-1, determine par _probe_gimbal_sign()
-        # Cap ABSOLU de la nacelle (yaw_ground) au moment ou la phase 1 a
-        # declare la nacelle alignee sur la balise. Sert de temoin de derive
-        # de la reference pendant la phase 2 (2026-07-30, cf.
-        # ALIGN_REF_DRIFT_MAX_DEG). None tant qu'aucune phase 1 n'a reussi.
+        self._gimbal_sign = None   # +1/-1, determined by _probe_gimbal_sign()
+        # The gimbal's ABSOLUTE heading (yaw_ground) at the moment phase 1
+        # declared it aligned on the beacon. Serves as a drift witness for that
+        # reference during phase 2 (2026-07-30, see ALIGN_REF_DRIFT_MAX_DEG).
+        # None until a phase 1 has succeeded.
         self._gimbal_ref_ground = None
-        self._cal_yaw_face = None  # resultat etape 1/2 de CALIBRATE, en attente de l'etape 2
+        self._cal_yaw_face = None  # result of CALIBRATE step 1/2, awaiting step 2
         self._status = "IDLE"
 
-        # --- detection pose republiee (2026-07-28) ---
-        # carolus_astrobee.cpp::getFilteredPose() (lignes 560-598) republie
-        # l'ANCIENNE pose (valeurs brutes identiques) avec un header.stamp
-        # frais quand une nouvelle detection est jugee trop differente et
-        # rejetee (lignes 569-576, 583-590). Consequence : _fresh_pose() (basee
-        # sur l'heure de reception ROS) ne peut PAS distinguer une detection
-        # reellement nouvelle d'une republication. Seul signal exploitable
-        # sans toucher au .cpp : comparer les valeurs brutes (x,y,z,yaw) entre
-        # deux receptions successives -- une republication les rend bit-a-bit
-        # identiques, ce qu'une detection P4P independante ne produit
-        # essentiellement jamais (bruit numerique du solveur). Limite connue :
-        # heuristique, pas une garantie -- documentee aussi en tete de fichier.
-        self._last_raw_pose_values = None   # (x, y, z, yaw_deg) de la derniere reception
-        self._pose_repeat_count = 0         # nb de receptions consecutives a l'identique
+        # --- republished-pose detection (2026-07-28) ---
+        # carolus_astrobee.cpp::getFilteredPose() (lines 560-598) republishes the
+        # OLD pose (bit-identical raw values) with a fresh header.stamp whenever a
+        # new detection is judged too different and rejected (lines 569-576,
+        # 583-590). Consequence: _fresh_pose(), which is based on ROS reception
+        # time, CANNOT distinguish a genuinely new detection from a republication.
+        # The only usable signal without touching the .cpp is to compare the raw
+        # values (x, y, z, yaw) between two successive receptions -- a
+        # republication makes them bit-for-bit identical, which an independent P4P
+        # solve essentially never produces (solver numerical noise). Known limit:
+        # this is a heuristic, not a guarantee -- also documented in the header.
+        self._last_raw_pose_values = None   # (x, y, z, yaw_deg) of the last reception
+        self._pose_repeat_count = 0         # consecutive identical receptions
 
         # --- ROS ---
         self.pub_cmd = rospy.Publisher("/carolus/cmd_vel", Twist, queue_size=1)
@@ -445,7 +440,7 @@ class BeaconDocking:
 
         rospy.loginfo("[DOCK] pret — commandes sur /carolus/dock : START / CALIBRATE / CALSTEP2 / ABORT")
         if not BEACON_YAW_VALIDATED:
-            rospy.logwarn("[DOCK] BEACON_YAW_VALIDATED=False — le docking complet est "
+            rospy.logwarn("[DOCK] BEACON_YAW_VALIDATED=False -- full docking is "
                           "DESACTIVE tant que la convention d'orientation balise n'a pas "
                           "ete etablie (mode CALIBRATE). START fera un simple maintien "
                           "de distance.")
@@ -459,13 +454,12 @@ class BeaconDocking:
         q = msg.pose.orientation
         if not all(map(math.isfinite, [p.x, p.y, p.z, q.x, q.y, q.z, q.w])):
             return
-        # Extraction du yaw balise — MEME formule que `_pose_cb` de
-        # rm_cam_beacon.py (rotation autour de l'axe y camera). Volontairement
-        # identique : c'est la valeur deja loguee en `byaw` depuis des mois, donc
-        # la seule pour laquelle on a un historique terrain. Sa limite est connue
-        # et documentee dans le compte-rendu de revue joint a ce module (exacte
-        # pour une rotation pure autour de y, approchee des que la balise est
-        # inclinee ou la nacelle pitchee).
+        # Beacon yaw extraction -- the SAME formula as rm_cam_beacon.py's
+        # `_pose_cb` (rotation about the camera's y axis). Deliberately identical:
+        # this is the value already logged as `byaw` for months, so the only one
+        # with field history. Its limitation is known: exact for a pure rotation
+        # about y, approximate as soon as the beacon is tilted or the gimbal
+        # pitched.
         siny = 2.0 * (q.w * q.y + q.z * q.x)
         cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         yaw_deg = math.degrees(math.atan2(siny, cosy))
@@ -526,9 +520,10 @@ class BeaconDocking:
 
     def _status_tick(self, _event):
         self.pub_status.publish(String(data=self._status))
-        # Ligne loggee (en plus du topic /carolus/dock_status) pour etre parsee
-        # par carolus_launcher.py exactement comme [BEACON]/[BEACONPOS] deja
-        # publies par rm_cam_beacon.py -- meme mecanisme, pas de nouveau pattern.
+        # Logged line (in addition to the /carolus/dock_status topic) so that
+        # carolus_launcher.py can parse it exactly like the [BEACON]/[BEACONPOS]
+        # lines rm_cam_beacon.py already publishes -- same mechanism, no new
+        # pattern.
         rospy.loginfo_throttle(
             1.0, f"[DOCKSTATUS] status={self._status} yaw_validated={BEACON_YAW_VALIDATED}")
 
@@ -582,22 +577,22 @@ class BeaconDocking:
             time.sleep(0.05)
 
     def _take_control(self):
-        """Passe le robot en MANUEL (seul mode ou `/carolus/cmd_vel` et
-        `/carolus/gimbal_vel` sont relayes au SDK) et coupe le LOCK balise
-        (sinon le tick LOCK ignore nos commandes gimbal, cf. l'arbitrage a 3
-        priorites de la boucle MANUEL de rm_cam_beacon.py)."""
+        """Put the robot into MANUAL (the only mode where `/carolus/cmd_vel` and
+        `/carolus/gimbal_vel` are relayed to the SDK) and switch the beacon LOCK
+        off (otherwise the LOCK tick ignores our gimbal commands -- see the
+        three-priority arbitration in rm_cam_beacon.py's MANUAL loop)."""
         self.pub_mode.publish(String(data="MANUAL"))
         self.pub_lock.publish(String(data="OFF"))
-        time.sleep(0.4)   # laisser le mode s'appliquer avant de commander
+        time.sleep(0.4)   # let the mode take effect before commanding
 
     # ---------------------------------------------------------
-    # Auto-calibration des signes de rotation
+    # Self-calibration of the rotation signs
     # ---------------------------------------------------------
 
     def _probe_turn_sign(self):
-        """Determine le signe de `cmd_vel.angular.z` qui fait AUGMENTER le yaw
-        `/odom`. Evite d'avoir a connaitre a l'avance la convention EP (non
-        confirmee dans ce projet, cf. entete)."""
+        """Determine which sign of `cmd_vel.angular.z` INCREASES the `/odom` yaw.
+        Removes any need to know the EP convention in advance -- it is
+        unconfirmed on this project, see the header."""
         if self._turn_sign is not None:
             return
         od = self._get_odom()
@@ -610,7 +605,7 @@ class BeaconDocking:
             self._send_cmd(0.0, PROBE_TURN_DEG_S)
             time.sleep(1.0 / CMD_RATE_HZ)
         self._stop()
-        time.sleep(0.4)   # laisser le chassis s'immobiliser avant de relire
+        time.sleep(0.4)   # let the chassis settle before reading again
         od = self._get_odom()
         if od is None:
             raise DockAbort()
@@ -625,11 +620,11 @@ class BeaconDocking:
                       f"-> turn_sign={self._turn_sign:+.0f}")
 
     def _probe_gimbal_sign(self):
-        """Idem pour la nacelle, sur `/carolus/gimbal_yaw_rel`. Reessaie une
-        fois, sens oppose et duree doublee, si le 1er sondage ne bouge pas
-        (2026-07-27, observe sur materiel : la nacelle peut etre proche d'une
-        butee mecanique dans le 1er sens tente, surtout apres plusieurs essais
-        CALIBRATE/docking dans la meme session)."""
+        """Same for the gimbal, on `/carolus/gimbal_yaw_rel`. Retries once, in
+        the opposite direction and for twice as long, if the first probe does not
+        move (2026-07-27, observed on hardware: the gimbal can sit near a
+        mechanical stop in the first direction tried, especially after several
+        CALIBRATE/docking attempts in one session)."""
         if self._gimbal_sign is not None:
             return
         attempts = [(PROBE_TURN_DEG_S, PROBE_DURATION_S),
@@ -646,13 +641,13 @@ class BeaconDocking:
             delta = angle_diff_deg(self._get_yaw_rel(), y0)
             if abs(delta) >= PROBE_MIN_DELTA_DEG:
                 self._gimbal_sign = 1.0 if (delta > 0) == (speed > 0) else -1.0
-                rospy.loginfo(f"[DOCK] sondage nacelle (essai {n}/2, cmd={speed:+.0f}) : "
+                rospy.loginfo(f"[DOCK] gimbal probe (attempt {n}/2, cmd={speed:+.0f}): "
                               f"yaw_rel {delta:+.1f} deg -> gimbal_sign={self._gimbal_sign:+.0f}")
                 return
-            rospy.logwarn(f"[DOCK] sondage nacelle (essai {n}/2, cmd={speed:+.0f}) : "
-                          f"nacelle immobile ({delta:.1f} deg)")
-        rospy.logwarn("[DOCK] sondage nacelle : immobile dans les 2 sens apres 2 essais "
-                      "— alignement gimbal INDISPONIBLE ce run (0 = inutilisable)")
+            rospy.logwarn(f"[DOCK] gimbal probe (attempt {n}/2, cmd={speed:+.0f}): "
+                          f"gimbal did not move ({delta:.1f} deg)")
+        rospy.logwarn("[DOCK] gimbal probe: no movement in either direction after 2 "
+                      "attempts -- gimbal alignment UNAVAILABLE this run (0 = unusable)")
         self._gimbal_sign = 0.0   # 0 = gimbal inutilisable, on s'en passe
 
     # ---------------------------------------------------------
@@ -660,15 +655,14 @@ class BeaconDocking:
     # ---------------------------------------------------------
 
     def _null_gimbal(self):
-        """Ramene la nacelle dans l'axe du chassis (yaw_rel -> 0) pour que le
-        repere camera coincide avec le repere chassis pendant la mesure.
+        """Bring the gimbal back onto the chassis axis (yaw_rel -> 0) so that the
+        camera frame coincides with the chassis frame during measurement.
 
-        NB : on n'utilise PAS `gimbal.recenter()` (dispo via
-        `/carolus/gimbal_recenter`) — recenter ramene la nacelle a son repere
-        POWER-ON, qui n'a aucune raison d'etre aligne avec le chassis courant
-        (c'est explicitement documente comme "independant de l'orientation du
-        chassis" dans rm_cam_beacon.py). Ici on veut yaw_rel=0, donc on asservit
-        sur yaw_rel."""
+        Note: `gimbal.recenter()` (available through `/carolus/gimbal_recenter`)
+        is deliberately NOT used -- recenter returns the gimbal to its POWER-ON
+        frame, which has no reason to be aligned with the current chassis (it is
+        explicitly documented as "independent of chassis orientation" in
+        rm_cam_beacon.py). Here we want yaw_rel = 0, so we servo on yaw_rel."""
         if self._gimbal_sign == 0.0:
             return
         self._probe_gimbal_sign()
@@ -681,7 +675,7 @@ class BeaconDocking:
             if abs(err) < GIMBAL_NULL_TOL_DEG:
                 break
             # On veut faire DECROITRE yaw_rel : commande de signe oppose a
-            # l'erreur, corrigee par le signe mesure au sondage.
+            # the error, corrected by the sign measured during probing.
             cmd = -self._gimbal_sign * clamp(err, -GIMBAL_NULL_SPEED, GIMBAL_NULL_SPEED)
             cmd = clamp(cmd, -GIMBAL_NULL_SPEED, GIMBAL_NULL_SPEED)
             self._send_gimbal(cmd)
@@ -690,10 +684,10 @@ class BeaconDocking:
         rospy.loginfo(f"[DOCK] gimbal aligne chassis : yaw_rel={self._get_yaw_rel():.1f} deg")
 
     def _turn_by(self, delta_deg):
-        """Tourne le chassis de delta_deg (signe = convention geometrique de ce
-        module : positif = vers la DROITE de la camera, cf. `_measure`).
-        Asservi sur le yaw `/odom`, donc insensible a la convention de signe du
-        SDK (elle a ete mesuree par `_probe_turn_sign`)."""
+        """Rotate the chassis by delta_deg (sign follows this module's geometric
+        convention: positive = toward the camera's RIGHT, see `_measure`).
+        Servoed on the `/odom` yaw, therefore insensitive to the SDK's own sign
+        convention, which `_probe_turn_sign` has measured."""
         if abs(delta_deg) < TURN_TOL_DEG:
             return
         self._probe_turn_sign()
@@ -701,18 +695,18 @@ class BeaconDocking:
         if od is None:
             raise DockAbort()
         yaw0 = od[2]
-        rospy.loginfo(f"[DOCK] rotation : cible={delta_deg:+.1f} deg (repere camera, "
-                      f"+ = droite) turn_sign={self._turn_sign:+.0f} "
-                      f"yaw_odom_brut_depart={yaw0:+.1f} deg")
-        # Duree theorique + marge x3, plafonnee : garde-fou si /odom se fige.
+        rospy.loginfo(f"[DOCK] rotation: target={delta_deg:+.1f} deg (camera frame, "
+                      f"+ = right) turn_sign={self._turn_sign:+.0f} "
+                      f"raw_start_odom_yaw={yaw0:+.1f} deg")
+        # Theoretical duration with a 3x margin, capped: a guard if /odom freezes.
         timeout = min(TURN_TIMEOUT_MAX_S,
                       max(3.0, 3.0 * abs(delta_deg) / max(TURN_WZ_DEG_S, 1.0)))
-        # `delta_deg` est exprime dans le repere geometrique du module ; le signe
-        # de commande a appliquer est celui mesure au sondage. Le sondage a
-        # etabli le lien entre wz>0 et le sens de variation du yaw /odom ; on
-        # suppose ici que le yaw /odom croit dans le meme sens que notre angle
-        # geometrique. Si le test materiel montre l'inverse, c'est CE signe
-        # (et lui seul) qu'il faut inverser.
+        # `delta_deg` is expressed in this module's geometric frame; the command
+        # sign to apply is the one measured by the probe. The probe established the
+        # link between wz>0 and the direction /odom yaw moves in; here we assume
+        # /odom yaw grows in the same sense as our geometric angle. If a hardware
+        # test shows the opposite, THIS sign (and only this one) is what to
+        # invert.
         target = delta_deg
         t0 = time.time()
         while time.time() - t0 < timeout:
@@ -725,7 +719,7 @@ class BeaconDocking:
             if abs(remaining) < TURN_TOL_DEG:
                 break
             wz = self._turn_sign * clamp(remaining, -TURN_WZ_DEG_S, TURN_WZ_DEG_S)
-            # plancher : sous ~5 deg/s le chassis ne demarre pas franchement
+            # floor: below ~5 deg/s the chassis does not reliably start moving
             if 0.0 < abs(wz) < 5.0:
                 wz = math.copysign(5.0, wz)
             self._send_cmd(0.0, wz)
@@ -741,29 +735,29 @@ class BeaconDocking:
                           f"{raw_delta:+.1f} deg, turn_sign={self._turn_sign:+.0f})")
 
     def _track_beacon_gimbal_tick(self):
-        """Une correction de nacelle pour garder la balise centree dans l'image
-        PENDANT l'avance (2026-07-27, demande utilisateur -- meme objectif que
-        LOCK dans rm_cam_beacon.py, mais integre ici : LOCK est coupe pendant
-        tout `_dock_sequence` par `_take_control`, les deux systemes ne
-        peuvent pas commander la nacelle en meme temps sans se battre).
+        """One gimbal correction to keep the beacon centred in the image
+        DURING the drive (2026-07-27, user request -- same goal as LOCK in
+        rm_cam_beacon.py, but integrated here: LOCK is switched off for the whole
+        of `_dock_sequence` by `_take_control`, since the two systems cannot
+        command the gimbal at once without fighting).
 
-        Reutilise EXACTEMENT la formule validee de `_null_gimbal`
-        (cmd = -gimbal_sign * clamp(erreur)), avec une erreur differente :
-        `_null_gimbal` annule yaw_rel (camera alignee CHASSIS, pour la mesure
-        a l'arret) ; ici on annule le decalage lateral de la balise DANS
-        L'IMAGE (p.x/p.z, meme formule que `_measure`/LOCK), pour que la
-        camera SUIVE la balise pendant que le robot avance. Generalisation
-        raisonnee du signe sonde (meme sens physique : les deux erreurs
-        diminuent quand la nacelle tourne dans le meme sens) mais PAS
-        verifiee independamment sur materiel -- a surveiller au premier test.
+        Reuses EXACTLY the validated formula from `_null_gimbal`
+        (cmd = -gimbal_sign * clamp(error)) with a different error: `_null_gimbal`
+        nulls yaw_rel (camera aligned on the CHASSIS, for the at-rest
+        measurement); here we null the beacon's lateral offset IN
+        THE IMAGE (p.x/p.z, the same formula as `_measure`/LOCK), so the camera
+        FOLLOWS the beacon while the robot drives. A reasoned generalisation of
+        the probed sign (same physical sense: both errors decrease when the
+        gimbal turns the same way) but NOT independently verified on hardware
+        -- watch it on the first test.
 
-        2026-07-29 : retourne desormais l'erreur image calculee (ou None si
-        aucune pose fraiche exploitable), pour permettre a un appelant de
-        verifier que la nacelle est REELLEMENT sur la balise a cet instant,
-        au lieu de deviner. Reutilise par `_align_chassis_yaw_rel` (voir
-        BUG-080 : `yaw_rel` seul peut ne pas etre fiable ; `err_img`, lui,
-        ne depend d'aucune hypothese sur la stabilisation de la nacelle --
-        c'est une lecture visuelle directe, immune a l'historique de
+        2026-07-29: now returns the computed image error (or None if no usable
+        fresh pose), so a caller can verify the gimbal is REALLY on the beacon
+        at that instant instead of guessing. Reused by
+        `_align_chassis_yaw_rel` (see BUG-080: `yaw_rel` alone may not be
+        reliable; `err_img` depends on no assumption about gimbal
+        stabilisation -- it is a direct visual reading, immune to the history
+        of
         rotation de la plateforme). Changement de signature retrocompatible
         : le seul appelant existant (`_drive_by`) ignorait deja la valeur
         de retour."""
@@ -782,24 +776,24 @@ class BeaconDocking:
         return err
 
     def _align_gimbal_to_beacon(self, timeout_s=GIMBAL_NULL_TIMEOUT_S):
-        """Phase 1/3 du pipeline simple : pointe la nacelle sur la balise,
-        chassis immobile. Reutilise `_track_beacon_gimbal_tick` (meme
-        asservissement que pendant l'avance).
+        """Phase 1/3 of the simple pipeline: point the gimbal at the beacon with
+        the chassis stationary. Reuses `_track_beacon_gimbal_tick` (the same servo
+        used during the drive).
 
         Renvoie True si la nacelle est reellement alignee (a servir de
-        reference fiable pour la phase 2), False sinon -- 2026-07-27 : avant
-        ce fix, un echec silencieux ici (gimbal_sign=0, nacelle qui ne bouge
-        pas) laissait quand meme la phase 2 s'aligner sur une reference
-        arbitraire, cause directe d'une collision observee sur materiel."""
+        a reliable reference for phase 2), False otherwise -- 2026-07-27:
+        before this fix, a silent failure here (gimbal_sign=0, gimbal not
+        moving) still let phase 2 align on an arbitrary reference, the direct
+        cause of a collision observed on hardware."""
         if self._gimbal_sign is None:
             self._probe_gimbal_sign()
         if self._gimbal_sign == 0.0:
-            rospy.logerr("[DOCK] phase 1 abandonnee : nacelle inutilisable "
-                         "(sondage sans mouvement) — pas de reference fiable")
+            rospy.logerr("[DOCK] phase 1 aborted: gimbal unusable "
+                         "(probe produced no movement) -- no reliable reference")
             return False
         t0 = time.time()
         consecutive_ok = 0
-        last_counted_stamp = None   # ne compter que des poses DISTINCTES
+        last_counted_stamp = None   # count only DISTINCT poses
         t_last_pose = t0
         no_pose_warned = False
         while time.time() - t0 < timeout_s:
@@ -808,11 +802,11 @@ class BeaconDocking:
             p = self._get_pose()
             if p is not None and self._fresh_pose() and abs(p[2]) > 0.05:
                 t_last_pose = time.time()
-                # Une lecture ne compte que si elle vient d'un NOUVEAU message
-                # (2026-07-30) : la boucle tourne a CMD_RATE_HZ=10 Hz pour une
-                # vision a 2.5 Hz, donc sans ce filtre la meme pose serait
-                # comptee 3 fois d'affilee et la "confirmation" ne confirmerait
-                # rien du tout.
+                # A reading only counts if it comes from a NEW message
+                # (2026-07-30): the loop runs at CMD_RATE_HZ=10 Hz against 2.5 Hz
+                # of vision, so without this filter the same pose would be counted
+                # three times in a row and the "confirmation" would confirm
+                # nothing at all.
                 if p[4] != last_counted_stamp:
                     last_counted_stamp = p[4]
                     err = math.degrees(math.atan2(p[0], abs(p[2])))
@@ -824,9 +818,9 @@ class BeaconDocking:
                         # (2026-07-29), desormais AUSSI la reference de derive
                         # relue en fin de phase 2 (2026-07-30).
                         self._gimbal_ref_ground = self._get_yaw_ground()
-                        rospy.loginfo(f"[DOCK] nacelle alignee sur la balise "
-                                      f"({consecutive_ok}/{GIMBAL_CONFIRM_OK} poses "
-                                      f"distinctes confirmees, "
+                        rospy.loginfo(f"[DOCK] gimbal aligned on the beacon "
+                                      f"({consecutive_ok}/{GIMBAL_CONFIRM_OK} distinct "
+                                      f"poses confirmed, "
                                       f"yaw_rel={self._get_yaw_rel():+.1f} deg, "
                                       f"yaw_ground={self._gimbal_ref_ground:+.1f} deg, "
                                       f"err_img={err:+.1f} deg)")
@@ -834,23 +828,24 @@ class BeaconDocking:
             elif (not no_pose_warned) and (time.time() - t_last_pose) > GIMBAL_NO_POSE_S:
                 no_pose_warned = True
                 rospy.logwarn(f"[DOCK] phase 1 : aucune pose fraiche depuis "
-                              f"{GIMBAL_NO_POSE_S}s — la balise semble hors du "
-                              f"champ camera, la nacelle ne peut pas s'asservir")
+                              f"{GIMBAL_NO_POSE_S}s -- the beacon appears to be outside the "
+                              f"camera field of view, the gimbal cannot servo")
             time.sleep(1.0 / CMD_RATE_HZ)
         self._send_gimbal(0.0)
-        # 2026-07-30 : deux causes d'echec bien distinctes, jusqu'ici confondues
-        # sous le meme message "timeout sans converger" (cascade 2026-07-29,
-        # 8 runs sur 11 morts ici sans diagnostic possible depuis les logs).
+        # 2026-07-30: two clearly distinct failure causes, until now conflated
+        # under the same "timed out without converging" message (the 2026-07-29
+        # cascade: 8 runs out of 11 died here with no diagnosis possible from the
+        # logs).
         no_pose_for = time.time() - t_last_pose
         if no_pose_for > GIMBAL_NO_POSE_S:
-            rospy.logerr(f"[DOCK] phase 1 : ECHEC — BALISE PAS EN VUE "
+            rospy.logerr(f"[DOCK] phase 1: FAILED -- BEACON NOT IN VIEW "
                          f"(aucune pose fraiche depuis {no_pose_for:.1f}s sur "
-                         f"{timeout_s}s de budget). Ce n'est pas un probleme "
-                         f"d'asservissement : reorienter le robot/la nacelle "
-                         f"vers la balise avant de relancer")
+                         f"{timeout_s}s of budget). This is not a servo problem: "
+                         f"re-orient the robot/gimbal toward the beacon "
+                         f"before restarting")
         else:
-            rospy.logerr(f"[DOCK] phase 1 : ECHEC — balise vue mais nacelle non "
-                         f"convergee en {timeout_s}s "
+            rospy.logerr(f"[DOCK] phase 1: FAILED -- beacon seen but gimbal did not "
+                         f"converge in {timeout_s}s "
                          f"({consecutive_ok}/{GIMBAL_CONFIRM_OK} confirmations, "
                          f"yaw_rel={self._get_yaw_rel():+.1f} deg, "
                          f"yaw_ground={self._get_yaw_ground():+.1f} deg) — "
@@ -858,36 +853,35 @@ class BeaconDocking:
         return False
 
     def _align_chassis_yaw_rel(self, timeout_s=TURN_TIMEOUT_MAX_S):
-        """Phase 2/3 du pipeline simple : tourne le CHASSIS pour annuler
-        yaw_rel (la nacelle, deja pointee sur la balise en phase 1, sert de
-        reference -- une fois yaw_rel~0 le chassis est de facto oriente vers
-        la balise).
+        """Phase 2/3 of the simple pipeline: rotate the CHASSIS to null yaw_rel
+        (the gimbal, already pointed at the beacon in phase 1, is the reference --
+        once yaw_rel ~ 0 the chassis is de facto pointed at the beacon).
 
         N'utilise PAS `_turn_sign` (sonde sur /odom, suspect n°1 du "robot
         part a l'oppose" observe avec `_turn_by`). Reutilise a la place un
-        fait DEJA CONFIRME sur ce robot et ce meme chemin de commande
-        (/carolus/cmd_vel -> rm_cam_beacon.py -> chassis.drive_speed) : l'etat
-        ALIGN existant (journal 2026-06-26, K_BODY_YAW) a mesure que
-        wz = +K*yaw_rel fait DECROITRE yaw_rel (106deg -> 1.6deg avec
-        wz=+10). Ce module n'a donc PAS besoin de re-sonder ce signe.
+        fact ALREADY CONFIRMED on this robot and this same command path
+        (/carolus/cmd_vel -> rm_cam_beacon.py -> chassis.drive_speed): the
+        existing ALIGN state (2026-06-26, K_BODY_YAW) measured that
+        wz = +K*yaw_rel DECREASES yaw_rel (106 deg -> 1.6 deg with wz=+10).
+        This module therefore does NOT need to re-probe that sign.
 
-        NB fraicheur : `yaw_rel` vient de `/carolus/gimbal_yaw_rel`, publie
-        par rm_cam_beacon.py depuis `gimbal.sub_angle` (retour encodeur SDK
-        direct) -- PAS derive de `/pose`. Le risque de pose republiee par
-        carolus_astrobee.cpp (getFilteredPose) ne s'applique donc pas ici ;
-        il est traite dans `_measure()`/`_pose_cb` a la place, la ou `/pose`
+        Freshness note: `yaw_rel` comes from `/carolus/gimbal_yaw_rel`,
+        published by rm_cam_beacon.py from `gimbal.sub_angle` (a direct SDK
+        encoder reading) -- NOT derived from `/pose`. The republished-pose
+        risk from carolus_astrobee.cpp (getFilteredPose) therefore does not
+        apply here; it is handled in `_measure()`/`_pose_cb` instead, where
+        `/pose`
         est reellement consomme.
 
         2026-07-28 (ajout garde-fous, suite a l'absence totale de verification
-        de succes constatee dans la version precedente) :
-          - retourne True/False (plus aucun appelant ne peut ignorer un echec)
-          - exige ALIGN_CONSECUTIVE_OK lectures consecutives dans la tolerance
-            avant de declarer un succes (une seule lecture pouvait etre du
-            bruit)
-          - detecte l'absence de progres/la divergence (compare l'erreur
-            absolue a chaque commande envoyee)
-          - detecte un chassis physiquement bloque (yaw_rel ne bouge pas du
-            tout malgre des commandes non nulles envoyees pendant un temps
+        of the false-success behaviour seen in the previous version):
+          - returns True/False (no caller can ignore a failure any more)
+          - requires ALIGN_CONSECUTIVE_OK consecutive in-tolerance readings
+            before declaring success (a single reading could be noise)
+          - detects lack of progress / divergence (compares the absolute error
+            at every command sent)
+          - detects a physically stalled chassis (yaw_rel does not move at all
+            despite non-zero commands sent for a
             raisonnable)
           - log structure par commande : erreur avant, commande envoyee,
             erreur apres, progres
@@ -895,93 +889,86 @@ class BeaconDocking:
             timeout, blocage, divergence)
 
         2026-07-29 (confirmation visuelle continue, suite a BUG-080) :
-        `yaw_rel` est defini par le SDK comme "angle nacelle relatif au
-        chassis" -- une lecture chassis-relative, PAS un cap absolu. Si la
-        nacelle est activement stabilisee (hypothese H1, non confirmee sur
-        ce robot -- voir `research-log/18-protocole-discriminant-bug080.md`),
-        `yaw_rel` peut porter un historique de rotations anterieures sans
-        rapport avec la balise actuelle -- observe sur materiel a +255.1deg
-        pour un decalage physique reel de ~90deg (journal 2026-07-28).
+        `yaw_rel` is defined by the SDK as "gimbal angle relative to the
+        chassis" -- a chassis-relative reading, NOT an absolute heading. If the
+        gimbal is actively stabilised (hypothesis H1, unconfirmed on this
+        robot), `yaw_rel` can carry a history of earlier rotations unrelated to
+        the current beacon -- observed on hardware at +255.1 deg for a real
+        physical offset of ~90 deg (2026-07-28).
 
-        Plutot que d'attendre la resolution de BUG-080 pour corriger la
-        cause, un premier correctif (2026-07-29, matin) a tente de rendre la
-        fonction robuste QUELLE QUE SOIT la reponse a H1/H2 en faisant
-        suivre la balise a la nacelle EN CONTINU pendant la rotation du
-        chassis (`_track_beacon_gimbal_tick`). **Revise le meme jour, apres
-        premier test materiel** : ce suivi actif a produit une oscillation
-        de l'ecart image (-2.9 -> +13.9 -> -22.9 deg observes en un seul
-        run) et le chassis n'a jamais converge (echec "pas de progres") --
-        signe probable que la correction visuelle active se bat avec une
-        stabilisation deja geree par le firmware de la nacelle (H1).
+        Rather than wait for BUG-080 to be resolved before fixing the cause, a
+        first attempt (morning of 2026-07-29) tried to make this function
+        robust WHATEVER the answer to H1/H2, by having the gimbal track the
+        beacon CONTINUOUSLY during the chassis rotation
+        (`_track_beacon_gimbal_tick`). **Revised the same day, after the first
+        hardware test**: that active tracking produced an oscillating image
+        error (-2.9 -> +13.9 -> -22.9 deg in a single run) and the chassis never
+        converged (failed on "no progress") -- a likely sign that active visual
+        correction fights a stabilisation already handled by the gimbal
+        firmware (H1).
 
-        Version precedente (2026-07-29, apres-midi) : la nacelle ne recevait
-        plus aucune commande dans cette fonction, mais un succes n'etait
-        declare que si `yaw_rel` ET l'ecart image passivement lu etaient
-        TOUS LES DEUX proches de zero -- sinon "signaux incoherents".
+        Previous version (afternoon of 2026-07-29): the gimbal received no
+        command at all in this function, but success was only declared if
+        `yaw_rel` AND the passively-read image error were BOTH near zero --
+        otherwise "inconsistent signals".
 
         2026-07-29 (deuxieme test materiel, retrait du garde-fou image) :
-        ce test a ete le premier a voir yaw_rel converger sur materiel
-        (-106.3 -> -1.4 deg, 3/3 lectures puis au-dela) -- ET a fourni la
-        preuve la plus propre a ce jour pour H1 : yaw_ground est reste
-        strictement stable (+166.4 -> +166.6 deg, delta=+0.2 deg) pendant
-        que yaw_rel absorbait +104.8 deg de rotation chassis, nacelle
-        totalement immobile (aucune commande gimbal envoyee ce run). Mais
-        le garde-fou image a echoue : ecart_image=+30.5 deg au moment de
-        la convergence, jamais revenu sous GIMBAL_NULL_TOL_DEG. Le run
-        s'est termine en ECHEC par le timeout global plutot que par le
-        garde-fou lui-meme (course de vitesse serree, convergence survenue
-        tard dans le budget des timeout_s).
+        that test was the first to see yaw_rel converge on hardware
+        (-106.3 -> -1.4 deg, 3/3 readings then beyond) -- AND it produced the
+        cleanest evidence to date for H1: yaw_ground stayed strictly stable
+        (+166.4 -> +166.6 deg, delta=+0.2 deg) while yaw_rel absorbed
+        +104.8 deg of chassis rotation, with the gimbal completely still (no
+        gimbal command sent that run). But the image guard failed:
+        image_error=+30.5 deg at the moment of convergence, never coming back
+        under GIMBAL_NULL_TOL_DEG. The run ended in FAILURE through the global
+        timeout rather than through the guard itself (a close race, with
+        convergence arriving late in the timeout_s budget).
 
-        Puisque yaw_ground prouve que la nacelle n'a PAS change de cap
-        absolu, l'ecart image ne peut pas venir d'une mauvaise rotation --
-        il vient plus probablement d'une derive laterale du chassis
-        pendant la rotation (deja identifiee, item 12 de la roadmap), que
-        cette fonction ne commande de toute facon pas (elle ne pilote que
-        wz, jamais vy). Exiger une confirmation image revenait donc a
-        bloquer sur un defaut qu'aucune correction de cap ne peut
-        resoudre. Le garde-fou "signaux incoherents" est retire du chemin
-        succes/echec : l'ecart image reste lu et loggue (aucun cout, utile
-        pour BUG-080 et pour quantifier la derive de l'item 12, avec un
-        `logwarn` si l'ecart est notable), mais ne bloque plus une
-        convergence yaw_rel par ailleurs propre.
+        Since yaw_ground proves the gimbal did NOT change absolute heading,
+        the image error cannot come from a wrong rotation -- it more likely
+        comes from a lateral drift of the chassis during the rotation (already
+        identified, roadmap item 12), which this function does not command
+        anyway (it drives only wz, never vy). Requiring an image confirmation
+        therefore meant blocking on a defect no heading correction can fix.
+        The "inconsistent signals" guard is removed from the success/failure
+        path: the image error is still read and logged (free, useful for
+        BUG-080 and for quantifying item 12's drift, with a `logwarn` if the
+        error is notable), but it no longer blocks an otherwise clean yaw_rel
+        convergence.
         """
         ALIGN_DEADBAND_DEG = 2.0
         ALIGN_GAIN = 0.8
         ALIGN_MAX_WZ = 10.0
-        # 2026-07-28 -- parametres des garde-fous ci-dessous : valeurs de
-        # depart raisonnables (coherentes avec TURN_TOL_DEG=2.0 deg et le
-        # comportement observe le 2026-07-27, wz=+10 -> 106->1.6deg en
-        # quelques secondes), mais AUCUNE n'est issue d'une campagne de
-        # mesure dediee sur ce robot -- a calibrer/ajuster si le test isole
-        # de phase 2 declenche un faux positif (blocage/divergence signale
-        # alors que le chassis convergeait juste lentement) ou un faux
-        # negatif (timeout atteint sans que blocage/divergence n'ait ete
-        # detecte plus tot).
-        ALIGN_CONSECUTIVE_OK = 3        # lectures consecutives requises dans la tolerance
-        NO_PROGRESS_WINDOW_S = 3.0      # fenetre glissante d'evaluation du progres
-        NO_PROGRESS_MIN_GAIN_DEG = 1.0  # gain minimal attendu sur cette fenetre
-        BLOCKED_CHECK_S = 2.0           # duree avant de juger le chassis bloque
-        BLOCKED_MIN_DELTA_DEG = 1.0     # variation min de yaw_rel attendue sur BLOCKED_CHECK_S
+        # 2026-07-28 -- the guard parameters below are reasonable starting
+        # values (consistent with TURN_TOL_DEG=2.0 deg and the behaviour observed
+        # on 2026-07-27, where wz=+10 took yaw_rel from 106 to 1.6 deg in a few
+        # seconds), but NONE of them comes from a dedicated measurement campaign
+        # on this robot -- calibrate them if the isolated phase-2 test produces a
+        # false positive (a stall or divergence reported while the chassis was
+        # merely converging slowly) or a false negative (the timeout is reached
+        # without a stall or divergence having been detected earlier).
+        ALIGN_CONSECUTIVE_OK = 3        # consecutive in-tolerance readings required
+        NO_PROGRESS_WINDOW_S = 3.0      # sliding window over which progress is judged
+        NO_PROGRESS_MIN_GAIN_DEG = 1.0  # minimum gain expected over that window
+        BLOCKED_CHECK_S = 2.0           # time before judging the chassis stalled
+        BLOCKED_MIN_DELTA_DEG = 1.0     # min yaw_rel change expected over BLOCKED_CHECK_S
 
-        # 2026-07-29 (BUG-081) : yaw_rel brut n'est PAS borne a [-180,180] --
-        # observe sur materiel a +255.1 deg (cf. journal 2026-07-28). Utilise
-        # tel quel, wz=+K*yaw_rel commande une rotation dans le mauvais sens
-        # et 2.4x plus longue que necessaire (255 deg au lieu du chemin court
-        # -104.9 deg). On normalise systematiquement via angle_diff_deg (deja
-        # utilise ailleurs dans ce fichier) a chaque lecture. Ceci ne corrige
-        # PAS la cause de la valeur aberrante (BUG-080, toujours ouvert) --
-        # seulement la reaction du controleur face a une valeur hors [-180,180].
+        # 2026-07-29 (BUG-081): raw yaw_rel is NOT wrapped to [-180, 180] --
+        # observed on hardware at +255.1 deg. Used as-is, wz=+K*yaw_rel commands a
+        # rotation in the WRONG direction and 2.4x longer than necessary (255 deg
+        # instead of the short way round, -104.9 deg). Every reading is therefore
+        # normalised through angle_diff_deg (already used elsewhere in this file).
+        # This does NOT fix the cause of the aberrant value (BUG-080, still open)
+        # -- only the controller's reaction to a value outside [-180, 180].
         yaw_rel_0 = angle_diff_deg(self._get_yaw_rel(), 0.0)
-        # 2026-07-29 (BUG-080, instrumentation) : yaw_ground est loggue ici
-        # UNIQUEMENT a des fins de preuve -- ne sert a rien dans la logique
-        # de commande ci-dessous. But : que ce run, qu'il reussisse ou
-        # echoue, laisse dans les logs de quoi trancher H1 vs H2 (voir
-        # 18-protocole-discriminant-bug080.md, tableau d'interpretation) :
-        # si yaw_ground reste stable pendant que yaw_rel bouge de l'angle
-        # tourne par le chassis, H1 est soutenue.
+        # 2026-07-29 (BUG-080, instrumentation): yaw_ground is logged here PURELY
+        # as evidence -- it plays no part in the control logic below. The point is
+        # that this run, whether it succeeds or fails, leaves enough in the logs to
+        # decide between H1 and H2: if yaw_ground stays stable while yaw_rel moves
+        # by the angle the chassis turned, H1 is supported.
         yaw_ground_0 = self._get_yaw_ground()
-        rospy.loginfo(f"[DOCK] alignement chassis : cible yaw_rel=0, "
-                      f"erreur initiale={yaw_rel_0:+.1f} deg "
+        rospy.loginfo(f"[DOCK] chassis alignment: target yaw_rel=0, "
+                      f"initial error={yaw_rel_0:+.1f} deg "
                       f"(yaw_ground initial={yaw_ground_0:+.1f} deg, "
                       f"yaw_ground-yaw_rel={yaw_ground_0 - yaw_rel_0:+.1f} deg -- "
                       f"BUG-080, preuve H1/H2)")
@@ -1000,9 +987,9 @@ class BeaconDocking:
             time.sleep(0.3)
             final_check = self._get_yaw_rel()
             final_ground = self._get_yaw_ground()  # BUG-080 instrumentation, 2026-07-29
-            rospy.loginfo(f"[DOCK] alignement chassis termine : "
-                          f"{'SUCCES' if success else 'ECHEC'} ({reason}) — "
-                          f"erreur finale={final_err:+.1f} deg, "
+            rospy.loginfo(f"[DOCK] chassis alignment done: "
+                          f"{'SUCCESS' if success else 'FAILED'} ({reason}) -- "
+                          f"final error={final_err:+.1f} deg, "
                           f"yaw_rel post-arret={final_check:+.1f} deg, "
                           f"yaw_ground post-arret={final_ground:+.1f} deg, "
                           f"delta yaw_rel sur ce run={final_check - yaw_rel_0:+.1f} deg, "
@@ -1014,22 +1001,21 @@ class BeaconDocking:
             self._check_abort()
             now = time.time()
 
-            # 2026-07-29, revu le meme jour apres test materiel : la nacelle
-            # NE reçoit plus de commande ici. Le premier essai (suivi visuel
-            # actif via _track_beacon_gimbal_tick pendant toute la phase 2)
-            # a produit une oscillation de l'ecart image (-2.9 -> +13.9 ->
-            # -22.9 deg pendant que le chassis tournait) et le run a echoue
-            # sur "pas de progres" -- signe que notre correction se bat
-            # probablement avec une stabilisation deja active cote firmware
-            # (hypothese H1). Retour a une nacelle IMMOBILE pendant la
-            # rotation du chassis (comme le 2026-07-28), sur demande
-            # utilisateur directe suite a cette observation.
+            # 2026-07-29, revised the same day after a hardware test: the gimbal
+            # is NO LONGER commanded here. The first attempt (active visual
+            # tracking through _track_beacon_gimbal_tick for the whole of phase 2)
+            # produced an oscillating image error (-2.9 -> +13.9 -> -22.9 deg while
+            # the chassis turned) and the run failed on "no progress" -- a sign
+            # that our correction is probably fighting a stabilisation already
+            # active in the firmware (hypothesis H1). Back to a STATIONARY gimbal
+            # during the chassis rotation (as on 2026-07-28), at the user's direct
+            # request after that observation.
             #
-            # La lecture d'ecart image est conservee, mais devient PASSIVE :
-            # meme formule que _track_beacon_gimbal_tick (atan2 sur la pose
-            # courante), sans jamais appeler _send_gimbal(). Objectif
-            # inchange -- une confirmation independante de yaw_rel avant de
-            # declarer un succes -- juste sans plus commander la nacelle.
+            # The image-error reading is kept but becomes PASSIVE: the same formula
+            # as _track_beacon_gimbal_tick (atan2 on the current pose), never
+            # calling _send_gimbal(). The goal is unchanged -- an independent
+            # confirmation of yaw_rel before declaring success -- simply without
+            # commanding the gimbal any more.
             p = self._get_pose()
             if p is not None and self._fresh_pose() and abs(p[2]) > 0.05:
                 last_img_err = math.degrees(math.atan2(p[0], abs(p[2])))
@@ -1044,18 +1030,17 @@ class BeaconDocking:
             consecutive_ok = chassis_align_tick(yaw_rel, ALIGN_DEADBAND_DEG, consecutive_ok)
             if consecutive_ok > 0:
                 self._send_cmd(0.0, 0.0)
-                rospy.loginfo(f"[DOCK] alignement chassis : dans tolerance "
+                rospy.loginfo(f"[DOCK] chassis alignment: within tolerance "
                               f"({yaw_rel:+.1f} deg), {consecutive_ok}/{ALIGN_CONSECUTIVE_OK}, "
                               f"ecart image={'N/A' if last_img_err is None else f'{last_img_err:+.1f} deg'}")
                 if consecutive_ok >= ALIGN_CONSECUTIVE_OK:
                     # 2026-07-29 (retrait du garde-fou image, cf. docstring) :
-                    # yaw_rel converge -> succes. L'ecart image est encore
-                    # loggue (gratuit, utile pour BUG-080 / item 12 derive
-                    # laterale) mais ne bloque plus la conclusion -- une
-                    # correction de cap ne peut de toute facon pas rattraper
-                    # une derive de position.
+                    # yaw_rel converged -> success. The image error is still
+                    # logged (free, and useful for BUG-080 and the lateral-drift
+                    # item) but no longer gates the conclusion -- a heading
+                    # correction cannot make up for a position drift anyway.
                     if last_img_err is not None and abs(last_img_err) >= GIMBAL_NULL_TOL_DEG:
-                        rospy.logwarn(f"[DOCK] alignement chassis : yaw_rel converge mais "
+                        rospy.logwarn(f"[DOCK] chassis alignment: yaw_rel converged but "
                                       f"ecart image={last_img_err:+.1f} deg non confirme -- "
                                       f"probable derive laterale (item 12), n'empeche plus "
                                       f"le succes (cf. BUG-080)")
@@ -1065,9 +1050,8 @@ class BeaconDocking:
                 time.sleep(1.0 / CMD_RATE_HZ)
                 continue
 
-            # Detection de blocage physique : commandes non nulles envoyees
-            # depuis BLOCKED_CHECK_S sans que yaw_rel ait bouge de facon
-            # significative.
+            # Physical stall detection: non-zero commands sent for
+            # BLOCKED_CHECK_S without yaw_rel moving significantly.
             if now - t_block_ref > BLOCKED_CHECK_S:
                 if chassis_is_blocked(yaw_rel_block_ref, yaw_rel, BLOCKED_MIN_DELTA_DEG, commands_sent):
                     return _exit(False, f"chassis bloque (yaw_rel immobile sur "
@@ -1087,57 +1071,55 @@ class BeaconDocking:
             self._send_cmd(0.0, wz)
             commands_sent += 1
             time.sleep(1.0 / CMD_RATE_HZ)
-            # 2026-07-30 (BUG-084) : `erreur_apres` etait la SEULE lecture de
-            # yaw_rel de cette fonction a ne pas passer par angle_diff_deg,
-            # alors que `erreur_avant` (ligne ~917) l'utilise. Les deux moities
-            # de la meme phrase de log affichaient donc le meme angle physique
-            # dans deux conventions differentes -- d'ou des lignes comme
-            # "erreur_avant=-106.2 deg ... erreur_apres=+253.8 deg" (capture
-            # materielle 2026-07-29), qui se lisent comme une divergence
-            # spectaculaire alors que rien d'anormal ne se passait. Aucun
-            # impact sur la commande envoyee (cette valeur n'est que loggue),
-            # mais un impact reel sur le diagnostic : c'est precisement sur ces
-            # lignes qu'on s'appuie pour comprendre un run rate.
+            # 2026-07-30 (BUG-084): `err_after` was the ONLY yaw_rel reading in
+            # this function that did not go through angle_diff_deg, while
+            # `err_before` does. The two halves of the same log sentence therefore
+            # showed the same physical angle in two different conventions -- hence
+            # lines like "err_before=-106.2 deg ... err_after=+253.8 deg" (captured
+            # on hardware 2026-07-29), which read as a spectacular divergence when
+            # nothing abnormal was happening. No impact on the command sent (this
+            # value is only logged), but a real impact on diagnosis: these are
+            # exactly the lines relied on to understand a failed run.
             err_after = abs(angle_diff_deg(self._get_yaw_rel(), 0.0))
-            # yaw_ground ajoute ici (BUG-080, instrumentation 2026-07-29) :
-            # un ecart croissant entre yaw_rel et yaw_ground pendant que le
-            # chassis tourne est la signature meme de H1 -- gratuit a logger,
-            # ne change rien a la commande envoyee.
-            rospy.loginfo(f"[DOCK] alignement chassis : erreur_avant={yaw_rel:+.1f} deg "
+            # yaw_ground added here (BUG-080, instrumentation 2026-07-29): a
+            # growing gap between yaw_rel and yaw_ground while the chassis turns is
+            # the very signature of H1 -- free to log, and it changes nothing about
+            # the command sent.
+            rospy.loginfo(f"[DOCK] chassis alignment: err_before={yaw_rel:+.1f} deg "
                           f"commande wz={wz:+.1f} erreur_apres={err_after:+.1f} deg "
                           f"yaw_ground={self._get_yaw_ground():+.1f} deg "
                           f"ecart_image={'N/A' if last_img_err is None else f'{last_img_err:+.1f} deg'}")
 
     def _verify_alignment(self):
-        """Mesure le VRAI gisement de la balise dans le repere CHASSIS, robot
-        arrete et stabilise. Renvoie l'angle en degres, ou None si la mesure
-        n'a pas pu etre faite (2026-07-30).
+        """Measure the REAL beacon bearing in the CHASSIS frame, with the robot
+        stopped and settled. Returns the angle in degrees, or None if the
+        measurement could not be made (2026-07-30).
 
-        Pourquoi cette fonction existe : jusqu'ici, "chassis aligne sur la
-        balise" etait deduit de `yaw_rel ~ 0`, qui ne dit que "chassis aligne
-        sur la NACELLE". Le pas manquant -- la nacelle pointe-t-elle encore la
-        balise ? -- n'etait jamais mesure. C'est le seul endroit du module ou
-        cette question recoit une reponse directe.
+        Why this function exists: until now, "chassis aligned on the
+        beacon" was inferred from `yaw_rel ~ 0`, which only says "chassis
+        aligned on the GIMBAL". The missing step -- is the gimbal still pointing
+        at the beacon? -- was never measured. This is the only place in the
+        module where that question gets a direct answer.
 
-        Pourquoi la mesure est valide dans le repere chassis : `_measure()`
-        renvoie un gisement dans le repere CAMERA, et documente lui-meme que ce
-        repere vaut repere chassis quand la nacelle est alignee sur le chassis.
+        Why the measurement is valid in the chassis frame: `_measure()` returns
+        a bearing in the CAMERA frame, and documents itself that this frame
+        equals the chassis frame when the gimbal is aligned on the chassis.
         C'est exactement la situation ici, par construction : on n'est appele
-        qu'apres convergence de la phase 2, donc |yaw_rel| < ALIGN_DEADBAND_DEG
-        (2 deg). L'approximation est donc bornee et connue.
+        only after phase 2 has converged, so |yaw_rel| < ALIGN_DEADBAND_DEG
+        (2 deg). The approximation is therefore bounded and known.
 
         Pourquoi on n'ajoute PAS yaw_rel au resultat pour etre "exact" : le
-        signe relatif de yaw_rel et du gisement camera est precisement ce qui
-        n'est toujours pas confirme sur ce robot (BUG-080). Ajouter un terme de
+        relative sign of yaw_rel and the camera bearing is precisely what is
+        still unconfirmed on this robot (BUG-080). Adding a
         signe inconnu a une mesure correcte la degraderait. On garde donc la
         mesure brute, bornee a +/-2 deg pres, et on logue yaw_rel a cote pour
-        que l'operateur voie de ses yeux qu'il est bien petit.
+        the operator sees for themselves that it is indeed small.
 
-        Pourquoi un echec de mesure ne fait pas echouer l'alignement : ne pas
-        pouvoir verifier n'est pas pire que l'etat anterieur (qui ne verifiait
-        jamais). On degrade en "non verifie" plutot que de transformer un run
-        correct en echec -- c'est exactement le piege du garde-fou image
-        retire le 2026-07-29. Un ABORT utilisateur, lui, continue de remonter.
+        Why a measurement failure does not fail the alignment: being unable to
+        verify is no worse than the previous state (which verified
+        nothing). We degrade to "not verified" rather than turning a correct run
+        into a failure -- exactly the trap of the image guard removed on
+        2026-07-29. A user ABORT, by contrast, still propagates.
         """
         self._stop()
         time.sleep(ALIGN_SETTLE_S)
@@ -1149,37 +1131,37 @@ class BeaconDocking:
                 raise           # vrai ABORT utilisateur : ne pas l'avaler
             rospy.logwarn("[DOCK] verification : mesure impossible (balise "
                           "perdue ou dispersion excessive) — alignement laisse "
-                          "NON VERIFIE plutot que declare en echec")
+                          "NOT VERIFIED rather than declared failed")
             return None
         rospy.loginfo(f"[DOCK] verification (robot arrete, {ALIGN_SETTLE_S}s de "
-                      f"stabilisation) : gisement balise/chassis="
+                      f"stabilisation): beacon/chassis bearing="
                       f"{bearing:+.1f} deg (yaw_rel residuel={yaw_rel_now:+.1f} deg, "
                       f"tolerance={TOL_BEARING_DEG} deg)")
         return bearing
 
     def _align_chassis_to_beacon(self, label, timeout_s=TURN_TIMEOUT_MAX_S,
                                  budget_left=None):
-        """ALIGN complet et VERIFIE (2026-07-30). Enchaine (phase nacelle +
+        """Full, VERIFIED ALIGN (2026-07-30). Chains (gimbal phase +
         phase chassis), puis MESURE le residu reel a l'arret, et recommence
-        tant que le residu depasse la tolerance et que ca progresse.
+        while the residual exceeds tolerance and progress is being made.
 
         Renvoie `(succes, statut, residu_deg)`.
 
-        Pourquoi une boucle exterieure plutot qu'une correction directe : pour
-        corriger un residu de R degres il faudrait tourner le chassis de R,
-        donc connaitre le signe reliant gisement camera et sens de rotation
-        chassis -- c'est `_turn_by`, dont le signe est justement le suspect
-        n°1 de BUG-077 (robot parti a l'oppose). Re-executer la paire
-        nacelle+chassis fait le meme travail sans introduire aucune hypothese
-        de signe nouvelle : la phase 1 absorbe le residu dans `yaw_rel` (elle
-        ne fait que suivre visuellement la balise), la phase 2 le ramene a
-        zero par le seul chemin dont le signe est confirme sur materiel
-        (journal 2026-06-26). C'est une iteration de point fixe qui ne
-        reutilise que du deja-valide.
+        Why an outer loop rather than a direct correction: correcting a residual
+        of R degrees would mean turning the chassis by R, which requires knowing
+        the sign relating the camera bearing to the chassis rotation direction --
+        that is `_turn_by`, whose sign is precisely suspect number one in BUG-077
+        (the robot heading the opposite way). Re-running the gimbal+chassis pair
+        does the same work while introducing no new sign assumption: phase 1
+        absorbs the residual into `yaw_rel` (it only tracks the beacon visually),
+        and phase 2 brings it back to
+        zero through the only path whose sign is confirmed on hardware
+        (2026-06-26). It is a fixed-point iteration reusing only what is
+        already validated.
 
-        Cout dans le cas nominal : nul. Si la premiere passe est deja dans la
-        tolerance -- le cas attendu quand tout va bien -- la boucle sort
-        immediatement et le comportement est celui d'avant, plus une mesure.
+        Cost in the nominal case: none. If the first pass is already within
+        tolerance -- the expected case when all is well -- the loop exits
+        immediately and the behaviour is the previous one, plus a measurement.
         """
         prev_residual = None
         last_residual = None
@@ -1202,18 +1184,18 @@ class BeaconDocking:
             if not self._align_chassis_yaw_rel(timeout_s=chassis_timeout):
                 return False, "CHASSIS_ALIGN_FAILED", last_residual
 
-            # Temoin de derive de la reference : si le cap ABSOLU de la nacelle
+            # Reference-drift witness: if the gimbal's ABSOLUTE heading
             # a bouge entre la fin de la phase 1 et la fin de la phase 2, alors
-            # "le chassis est aligne sur la nacelle" ne veut plus dire "le
-            # chassis est aligne sur la balise". Gratuit a verifier depuis que
-            # H1 est confirmee (2026-07-29).
+            # "the chassis is aligned on the gimbal" no longer means "the
+            # chassis is aligned on the beacon". Free to check since H1 was
+            # confirmed on 2026-07-29.
             if ref_ground is not None:
                 drift = angle_diff_deg(self._get_yaw_ground(), ref_ground)
                 if abs(drift) > ALIGN_REF_DRIFT_MAX_DEG:
-                    rospy.logwarn(f"[DOCK] {label} : la reference nacelle a DERIVE de "
-                                  f"{drift:+.1f} deg (cap absolu) pendant la rotation "
-                                  f"chassis, au-dela des {ALIGN_REF_DRIFT_MAX_DEG} deg "
-                                  f"toleres — l'alignement obtenu vise donc une "
+                    rospy.logwarn(f"[DOCK] {label}: the gimbal reference DRIFTED by "
+                                  f"{drift:+.1f} deg (absolute heading) during the chassis "
+                                  f"rotation, beyond the {ALIGN_REF_DRIFT_MAX_DEG} deg "
+                                  f"tolerated -- the alignment obtained therefore targets a "
                                   f"direction differente de celle mesuree en phase 1")
                 else:
                     rospy.loginfo(f"[DOCK] {label} : reference nacelle stable "
@@ -1240,7 +1222,7 @@ class BeaconDocking:
             if verdict == "no_gain":
                 rospy.logerr(f"[DOCK] {label} : passe {attempt} sans gain reel "
                              f"({prev_residual:+.1f} -> {residual:+.1f} deg, "
-                             f"< {ALIGN_VERIFY_MIN_GAIN_DEG} deg) — une passe de plus "
+                             f"< {ALIGN_VERIFY_MIN_GAIN_DEG} deg) -- one more pass "
                              f"n'y changerait rien, arret")
                 return False, "ALIGN_NOT_CONVERGED", residual
 
@@ -1252,15 +1234,15 @@ class BeaconDocking:
         return False, "ALIGN_NOT_CONVERGED", last_residual
 
     def _drive_by(self, dist_m):
-        """Avance en ligne droite de dist_m (>0 uniquement — la marche arriere
-        n'est pas utilisee par la manœuvre, et elle est aveugle cote capteurs).
-        Asservi sur le deplacement mesure dans `/odom`. Nacelle asservie sur la
-        balise pendant l'avance (`_track_beacon_gimbal_tick`, 2026-07-27)."""
+        """Drive straight for dist_m (>0 only -- reversing
+        is not used by the manoeuvre, and it is sensor-blind).
+        Servoed on the displacement measured in `/odom`. Gimbal servoed on the
+        beacon during the drive (`_track_beacon_gimbal_tick`, 2026-07-27)."""
         if dist_m < DRIVE_TOL_M:
             return
         if dist_m > ABSURD_SEGMENT_M:
-            rospy.logerr(f"[DOCK] segment planifie aberrant ({dist_m:.2f} m > "
-                         f"{ABSURD_SEGMENT_M} m) — mesure forcement fausse, abandon")
+            rospy.logerr(f"[DOCK] planned segment is absurd ({dist_m:.2f} m > "
+                         f"{ABSURD_SEGMENT_M} m) -- the measurement must be wrong, aborting")
             raise DockAbort()
         od = self._get_odom()
         if od is None:
@@ -1294,20 +1276,21 @@ class BeaconDocking:
     # ---------------------------------------------------------
 
     def _measure(self):
-        """Agrege MEAS_SAMPLES poses (robot immobile, gimbal aligne chassis) et
+        """Aggregate MEAS_SAMPLES poses (robot stationary, gimbal aligned on the
+        chassis) and
         renvoie (range_m, bearing_deg, offaxis_deg).
 
-        Repere 2D utilise dans tout ce module (== repere chassis puisque le
-        gimbal est aligne) :
-          * "avant"  = axe optique camera
-          * "droite" = +x camera
-          * bearing  = atan2(x, |z|)  -> positif = balise a DROITE
-            (formule STRICTEMENT identique a celle du LOCK et de
-            `_gimbal_servo_yaw` dans rm_cam_beacon.py, validee sur materiel le
-            2026-06-26 — on ne re-derive pas une convention deja eprouvee)
-          * range    = hypot(x, z)  -> distance vraie, pas |z|. La difference
-            avec |z| (utilise par APPROACH comme "depth") est negligeable de
-            face mais reelle en biais, cas justement vise par le docking.
+        The 2D frame used throughout this module (== the chassis frame, since the
+        gimbal is aligned):
+          * "forward" = camera optical axis
+          * "right"   = +x camera
+          * bearing   = atan2(x, |z|)  -> positive means the beacon is to the RIGHT
+            (a formula STRICTLY identical to LOCK's and to `_gimbal_servo_yaw` in
+            rm_cam_beacon.py, validated on hardware on 2026-06-26 -- we do not
+            re-derive a convention that is already proven)
+          * range    = hypot(x, z)  -> true distance, not |z|. The difference
+            from |z| (used by APPROACH as "depth") is negligible head-on but
+            real at an angle -- precisely the case docking targets.
           * offaxis  = BEACON_YAW_SIGN * yaw + BEACON_YAW_OFFSET_DEG
             -> 0 = on voit la balise de face (on est sur son axe frontal)
         """
@@ -1327,14 +1310,14 @@ class BeaconDocking:
                 if p is None or (time.time() - p[4]) > POSE_TIMEOUT_S:
                     time.sleep(0.05)
                     continue
-                if p[4] == last_stamp:      # meme pose que le tour precedent (pas encore de nouveau message)
+                if p[4] == last_stamp:      # same pose as the previous loop (no new message yet)
                     time.sleep(0.05)
                     continue
                 last_stamp = p[4]
                 # Pose republiee par carolus_astrobee.cpp (getFilteredPose,
                 # lignes 560-598) : valeurs brutes identiques a la reception
-                # precedente malgre un nouveau message/timestamp. Pas une
-                # observation independante -> ne compte pas dans l'echantillon.
+                # previous one despite a new message and timestamp. Not an
+                # independent observation -> it does not count in the sample.
                 if self._get_pose_repeat_count() > 0:
                     stale_skipped += 1
                     time.sleep(0.05)
@@ -1375,29 +1358,30 @@ class BeaconDocking:
 
     @staticmethod
     def plan_maneuver(rng, bearing_deg, offaxis_deg, dock_distance=DOCK_DISTANCE_M):
-        """Calcule la manœuvre tourner-avancer-tourner amenant le robot au point
-        de docking. Fonction PURE (aucun I/O, aucun etat) — donc testable hors
-        robot, cf. le bloc __main__ en fin de fichier.
+        """Compute the turn-drive-turn manoeuvre that brings the robot to the
+        docking point. A PURE function (no I/O, no state), therefore testable off
+        the robot -- see the __main__ block at the end of this file.
 
-        Geometrie, dans le repere 2D decrit par `_measure` (robot a l'origine,
-        regardant vers "avant") :
+        Geometry, in the 2D frame described by `_measure` (robot at the origin,
+        looking "forward"):
 
-          B  = position de la balise            = rng * (sin(bearing), cos(bearing))
-          Le vecteur B->robot fait, vu de la balise, un angle `offaxis` avec la
-          normale a sa face. La normale sortante de la balise s'obtient donc en
+          B  = beacon position                  = rng * (sin(bearing), cos(bearing))
+          Seen from the beacon, the B->robot vector makes an angle `offaxis` with
+          the normal to its face. The beacon's outward normal is therefore obtained
+          by
           faisant tourner la direction B->robot de -offaxis.
           G  = point de docking                 = B + dock_distance * normale
           On veut finir EN G, tourne vers B.
 
-        Renvoie (turn1_deg, drive_m, turn2_deg), angles positifs = vers la
-        droite (meme convention que `bearing`)."""
+        Returns (turn1_deg, drive_m, turn2_deg), positive angles = to the
+        right (same convention as `bearing`)."""
         br = math.radians(bearing_deg)
         bx = rng * math.sin(br)      # composante droite
         bf = rng * math.cos(br)      # composante avant
 
-        # Direction balise -> robot, exprimee comme un angle dans notre repere.
+        # Beacon -> robot direction, expressed as an angle in our frame.
         phi = math.atan2(-bx, -bf)
-        # Normale sortante de la face de la balise : on annule l'angle hors-axe.
+        # Outward normal of the beacon's face: cancel the off-axis angle.
         n = phi - math.radians(offaxis_deg)
 
         gx = bx + dock_distance * math.sin(n)
@@ -1405,16 +1389,16 @@ class BeaconDocking:
 
         drive = math.hypot(gx, gf)
 
-        # Cas degenere : le robot est DEJA sur le point de docking. `atan2(gx, gf)`
-        # tournerait alors sur du bruit numerique et renverrait une direction
-        # arbitraire (mesure : -90 deg pour un robot pourtant parfaitement place).
-        # Il ne reste qu'a pivoter vers la balise. Detecte par le test cas 1.
+        # Degenerate case: the robot is ALREADY at the docking point. `atan2(gx,
+        # gf)` would then be operating on numerical noise and return an arbitrary
+        # direction (measured: -90 deg for a robot that was perfectly placed). All
+        # that remains is to pivot toward the beacon. Covered by self-test case 1.
         if drive < DRIVE_TOL_M:
             return 0.0, 0.0, bearing_deg
 
         turn1 = math.degrees(math.atan2(gx, gf))
-        # Une fois en G et oriente selon turn1, l'angle a rattraper pour viser la
-        # balise est la difference entre la direction G->B et turn1.
+        # Once at G and oriented along turn1, the angle left to face the beacon is
+        # the difference between the G->B direction and turn1.
         head_gb = math.degrees(math.atan2(bx - gx, bf - gf))
         turn2 = angle_diff_deg(head_gb, turn1)
         return turn1, drive, turn2
@@ -1424,7 +1408,7 @@ class BeaconDocking:
     # ---------------------------------------------------------
 
     def _run(self, fn):
-        """Enveloppe commune : flags, arret propre, jamais d'exception qui
+        """Common wrapper: flags, clean stop, and never an exception that
         laisserait le robot en mouvement."""
         self._busy = True
         self._abort = False
@@ -1442,25 +1426,24 @@ class BeaconDocking:
             rospy.loginfo(f"[DOCK] etat final : {self._status}")
 
     def _align_only(self):
-        """Commande ALIGN_ONLY (2026-07-28, demande utilisateur : pouvoir
-        tester la rotation chassis isolement, sans jamais avancer).
+        """ALIGN_ONLY command (2026-07-28, user request: be able to test the
+        chassis rotation in isolation, never advancing).
 
-        Reprend exactement les phases 1+2 de `_dock_sequence` (alignement
-        nacelle puis chassis, memes fonctions, memes garde-fous) mais
-        s'arrete la : AUCUN appel a `_measure()`/`_drive_by()`, donc aucune
-        avance possible sous aucune condition.
+        Reuses exactly phases 1+2 of `_dock_sequence` (gimbal then chassis
+        alignment, same functions, same guards) but stops there: NO call to
+        `_measure()`/`_drive_by()`, so no advance is possible under any
+        condition.
 
-        Pourquoi la phase 1 (nacelle) est incluse alors que la demande ne
-        parle que du chassis : `yaw_rel` (utilise par la phase 2 pour
-        orienter le chassis) est l'angle nacelle/chassis, PAS l'angle
-        chassis/balise. Il n'a de sens comme reference pour aligner le
-        chassis sur la balise QUE si la nacelle pointe deja sur la balise
-        (phase 1). Sans ca, la phase 2 alignerait le chassis sur une
-        direction arbitraire. Ce n'est donc pas une fonctionnalite ajoutee :
-        c'est la meme dependance qui existe deja dans `_dock_sequence`,
-        reutilisee telle quelle."""
+        Why phase 1 (gimbal) is included when the request only mentions the
+        chassis: `yaw_rel` (used by phase 2 to orient the chassis) is the
+        gimbal/chassis angle, NOT the chassis/beacon angle. It only makes sense
+        as a reference for aligning the chassis on the beacon IF the gimbal is
+        already pointing at the beacon (phase 1). Without that, phase 2 would
+        align the chassis on an arbitrary direction. So this is not an added
+        feature: it is the same dependency that already exists in
+        `_dock_sequence`, reused as-is."""
         self._status = "DOCKING"
-        rospy.loginfo("[DOCK] === ALIGN_ONLY : alignement nacelle puis chassis, SANS avance ===")
+        rospy.loginfo("[DOCK] === ALIGN_ONLY: gimbal then chassis alignment, NO drive ===")
         self._take_control()
         self._stop()
 
@@ -1470,18 +1453,18 @@ class BeaconDocking:
             self._status = "NO_BEACON"
             return
 
-        # 2026-07-30 : passe par la boucle VERIFIEE plutot que d'appeler les
-        # deux phases a la suite. Meme travail, plus une mesure de controle a
-        # l'arret entre chaque passe -- c'est cette mesure qui manquait pour
-        # que "SUCCES" veuille dire quelque chose (run du 2026-07-29 : SUCCES
-        # annonce avec 26 deg d'ecart reel).
+        # 2026-07-30: goes through the VERIFIED loop rather than calling the two
+        # phases back to back. Same work, plus a control measurement at rest
+        # between passes -- and that measurement is what was missing for "SUCCESS"
+        # to mean anything (the 2026-07-29 run reported SUCCESS with a real 26 deg
+        # error).
         ok, status, residual = self._align_chassis_to_beacon("ALIGN_ONLY",
                                                              timeout_s=TURN_TIMEOUT_MAX_S)
         self._status = status
         if not ok:
-            rospy.logerr(f"[DOCK] ALIGN_ONLY : ECHEC ({status}"
-                         f"{'' if residual is None else f', gisement residuel={residual:+.1f} deg'})"
-                         f" — aucune avance effectuee")
+            rospy.logerr(f"[DOCK] ALIGN_ONLY: FAILED ({status}"
+                         f"{'' if residual is None else f', residual bearing={residual:+.1f} deg'})"
+                         f" -- no drive performed")
             return
 
         if status == "ALIGN_DONE_UNVERIFIED":
@@ -1490,28 +1473,27 @@ class BeaconDocking:
                           "etre faite (balise perdue a l'arret ?)")
             return
 
-        rospy.loginfo(f"[DOCK] ALIGN_ONLY termine : chassis aligne sur la balise, "
+        rospy.loginfo(f"[DOCK] ALIGN_ONLY done: chassis aligned on the beacon, "
                       f"verifie a {residual:+.1f} deg, aucune avance effectuee")
 
     def _approach_only(self):
-        """Commande APPROACH_ONLY (2026-07-28, demande utilisateur : avance
-        seule, sans jamais tourner le chassis).
+        """APPROACH_ONLY command (2026-07-28, user request: drive only, never
+        rotating the chassis).
 
-        Verifie D'ABORD que le chassis est deja aligne (meme tolerance que
-        `_align_chassis_yaw_rel`, TURN_TOL_DEG) avant tout mouvement. Si ce
-        n'est pas le cas : aucune avance, statut NOT_ALIGNED explicite,
-        aucune tentative de correction automatique.
+        Verifies FIRST that the chassis is already aligned (same tolerance as
+        `_align_chassis_yaw_rel`, TURN_TOL_DEG) before any movement. If it is
+        not: no drive, an explicit NOT_ALIGNED status, and no automatic
+        correction attempt.
 
-        Point signale (pas une rotation chassis, mais a mentionner par
-        transparence) : `_drive_by()`, reutilisee ici telle quelle, fait
-        legerement bouger la NACELLE (pas le chassis) pendant l'avance --
-        `_track_beacon_gimbal_tick()` a chaque iteration pour garder la
-        balise dans le champ pendant que le robot avance, plus un sondage
-        ponctuel `_probe_gimbal_sign()` la toute premiere fois (mecanisme
-        deja existant, ajoute le 2026-07-27, pas modifie ici). Aucune des
-        deux ne fait tourner le chassis."""
+        One point flagged for transparency (not a chassis rotation, but worth
+        mentioning): `_drive_by()`, reused here as-is, does move the GIMBAL
+        slightly (not the chassis) during the drive -- `_track_beacon_gimbal_tick()`
+        on each iteration to keep the beacon in frame while the robot advances,
+        plus a one-off `_probe_gimbal_sign()` the very first time (a mechanism
+        that already existed, added 2026-07-27, unmodified here). Neither
+        rotates the chassis."""
         self._status = "DOCKING"
-        rospy.loginfo("[DOCK] === APPROACH_ONLY : avance seule, SANS rotation chassis ===")
+        rospy.loginfo("[DOCK] === APPROACH_ONLY: drive only, NO chassis rotation ===")
         self._take_control()
         self._stop()
 
@@ -1524,10 +1506,10 @@ class BeaconDocking:
         yaw_rel = self._get_yaw_rel()
         if abs(yaw_rel) >= TURN_TOL_DEG:
             self._status = "NOT_ALIGNED"
-            rospy.logerr(f"[DOCK] APPROACH_ONLY : robot non aligne "
+            rospy.logerr(f"[DOCK] APPROACH_ONLY: robot not aligned "
                          f"(yaw_rel={yaw_rel:+.1f} deg, tolerance="
-                         f"{TURN_TOL_DEG:.1f} deg) — pas d'avance. "
-                         f"Lancer ALIGN_ONLY d'abord.")
+                         f"{TURN_TOL_DEG:.1f} deg) -- no drive. "
+                         f"Run ALIGN_ONLY first.")
             return
 
         rng, bearing, off = self._measure()
@@ -1548,35 +1530,36 @@ class BeaconDocking:
         self._stop()
 
         if not self._fresh_pose():
-            rospy.logerr("[DOCK] aucune pose fraiche sur /pose — balise non visible, abandon")
+            rospy.logerr("[DOCK] no fresh pose on /pose -- beacon not visible, aborting")
             self._status = "NO_BEACON"
             return
 
         if SIMPLE_APPROACH_ONLY or not BEACON_YAW_VALIDATED:
-            # Mode simple (voir SIMPLE_APPROACH_ONLY en tete de fichier) ou repli
-            # documente (convention d'orientation non validee, on ne peut pas
-            # viser l'axe frontal) : pas d'alignement sur l'axe frontal (offaxis
+            # Simple mode (see SIMPLE_APPROACH_ONLY at the top of the file) or the
+            # documented fallback (orientation convention not validated, so the
+            # frontal axis cannot be targeted): no frontal-axis alignment (offaxis
             # ignore), pas de boucle de convergence.
             #
             # Pipeline en 3 phases (2026-07-27, demande utilisateur suite au
             # comportement observe avec un simple _turn_by(bearing) direct) :
-            #   1. Aligner la NACELLE sur la balise (asservissement image, deja
-            #      utilise pendant l'avance -- _track_beacon_gimbal_tick).
-            #   2. Aligner le CHASSIS en annulant yaw_rel -- PAS via _turn_by
-            #      (qui suppose un lien odom-yaw/bearing camera jamais
-            #      confirme, suspect n°1 du "robot part a l'oppose"). On
-            #      reutilise a la place un fait DEJA CONFIRME sur ce robot et
-            #      ce chemin de commande (/carolus/cmd_vel) : l'etat ALIGN de
-            #      rm_cam_beacon.py (journal 2026-06-26, K_BODY_YAW) --
-            #      wz = +K*yaw_rel fait DECROITRE yaw_rel (mesure : 106deg ->
-            #      1.6deg avec wz=+10). Une fois yaw_rel~0 et la nacelle sur la
-            #      balise (phase 1), le chassis est de facto pointe dessus.
-            #   3. Avancer tout droit (chassis deja oriente) jusqu'a
-            #      DOCK_DISTANCE_M, nacelle continue de suivre (_drive_by).
-            reason = ("mode simple demande" if SIMPLE_APPROACH_ONLY
-                      else "convention orientation balise NON validee")
-            rospy.loginfo(f"[DOCK] {reason} -> pipeline 3 phases : "
-                          f"aligner nacelle, aligner chassis (yaw_rel), avancer")
+            #   1. Align the GIMBAL on the beacon (image servo, the same one
+            #      already used during the drive -- _track_beacon_gimbal_tick).
+            #   2. Align the CHASSIS by nulling yaw_rel -- NOT through _turn_by,
+            #      which assumes an odom-yaw / camera-bearing relationship that
+            #      was never confirmed and is suspect number one in "the robot
+            #      heads the opposite way". Instead we reuse a fact ALREADY
+            #      CONFIRMED on this robot and this command path
+            #      (/carolus/cmd_vel): rm_cam_beacon.py's ALIGN state
+            #      (2026-06-26, K_BODY_YAW) -- wz = +K*yaw_rel DECREASES yaw_rel
+            #      (measured: 106 deg -> 1.6 deg with wz=+10). Once yaw_rel ~ 0
+            #      and the gimbal is on the beacon (phase 1), the chassis is de
+            #      facto pointed at it.
+            #   3. Drive straight (the chassis is already oriented) to
+            #      DOCK_DISTANCE_M, with the gimbal still tracking (_drive_by).
+            reason = ("simple mode requested" if SIMPLE_APPROACH_ONLY
+                      else "beacon orientation convention NOT validated")
+            rospy.loginfo(f"[DOCK] {reason} -> 3-phase pipeline: "
+                          f"align gimbal, align chassis (yaw_rel), drive")
 
             seq_t0 = time.time()
 
@@ -1584,18 +1567,17 @@ class BeaconDocking:
                 return SEQUENCE_TIMEOUT_S - (time.time() - seq_t0)
 
             # Phases 1+2 : boucle VERIFIEE (2026-07-30). Les deux garde-fous
-            # historiques restent en vigueur a l'identique -- un echec de la
-            # nacelle (2026-07-27, cause directe d'une collision) comme un
-            # echec du chassis (2026-07-28) interdisent toujours l'avance. Ce
-            # qui change : le succes lui-meme est desormais mesure, et non plus
-            # deduit de yaw_rel seul. Un residu hors tolerance interdit
-            # egalement l'avance, alors qu'avant il passait inapercu (le
-            # `_measure()` de la phase 3 mesurait deja ce gisement... et le
-            # jetait, cf. `_off` ignore ci-dessous).
-            rospy.loginfo("[DOCK] phases 1-2/3 : alignement nacelle + chassis (verifie)")
+            # historical guards remain in force unchanged -- a gimbal failure
+            # (2026-07-27, the direct cause of a collision) and a chassis failure
+            # (2026-07-28) both still forbid driving. What changes: success itself
+            # is now MEASURED rather than inferred from yaw_rel alone. A residual
+            # outside tolerance also forbids driving, where before it went
+            # unnoticed -- phase 3's `_measure()` was already measuring that
+            # bearing... and throwing it away (see `_off`, ignored below).
+            rospy.loginfo("[DOCK] phases 1-2/3: gimbal + chassis alignment (verified)")
             if _seq_timeout_left() <= 0:
                 self._status = "SEQUENCE_TIMEOUT"
-                rospy.logerr("[DOCK] abandon : timeout global atteint avant meme la phase 1")
+                rospy.logerr("[DOCK] aborting: overall timeout reached before phase 1 even started")
                 return
             ok, status, residual = self._align_chassis_to_beacon(
                 "docking phases 1-2",
@@ -1603,15 +1585,15 @@ class BeaconDocking:
                 budget_left=_seq_timeout_left)
             if not ok:
                 self._status = status
-                rospy.logerr(f"[DOCK] abandon : alignement non atteint ({status}"
-                             f"{'' if residual is None else f', residu={residual:+.1f} deg'})"
-                             f" — pas d'avance (securite)")
+                rospy.logerr(f"[DOCK] aborting: alignment not reached ({status}"
+                             f"{'' if residual is None else f', residual={residual:+.1f} deg'})"
+                             f" -- no drive (safety)")
                 return
             if status == "ALIGN_DONE_UNVERIFIED":
                 self._status = "CHASSIS_ALIGN_FAILED"
-                rospy.logerr("[DOCK] abandon : alignement non VERIFIABLE (mesure "
-                             "de controle impossible) — pas d'avance. Contrairement "
-                             "a ALIGN_ONLY, une avance engage le robot vers un "
+                rospy.logerr("[DOCK] aborting: alignment NOT VERIFIABLE (control "
+                             "measurement impossible) -- no drive. Unlike "
+                             "ALIGN_ONLY, driving commits the robot toward an "
                              "obstacle : on n'avance pas sur un alignement non "
                              "confirme.")
                 return
@@ -1619,7 +1601,7 @@ class BeaconDocking:
             rospy.loginfo("[DOCK] phase 3/3 : avance")
             if _seq_timeout_left() <= 0:
                 self._status = "SEQUENCE_TIMEOUT"
-                rospy.logerr("[DOCK] abandon : timeout global atteint avant la phase 3")
+                rospy.logerr("[DOCK] aborting: overall timeout reached before phase 3")
                 self._stop()
                 return
             rng, bearing, _off = self._measure()
@@ -1649,16 +1631,16 @@ class BeaconDocking:
                 self._status = "DOCKED"
                 return
 
-            # Garde-fou anti-divergence : si l'angle hors-axe ne s'ameliore pas,
-            # c'est le symptome typique d'un BEACON_YAW_SIGN faux -> on arrete
-            # plutot que de tourner autour de la balise indefiniment.
+            # Anti-divergence guard: if the off-axis angle does not improve, that
+            # is the classic symptom of a wrong BEACON_YAW_SIGN -> stop rather than
+            # circling the beacon indefinitely.
             if prev_offaxis is not None:
                 gain = abs(prev_offaxis) - abs(offaxis)
                 if gain < MIN_PROGRESS_DEG:
-                    rospy.logerr(f"[DOCK] pas de progres sur l'angle hors-axe "
+                    rospy.logerr(f"[DOCK] no progress on the off-axis angle "
                                  f"({abs(prev_offaxis):.1f} -> {abs(offaxis):.1f} deg). "
-                                 f"Cause la plus probable : BEACON_YAW_SIGN inverse. "
-                                 f"Refaire le mode CALIBRATE. Arret.")
+                                 f"Most likely cause: BEACON_YAW_SIGN inverted. "
+                                 f"Re-run CALIBRATE mode. Stopping.")
                     self._status = "NO_PROGRESS"
                     return
             prev_offaxis = offaxis
@@ -1678,37 +1660,36 @@ class BeaconDocking:
                               f"(plan={drive:.2f} m) — re-mesure a l'iteration suivante")
                 self._drive_by(MAX_SEGMENT_M)
                 # Manœuvre incomplete : le controle anti-divergence ci-dessus
-                # compare deux etats de FIN de manœuvre. Le neutraliser pour le
-                # tour suivant, sinon un detour tronque (progres angulaire
-                # normalement faible) serait pris a tort pour un signe inverse.
+                # compares two END-of-manoeuvre states. Neutralise it for the next
+                # round, otherwise a truncated detour -- whose angular progress is
+                # normally small -- would be mistaken for an inverted sign.
                 prev_offaxis = None
                 continue
             self._drive_by(drive)
             self._turn_by(turn2)
 
-        rospy.logwarn(f"[DOCK] {MAX_ITERATIONS} iterations sans converger — arret")
+        rospy.logwarn(f"[DOCK] {MAX_ITERATIONS} iterations without converging -- stopping")
         self._status = "NOT_CONVERGED"
 
     def _calibrate_step1(self):
-        """Etablit la convention d'orientation balise, seule inconnue que le
-        robot ne peut pas mesurer seul.
+        """Establish the beacon orientation convention, the one unknown the robot
+        cannot measure by itself.
 
-        Protocole en 2 clics independants (repond a la question 6 de
-        research-log/07-perplexity/17-docking-position-fixe-balise.md : valider
-        une orientation monoculaire sans banc de test ni motion capture).
-        Volontairement PAS de minuteur bloquant entre les deux etapes (version
-        initiale : un delai fixe de 20s embarque dans la meme sequence,
-        illisible si les logs T5 defilent — corrige le 2026-07-27) : chaque
-        etape attend un ordre explicite (bouton GUI dedie), a executer au
-        rythme de l'utilisateur, pas dans une fenetre a rater.
+        A two-independent-click protocol: validating a monocular orientation
+        without a test bench or motion capture. Deliberately NO blocking timer
+        between the two steps (the initial version embedded a fixed 20 s delay in
+        the same sequence, unreadable when the T5 logs are scrolling -- fixed on
+        2026-07-27): each step waits for an explicit command from its own GUI
+        button, to be run at the user's own pace rather than inside a window that
+        can be missed.
 
           1. (CALIBRATE) Placer le robot EN FACE de la balise, sur son axe
              frontal, a ~1 m, PUIS cliquer CALIBRATE. -> on lit yaw_face.
-          2. (CAL STEP 2) Deplacer le robot d'environ 30 deg SUR LA DROITE de
-             la balise (balise immobile), PUIS cliquer CAL STEP 2 une fois en
-             place. -> on lit yaw_right.
-        De (1) on tire l'offset ; du SENS de variation entre (1) et (2) on tire
-        le signe.
+          2. (CAL STEP 2) Move the robot about 30 deg TO THE RIGHT of the
+             beacon (beacon stationary), THEN click CAL STEP 2 once in place.
+             -> yaw_right is read.
+        From (1) we get the offset; from the DIRECTION of change between (1)
+        and (2) we get the sign.
         """
         self._status = "CALIBRATING"
         self._take_control()
@@ -1722,12 +1703,12 @@ class BeaconDocking:
         self._null_gimbal()
         p = self._get_pose()
         if p is None or not self._fresh_pose():
-            rospy.logerr("[DOCK][CAL] pas de pose fraiche — abandon. Verifier que "
-                         "la balise est bien visible, relancer CALIBRATE.")
+            rospy.logerr("[DOCK][CAL] no fresh pose -- aborting. Check the beacon is "
+                         "visible, then re-run CALIBRATE.")
             self._status = "CAL_FAILED"
             return
         self._cal_yaw_face = median([self._get_pose()[3] for _ in range(3)])
-        rospy.loginfo(f"[DOCK][CAL] etape 1 OK : yaw brut de face = "
+        rospy.loginfo(f"[DOCK][CAL] step 1 OK: raw head-on yaw = "
                       f"{self._cal_yaw_face:+.1f} deg")
         rospy.loginfo("[DOCK][CAL] -> deplace maintenant le robot d'environ 30 deg "
                       "vers la DROITE de la balise (balise immobile), a ton rythme, "
@@ -1816,52 +1797,52 @@ def _self_test():
     t1, d, t2 = BeaconDocking.plan_maneuver(2.0, 0.0, 0.0)
     check("turn1", t1, 0.0, 1e-6)
     print(f"  {'OK ' if abs(d - (2.0 - DOCK_DISTANCE_M)) < 1e-6 else 'FAIL'} "
-          f"drive: attendu {2.0 - DOCK_DISTANCE_M:.2f}, obtenu {d:.2f}")
+          f"drive: expected {2.0 - DOCK_DISTANCE_M:.2f}, got {d:.2f}")
     ok = ok and abs(d - (2.0 - DOCK_DISTANCE_M)) < 1e-6
     check("turn2", t2, 0.0, 1e-6)
 
-    print("Cas 3 — balise vue de face mais decalee a droite (bearing=+20) :")
-    # On la voit de face (offaxis=0) => on est deja sur son axe frontal ;
-    # il suffit donc de pivoter vers elle et d'ajuster la distance.
+    print("Case 3 -- beacon seen square on but offset to the right (bearing=+20):")
+    # Seen square on (offaxis=0) => we are already on its frontal axis, so all
+    # that is needed is to pivot toward it and adjust the distance.
     t1, d, t2 = BeaconDocking.plan_maneuver(2.0, 20.0, 0.0)
     check("turn1", t1, 20.0, 1e-6)
     print(f"  {'OK ' if abs(d - (2.0 - DOCK_DISTANCE_M)) < 1e-6 else 'FAIL'} "
-          f"drive: attendu {2.0 - DOCK_DISTANCE_M:.2f}, obtenu {d:.2f}")
+          f"drive: expected {2.0 - DOCK_DISTANCE_M:.2f}, got {d:.2f}")
     ok = ok and abs(d - (2.0 - DOCK_DISTANCE_M)) < 1e-6
     check("turn2", t2, 0.0, 1e-6)
 
-    # Cas de biais : on ne connait pas la reponse "a la main", on verifie donc
-    # les 3 PROPRIETES que la manœuvre doit garantir par construction, en
-    # rejouant la geometrie a partir de son propre resultat.
+    # Off-axis cases: we do not know the answer by hand, so instead we check the
+    # 3 PROPERTIES the manoeuvre must guarantee by construction, replaying the
+    # geometry from its own output.
     for rng_in, bearing_in, offaxis_in in [(2.0, 0.0, 40.0), (1.5, -25.0, -35.0),
                                            (3.0, 15.0, 70.0), (1.2, 40.0, -10.0)]:
-        print(f"Cas de biais — range={rng_in} bearing={bearing_in:+.0f} "
+        print(f"Off-axis case -- range={rng_in} bearing={bearing_in:+.0f} "
               f"offaxis={offaxis_in:+.0f} :")
         t1, d, t2 = BeaconDocking.plan_maneuver(rng_in, bearing_in, offaxis_in)
         print(f"  info  turn1={t1:+.1f} deg  drive={d:.2f} m  turn2={t2:+.1f} deg")
 
         br = math.radians(bearing_in)
-        bx, bf = rng_in * math.sin(br), rng_in * math.cos(br)          # balise
-        gx, gf = d * math.sin(math.radians(t1)), d * math.cos(math.radians(t1))  # arrivee
+        bx, bf = rng_in * math.sin(br), rng_in * math.cos(br)          # beacon
+        gx, gf = d * math.sin(math.radians(t1)), d * math.cos(math.radians(t1))  # arrival
 
-        # (1) le robot finit a DOCK_DISTANCE_M de la balise
+        # (1) the robot ends up DOCK_DISTANCE_M from the beacon
         final_range = math.hypot(bx - gx, bf - gf)
-        check_val("distance finale", final_range, DOCK_DISTANCE_M, 1e-6)
+        check_val("final distance", final_range, DOCK_DISTANCE_M, 1e-6)
 
-        # (2) le robot finit tourne VERS la balise (cap final == direction G->B)
+        # (2) the robot ends up facing the beacon (final heading == G->B direction)
         heading_final = t1 + t2
         dir_gb = math.degrees(math.atan2(bx - gx, bf - gf))
-        check("cap final vers la balise", heading_final, dir_gb, 1e-6)
+        check("final heading toward the beacon", heading_final, dir_gb, 1e-6)
 
-        # (3) le robot finit SUR L'AXE FRONTAL de la balise : la direction
-        #     balise->robot doit coincider avec la normale sortante de sa face.
+        # (3) the robot ends up ON the beacon's FRONTAL AXIS: the beacon->robot
+        #     direction must coincide with the outward normal of its face.
         phi_in = math.atan2(-bx, -bf)
         normal = math.degrees(phi_in - math.radians(offaxis_in))
         dir_bg = math.degrees(math.atan2(gx - bx, gf - bf))
-        check("robot sur l'axe frontal", dir_bg, normal, 1e-6)
+        check("robot on the frontal axis", dir_bg, normal, 1e-6)
 
-    # 2026-07-28 : logique de decision de _align_chassis_yaw_rel, extraite en
-    # fonctions pures pour etre testable ici sans ROS ni robot.
+    # 2026-07-28: _align_chassis_yaw_rel's decision logic, extracted into pure
+    # functions so it can be exercised here without ROS or a robot.
 
     def check_bool(name, got, expected):
         nonlocal ok
@@ -1891,17 +1872,17 @@ def _self_test():
     print("Chassis — detection de blocage physique :")
     check_bool("bloque (commandes envoyees, yaw_rel immobile)",
                chassis_is_blocked(50.0, 49.5, 1.0, commands_sent=5), True)
-    check_bool("pas bloque (yaw_rel a suffisamment bouge)",
+    check_bool("not stalled (yaw_rel moved enough)",
                chassis_is_blocked(50.0, 40.0, 1.0, commands_sent=5), False)
-    check_bool("pas de verdict avant la 1ere commande (evite un faux positif au demarrage)",
+    check_bool("no verdict before the first command (avoids a startup false positive)",
                chassis_is_blocked(50.0, 50.0, 1.0, commands_sent=0), False)
-    # 2026-07-30 : non-regression du passage a angle_diff_deg. Avec l'ancienne
-    # soustraction directe, ce cas (chassis STRICTEMENT immobile a cheval sur
-    # +/-180) donnait |diff|=358 deg et repondait donc "pas bloque".
-    check_bool("bloque meme a cheval sur +/-180 deg (ex-faux negatif)",
+    # 2026-07-30: non-regression for the switch to angle_diff_deg. With the old
+    # direct subtraction this case (a chassis STRICTLY stationary straddling
+    # +/-180) gave |diff|=358 deg and therefore answered "not stalled".
+    check_bool("stalled even straddling +/-180 deg (former false negative)",
                chassis_is_blocked(179.7, -179.8, 1.0, commands_sent=5), True)
 
-    print("\nNacelle — confirmation multi-lectures (phase 1) :")
+    print("\nGimbal -- multi-reading confirmation (phase 1):")
     check_bool("1re lecture sous tolerance ne suffit plus",
                gimbal_confirm_tick(1.0, 3.0, 0) >= GIMBAL_CONFIRM_OK, False)
     check_val("compteur incremente sous tolerance",
@@ -1909,21 +1890,21 @@ def _self_test():
     check_val("compteur remis a zero hors tolerance",
               gimbal_confirm_tick(5.0, 3.0, 2), 0.0, 0.001)
 
-    print("\nVerification terminale de l'alignement :")
-    check_bool("residu dans la tolerance -> termine",
+    print("\nTerminal alignment verification:")
+    check_bool("residual within tolerance -> done",
                align_verify_verdict(3.0, 6.0, None, 2.0, 1, 3) == "ok", True)
-    check_bool("residu hors tolerance a la 1re passe -> on retente",
+    check_bool("residual outside tolerance on pass 1 -> retry",
                align_verify_verdict(20.0, 6.0, None, 2.0, 1, 3) == "retry", True)
     check_bool("progres franc entre deux passes -> on retente",
                align_verify_verdict(9.0, 6.0, 20.0, 2.0, 2, 3) == "retry", True)
-    check_bool("passe sans gain reel -> on arrete (ne pas user la mecanique)",
+    check_bool("pass with no real gain -> stop (do not wear the mechanics)",
                align_verify_verdict(19.0, 6.0, 20.0, 2.0, 2, 3) == "no_gain", True)
-    check_bool("budget de passes epuise -> echec",
+    check_bool("pass budget exhausted -> failure",
                align_verify_verdict(20.0, 6.0, 40.0, 2.0, 3, 3) == "exhausted", True)
-    # Le cas materiel du 2026-07-29 (run 1) : yaw_rel converge a +0.6 deg mais
-    # gisement reel a -26.3 deg. L'ancien code annoncait SUCCES ; le nouveau
-    # doit refuser de conclure et demander une passe de plus.
-    check_bool("cas reel 2026-07-29 (residu -26.3 deg) n'est PAS un succes",
+    # The hardware case from 2026-07-29 (run 1): yaw_rel converged to +0.6 deg
+    # while the real bearing was -26.3 deg. The old code reported SUCCESS; the new
+    # one must refuse to conclude and ask for another pass.
+    check_bool("real 2026-07-29 case (residual -26.3 deg) is NOT a success",
                align_verify_verdict(-26.3, TOL_BEARING_DEG, None,
                                     ALIGN_VERIFY_MIN_GAIN_DEG, 1,
                                     ALIGN_VERIFY_PASSES) == "retry", True)
@@ -1937,9 +1918,9 @@ if __name__ == "__main__":
     if "--selftest" in sys.argv:
         sys.exit(_self_test())
     if not _ROS_AVAILABLE:
-        print(f"ROS indisponible dans cet environnement ({_ROS_IMPORT_ERROR}).\n"
-              f"Sourcer ROS (source /opt/ros/noetic/setup.bash) pour lancer le nœud,\n"
-              f"ou utiliser --selftest pour verifier la geometrie hors robot.")
+        print(f"ROS unavailable in this environment ({_ROS_IMPORT_ERROR}).\n"
+              f"Source ROS (source /opt/ros/noetic/setup.bash) to launch the node,\n"
+              f"or use --selftest to check the geometry off-robot.")
         sys.exit(1)
     rospy.init_node("beacon_docking")
     BeaconDocking()
