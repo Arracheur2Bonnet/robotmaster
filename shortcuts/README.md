@@ -19,7 +19,7 @@ python3 shortcuts/carolus_launcher.py
 |---|---|---|
 | 1 · roscore + Pi | gnome-terminal → SSH → `eth1 up` + `roscore` | port 11311 open (60s timeout) |
 | 2 · Camera + Beacon | integrated SSH → `rm_cam_beacon.py` + `cam_view_helper.py` | `/camera/color/image_raw` published (60s timeout) |
-| 3 · Carolus Astrobee | gnome-terminal → `roslaunch carolus_node testcarolus.launch` | — (manual) |
+| 3 · Carolus **[Pi]** | SSH → `roslaunch carolus_node testcarolus.launch ubuntu2204_preload:=false` **on the Pi** | — (manual) |
 | 4 · TF Broadcaster (quat fix) | integrated SSH → `carolus_tf_broadcaster.py` on the Pi | — (manual, no wait — a lightweight node, near-instant startup) |
 | 6 · MINS (simulation, Pi) | SSH → `roslaunch mins simulation.launch` in `~/mins_sandbox_ws` on the **Pi** | — (independent: own roscore, needs no topic from our pipeline while running its simulation) |
 | 5 · Beacon Docking | local (lab PC) → `beacon_docking.py` | — (manual; unlocked after T4, no strict wait — depends on `/pose` (T3), `/odom`+`/carolus/gimbal_yaw_rel` (T2), which just need to already be running) |
@@ -35,7 +35,13 @@ python3 shortcuts/carolus_launcher.py
 
 **Logs — reworked 2026-07-20: one tab per terminal, extended 2026-07-27 to T5.** All 5 terminals (T1-T5) are **fully integrated** (their output is captured and shown in the app, no external gnome-terminal window). The Logs area is a `ttk.Notebook` (`T1 roscore+Pi`, `T2 Camera+Beacon`, `T3 Carolus Astrobee`, `T4 TF Broadcaster`, `T5 Docking`), each terminal writes only to its own tab — no more mixing in a single box. Global event messages (AUTO/MANUAL mode, kill, etc.) still get broadcast to all tabs at once. The "Copy logs" button now copies only the active tab's content. A change needed to launch T1 in integrated mode: pre-checked that `sudo` on the Pi doesn't ask for a password (`sudo -n true`), otherwise T1's `sudo ip link set eth1 up` command would block silently in the pipe.
 
+**T3 moved to the Pi, 2026-08-04.** It ran on the lab PC until then. Measured the same afternoon, same beacon at 1.00 m, the only variable being which machine ran the node: **2.19 Hz on the lab PC against 13.04 Hz on the Pi**, a factor of 5.95 — on the PC every frame is an uncompressed 1280×720 `sensor_msgs/Image` (~2.76 MB) crossing the network first. `ubuntu2204_preload:=false` is **mandatory** in this invocation: the `LD_PRELOAD` it disables exists only for Ubuntu 22.04's library mismatch and hardcodes `x86_64` paths, so leaving it on under `aarch64` would be wrong, not merely useless. The lab PC remains the better machine for *developing* Carolus (compiling over SSH is slower) — in that case launch `roslaunch` by hand in a terminal; this launcher is the operations tool, and operations run on the Pi.
+
+**The machine is in every tab label, deliberately** (`T1 roscore [Pi]`, `T3 Carolus [Pi]`, `T5 Docking [PC]`, …). On 2026-08-04 a `/pose` measurement was attributed to the Pi while Carolus was actually running on the lab PC: the ROS master lives on the Pi in both cases, so nothing on screen distinguished them. The machine name is the most useful thing an operator can read on that tab.
+
 **Kill**: cancels any pending waits (`wait_for_roscore` / `wait_for_camera`) then kills the SSH and local processes. Reaps OS zombies (`proc.wait()`). A partial Kill (a row's Kill button) only kills that target and its downstream processes.
+
+> **Remote kills go through `remote_kill()` since 2026-08-04 (BUG-095), and they now verify.** `ssh` runs a compound command inside a remote shell whose own `/proc` cmdline **contains the pattern being matched**, so a plain `pkill -9 -f rm_cam_beacon.py` could kill that shell before reaching the real target — non-deterministically, depending on PID scan order, and with nothing reported. Demonstrated on 2026-08-04: the unbracketed multi-line form produced *no output at all* (the shell died mid-way) and left 1 of 3 targets alive; the bracketed form printed its confirmation and left 0. Patterns are now bracketed automatically (`[r]m_cam_beacon.py`) by a single helper so they are never hand-written again, and `remote_kill()` **re-reads the Pi afterwards** — a survivor logs `> !! TOUJOURS VIVANT sur le Pi : …` in the tab instead of failing silently. The most important instance was the on-close cleanup, whose own comment explains that an orphaned `rm_cam_beacon.py` keeps the SDK connection and causes the next launch to hit the double-connection bug ("manual mode stopped working") — that cleanup was one of the broken ones, so it failed exactly in the case it exists to prevent. It now also kills `carolus_astrobee` and `roslaunch`, since T3 runs on the Pi.
 
 ---
 
@@ -214,26 +220,55 @@ cp saves/2026-06-24-20-10/carolus_ws__src__robomaster_cam__scripts__rm_cam_beaco
 
 ## `deploy_pi.sh`
 
-**What:** deploys `rm_cam_beacon.py` to the Pi (SCP) and verifies integrity via a local vs. remote md5 checksum + `ast.parse` on the Pi side.
+**What:** synchronises to the Pi **every package that runs there** — `robomaster_cam`, `carolus_node`, `libuvgs_astrobee`, `ff_msgs` — reports drift per package by checksum, re-verifies after copying, and rebuilds on request.
 
-**Why:** makes deployment reliable in one command (instead of a manual SCP + eyeballed check), with guardrails: refuses to send if the file doesn't compile locally, if the Pi is unreachable, or if the checksum differs after copying.
+**Why:** it used to push exactly one file, `rm_cam_beacon.py`, because that was the only program running on the Pi. **That stopped being true on 2026-08-04**, when Carolus itself moved there (13.04 Hz on the Pi against 2.19 Hz on the lab PC). `carolus_node`'s launch files and profile YAMLs, and `libuvgs_astrobee`'s C++, now live on the Pi too — and nothing kept them in step. They were rsynced by hand once and then drifted silently.
+
+That is this project's most expensive failure pattern. On 2026-08-04 the Pi was running a `rm_cam_beacon.py` with **no `/imu` publisher at all** (0 occurrences against 8 on the lab PC), and a full diagnostic session was spent on stale code. So the script no longer pushes "the file I just edited": it pushes everything that runs there, and it **verifies**.
 
 **Usage:**
 ```bash
-bash shortcuts/deploy_pi.sh
+bash shortcuts/deploy_pi.sh                 # DRY RUN: report drift, change nothing
+bash shortcuts/deploy_pi.sh --apply         # push, then re-verify by checksum
+bash shortcuts/deploy_pi.sh --apply --build # push, verify, and recompile on the Pi
 ```
 
 | Step | Check |
 |---|---|
-| 0 | local `py_compile` — abort on a syntax error |
-| 1 | Pi reachable (SSH ConnectTimeout 5s) — abort otherwise |
-| 2 | `scp rm_cam_beacon.py` → `/home/ubuntu/carolus_ws/.../rm_cam_beacon.py` |
-| 3 | local md5 == remote md5 — abort if different |
-| 4 | `ast.parse` on the Pi side (warn only) |
+| 0 | local `py_compile` on every `robomaster_cam` script — abort on a syntax error |
+| 1 | Pi reachable — abort otherwise |
+| 2 | reports the Pi's **git state** (HEAD + number of locally modified files) |
+| 3 | per-package drift by checksum (`rsync -rc --dry-run`), dry-run unless `--apply` |
+| 4 | **re-reads both sides after copying** — an rsync exiting 0 is not proof the two sides match |
+| 5 | `ast.parse` with the Pi's own interpreter |
+| 6 | `catkin_make` **only with `--build`**, and only if C++/launch changed |
 
-**Note:** only `rm_cam_beacon.py` runs on the Pi. `carolus_launcher.py` and `cam_view_helper.py` run on the lab PC → picked up on the launcher's next launch (no SCP needed). After deploying: restart T2 (Kill T2 → `> 2 Camera+Beacon`) to load the new code.
+**Why the rebuild is not automatic:** recompiling `carolus_node`/`libuvgs_astrobee` takes minutes on the Pi, and a launch-file or YAML change needs none. The script says whether one is required and lets the operator decide.
 
-**Expected:** `checksum identique -> deploiement verifie`, then a reminder to restart T2.
+**Why it does not reconcile with git:** the Pi's `~/carolus_ws` is a real git checkout (verified 2026-08-04: HEAD `318409b`, 13 locally modified files). Two paths to the Pi already exist — git, and this script. A third, or a silent automatic merge between them, would be exactly the class of bug this is trying to remove. The script **reports** the git state and leaves the decision to the operator.
+
+**After deploying:** restart the affected tabs — T2 for `rm_cam_beacon.py`, **T3 for Carolus** (which now runs on the Pi).
+
+### All source comments are in English (2026-08-04)
+
+A colleague reading the public repository pointed out that the Python comments were in French. They were: **622 comment and docstring lines** across seven files. All of them are now English, along with the user-visible log strings, which were mixed too.
+
+The translation was verified rather than assumed: after each batch the file was recompiled, `beacon_docking.py --selftest` was re-run (it exercises the pure geometry functions and all their regression cases), and finally each file's **AST was compared against its pre-translation snapshot with every string constant blanked** — identical for both large files, proving that only comments and strings changed and no logic moved.
+
+Three comments were **corrected rather than transposed**, because translating a false statement faithfully just preserves the error:
+
+- `TARGET_FPS`'s header warned that Carolus's bottleneck was network transport and that raising the rate would only add bandwidth to a saturated link. True in July; false since 2026-08-04, when Carolus moved onto the Pi and the bottleneck became the Pi's CPU. The history is kept and marked as such, because the change of conclusion *is* the information.
+- The BUG-089 comment still described the bug as unexplained ("the callback is NEVER called"). Rewritten to state the cause was ours and is fixed.
+- A comment pointed at `research-log/07-perplexity/08-...`, a path that no longer exists and that a reader of the public repository could never open anyway. Replaced by the fact itself.
+
+### Two numbers now measured on every run (2026-08-04)
+
+Both used to require a dedicated session, and neither had ever been collected. They are produced by `rm_cam_beacon.py` continuously instead, so they can never be stale.
+
+- **`[DUTY] beacon in view NN%`**, every 30 s. The fraction of time the beacon is actually visible. Carolus is the only drift-free source in the stack — everything else (wheel odometry, gyro integration) drifts without bound — so how often it can correct decides how much inertial quality has to be bought. Around 90% and the drift between corrections is negligible, which would retire the whole "the SDK caps the IMU at 50 Hz where VIO wants 200–500 Hz" concern. Around 20% and that ceiling becomes a structural limit of the robot.
+- **`[LATENCY] /pose NN ms`**, averaged over 50 poses. We measured Carolus's pose *rate* (13.04 Hz on the Pi) and quoted it to the supervisor, but for drift correction **latency is the metric that decides quality**: a correction arriving at 13 Hz but 200 ms late is worse than one at 5 Hz arriving in 30 ms, because the filter must roll its state back that far. If the value is implausible the node says so rather than printing a meaningless number — that means `carolus_astrobee` is running without `stamp_from_acquisition`, or the two machines' clocks disagree.
+
+**Expected:** `RESULT: tout est deja en phase avec le Pi`, or a per-package drift list. Reported in sync on 2026-08-04 after the day's changes.
 
 ---
 
@@ -342,7 +377,9 @@ bash shortcuts/measure_pi_pose.sh --stop   # stop everything, leave the Pi clean
 
 **Prerequisites it cannot check for you:** robot powered on, Pi reachable, and **a powered beacon in the camera's field of view** — without it `/pose` never publishes and the run measures nothing.
 
-**Expected** — a full report written to `shortcuts/logs/pi-pose-measure-<timestamp>.log`, with the `/pose` rate as the headline figure. Fails early and clearly if the Pi is unreachable.
+**Expected** — a full report written to `shortcuts/logs/pi-pose-measure-<timestamp>.log`, with the `/pose` rate as the headline figure. Fails early and clearly if the Pi is unreachable. `--stop` prints the surviving process list, or `Pi clean` if there is none.
+
+> **`--stop` was silently broken until 2026-08-04 (BUG-090).** `ssh` runs the whole stop body as one remote shell, whose own command line contains the very strings being matched, so `pkill -f rm_cam_beacon` killed that shell before it reached anything. Patterns are now bracket classes (`"[r]m_cam_beacon"`). If you ever add a `pkill -f` over ssh anywhere in this project, use the same form.
 
 ---
 
