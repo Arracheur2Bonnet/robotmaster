@@ -52,6 +52,13 @@
   \end{center}
 }
 
+% --- boxed warning, for facts that will cost the reader time if missed ----
+\newsavebox{\warnbox}
+\newenvironment{warningbox}%
+  {\begin{lrbox}{\warnbox}\begin{minipage}{0.90\textwidth}}%
+  {\end{minipage}\end{lrbox}%
+   \begin{center}\fcolorbox{black}{codebg}{\usebox{\warnbox}}\end{center}}
+
 
 \title{Carolus / RoboMaster S1 --- Complete Technical Manual}
 \author{}
@@ -101,15 +108,16 @@ point it occurs.
   \item \textbf{Companion computer:} Raspberry Pi~4B, mounted at the turret,
   connected to the robot over USB via RNDIS (a virtual Ethernet link over
   USB). The Pi holds the single connection to the robot's SDK, runs the
-  camera/beacon-tracking node, \textbf{and runs Carolus itself} --- so the
-  full perception pipeline is onboard and the robot needs no network link to
-  estimate its pose.
+  camera/beacon-tracking node, and --- in the recommended configuration ---
+  \textbf{runs Carolus itself}, so the full perception pipeline is onboard
+  and the robot needs no network link to estimate its pose.
   \item \textbf{Lab PC:} runs the operator GUI, and serves as a development
   machine for editing and rebuilding. Not physically connected to the robot;
-  communicates with the Pi over the local network. \textbf{It is not needed
-  for Carolus itself} --- pose estimation runs on the Pi
-  (Section~\ref{sec:where-carolus-runs}), so the robot does not depend on a
-  network link to the PC to localise.
+  communicates with the Pi over the local network. \textbf{Carolus can also
+  be built and run here} --- both options are documented and compared in
+  Section~\ref{sec:where-carolus-runs}. In the recommended configuration it
+  runs on the Pi, so the robot does not depend on a network link to the PC to
+  localise; running it on the PC is the better choice while developing.
   \item \textbf{Camera:} the S1's own internal camera (built into the
   gimbal/head), streamed over the SDK. This project does not use an external
   Intel RealSense D455 --- some inherited reference material describes a
@@ -756,8 +764,8 @@ The Pi runs exactly one script that ever connects to the robot's SDK:
 \texttt{rm\_cam\_beacon.py} (in
 \texttt{carolus\_ws/src/robomaster\_cam/scripts/}). It is not just a camera
 capture script --- it is this project's single bridge to the entire SDK:
-camera stream, chassis drive, gimbal control, odometry, and IMU all go
-through this one script and its one connection.
+camera stream, chassis drive, gimbal control, odometry, and the IMU
+subscription all go through this one script and its one connection.
 
 \textbf{This is a deliberate design choice, not an incidental one.} Two
 independent scripts each holding their own
@@ -804,12 +812,52 @@ Topic & Content \\
 \midrule
 \texttt{/camera/color/image\_raw} & Camera frames (\texttt{sensor\_msgs/Image}) \\
 \texttt{/odom} & Wheel odometry, republished from the SDK \\
-\texttt{/imu} & Raw IMU (accelerometer + gyroscope), 50\,Hz \\
+\texttt{/imu} & Raw IMU, 50\,Hz requested --- \textbf{units: see warning} \\
 \texttt{/carolus/gimbal\_yaw\_rel} & Gimbal yaw relative to the chassis \\
 \texttt{/carolus/gimbal\_yaw\_ground} & Gimbal yaw in the world frame (absolute) \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+\begin{warningbox}
+\textbf{\texttt{/imu} units are \emph{g}, not m/s\textsuperscript{2}
+(measured 2026-08-04).} At rest on a flat floor, this topic reports
+\texttt{linear\_acceleration.z = -1.00664}. The SDK returns accelerations in
+\emph{g}, and \texttt{rm\_cam\_beacon.py} republishes them unconverted ---
+whereas \texttt{sensor\_msgs/Imu} mandates
+m/s\textsuperscript{2}. Any consumer of this topic therefore sees
+accelerations $9.81\times$ too small under a message contract that says
+otherwise, and neither Kalibr nor MINS will detect it. The sign is also
+suspect: a REP-103 $z$-up frame at rest should read $+9.81$, not $-1.0$\,g.
+Gyroscope units and axis signs are likewise unconfirmed --- a reading at rest
+cannot distinguish rad/s from \textdegree/s when the true rate is zero.
+
+\textbf{Before using this topic}, verify on your own robot: gravity should
+read $\approx\!9.81$ on exactly one axis at rest, and a known slow rotation
+should give the expected sign and magnitude on the corresponding gyro axis.
+Fix scale, sign and gyro units together --- correcting the scale alone yields
+a topic that looks right while its frame convention is still unverified.
+
+Two further constraints: this SDK accepts only 1, 5, 10, 20 and 50\,Hz for
+this subscription, so 50\,Hz is the ceiling --- below the 200--500\,Hz that
+camera--IMU calibration tools such as Kalibr
+(Chapter~\ref{ch:calibration}) normally expect. The frequency is exposed as
+the \texttt{RM\_IMU\_FREQ} environment variable so the other legal values can
+be tried without editing the script.
+\end{warningbox}
+
+\begin{warningbox}
+\textbf{If \texttt{/imu} is silent, check the publisher creation order
+before suspecting the robot.} Every ROS publisher written to from an SDK
+callback must be created \emph{before} the corresponding
+\texttt{sub\_*} subscription. The robot begins pushing data the moment the
+subscription is registered, and on the SDK build used here the callback runs
+directly in the DDS dispatcher thread: an \texttt{AttributeError} on a
+not-yet-created publisher kills that thread, after which \emph{no} telemetry
+callback ever runs again. The symptom is indistinguishable from a robot that
+sends nothing --- the topic is advertised, \texttt{sub\_imu} returns
+\texttt{True}, and ROS logs nothing. This cost a full session to diagnose.
+\end{warningbox}
 
 and subscribes to a small set of control topics used by this project's own
 higher-level tooling (not covered in this manual):
@@ -830,9 +878,13 @@ rostopic echo -n1 /odom
 rostopic echo -n1 /imu
 \end{lstlisting}
 
-Expect a steady rate on \texttt{/camera/color/image\_raw} (roughly
-10--15\,Hz) and at least one non-empty message on \texttt{/odom} and
-\texttt{/imu}. If the camera topic is silent, confirm the RNDIS link
+Measured on the Raspberry Pi with the robot connected (2026-08-04):
+\texttt{/camera/color/image\_raw} at \textbf{30.1\,Hz},
+\texttt{/odom} at \textbf{15.4\,Hz}, \texttt{/imu} at \textbf{47.3\,Hz}
+against a 50\,Hz subscription. Expect at least one non-empty message on
+\texttt{/odom} and \texttt{/imu}; if \texttt{/imu} hangs, read the second
+warning above before concluding anything about the robot.
+If the camera topic is silent, confirm the RNDIS link
 (Chapter~\ref{ch:network}) before suspecting the script itself --- a dead
 network link and a dead camera stream look identical from this check alone.
 
@@ -945,6 +997,18 @@ Kalibr (ETH Zürich) is the standard tool if a camera--IMU joint calibration
 is needed (required for any future MINS/visual-inertial integration, not
 needed for Carolus's own pose estimation, which does not use the IMU).
 
+\textbf{Not executed here.} The camera--IMU half of this procedure has never
+been run on this robot. The camera-only calibration below is unaffected and
+is the part that matters for Carolus. Two constraints to know before planning
+a camera--IMU session on this platform: the SDK caps the IMU subscription at
+50\,Hz, well below the 200--500\,Hz Kalibr expects for a well-conditioned
+solution; and \texttt{/imu} publishes accelerations in \emph{g} rather than
+the m/s\textsuperscript{2} the message type mandates
+(Chapter~\ref{ch:camera}), with gyroscope units and axis signs still
+unconfirmed. Correct the units and verify the frame first --- Kalibr will not
+detect either error, and every noise parameter it produces would be wrong by
+the same silent factor.
+
 \subsection{Target}
 
 A $6\times6$ AprilGrid, tag size $0.089\,\mathrm{m}$, tag spacing $0.3\times$
@@ -1044,73 +1108,157 @@ filter.
 \chapter{Building and Launching Carolus}
 \label{ch:carolus-node}
 
-\runson{the \textbf{Raspberry Pi 4B} on the robot. A lab-PC build is also
-documented, as a fallback for development --- see
-Section~\ref{sec:where-carolus-runs}.}
+\runson{\textbf{either machine} --- both builds are documented here. The
+\textbf{Raspberry Pi 4B} is the recommended target for operation, the
+\textbf{lab PC} the better one for development;
+Section~\ref{sec:where-carolus-runs} compares them with the measurements
+behind the recommendation.}
 
-Carolus (the ROS package name is \texttt{carolus\_astrobee}) is built and run
-\textbf{on the Raspberry Pi}, alongside the camera bridge. It has no SDK
-connection of its own --- it consumes \texttt{/camera/color/image\_raw}
-(published by \texttt{rm\_cam\_beacon.py}, Chapter~\ref{ch:camera}) and
-publishes a pose on \texttt{/pose}.
+Carolus (the ROS package name is \texttt{carolus\_astrobee}) runs on
+whichever machine you build it on. It has no SDK connection of its own ---
+it consumes \texttt{/camera/color/image\_raw} (published by
+\texttt{rm\_cam\_beacon.py}, Chapter~\ref{ch:camera}) and publishes a pose on
+\texttt{/pose} --- so it only needs to reach the ROS master, not the robot.
+That is exactly why it can sit on either side, and why the choice is an
+architectural one rather than a technical constraint.
 
 \section{Where Carolus runs}
 \label{sec:where-carolus-runs}
 
-\textbf{Run Carolus on the Pi.} Both machines work, but the Pi is the correct
-target and the difference is not marginal.
+Both machines work, and this manual documents both. \textbf{The
+recommendation is the Pi}, but the reasons matter more than the verdict, so
+they are given with their evidence and their limits rather than as a slogan.
 
-\subsection{Why the Pi}
+\subsection{The two options, side by side}
 
-\begin{itemize}
-  \item \textbf{The robot stays autonomous.} If Carolus runs on the lab PC,
-  every pose estimate depends on a live network link, so the robot can never
-  leave the PC's network reach. On the Pi it does not need the PC at all.
-  \item \textbf{It is roughly ten times faster.} Running on the PC means every
-  frame --- \emph{uncompressed} \texttt{sensor\_msgs/Image} at
-  $1280\times720$, about 2.76\,MB --- crosses the network before Carolus can
-  touch it. That transport, not the P4P/Ceres computation, was the
-  bottleneck. On the Pi the frames never leave the machine that captured
-  them.
-  \item \textbf{The build is simpler.} The Pi runs Ubuntu 20.04, ROS Noetic's
-  officially supported target. None of the five compatibility fixes the
-  22.04 lab PC needs (Section~\ref{sec:build2204}) apply.
-\end{itemize}
+\begin{center}
+\begin{tabular}{p{0.30\textwidth}p{0.30\textwidth}p{0.30\textwidth}}
+\toprule
+ & \textbf{Raspberry Pi 4B (recommended)} & \textbf{Lab PC} \\
+\midrule
+Robot autonomy
+ & Complete. No network link is needed to estimate pose.
+ & None. Every pose depends on a live link; the robot cannot leave the PC's
+   network reach. \\
+\addlinespace
+Camera input rate (measured)
+ & \textbf{30.1\,Hz} --- frames never leave the machine that captured them.
+ & 10--15\,Hz --- every frame is an \emph{uncompressed}
+   \texttt{sensor\_msgs/Image} at $1280\times720$ ($\approx$2.76\,MB)
+   crossing the network first. \\
+\addlinespace
+Build complexity
+ & Ubuntu 20.04 = ROS Noetic's officially supported target. Standard
+   \texttt{catkin\_make}, no workarounds (Section~\ref{sec:build2004}).
+ & On Ubuntu 22.04: four build-time fixes plus one runtime fix
+   (Section~\ref{sec:build2204}). On 20.04, identical to the Pi. \\
+\addlinespace
+Development comfort
+ & Editing and rebuilding C++ over SSH is slower.
+ & \textbf{Better.} A workstation compiles faster and edits more
+   comfortably; GUI tooling runs here. \\
+\addlinespace
+Visual-inertial work (MINS/OpenVINS)
+ & \textbf{Inside} the upstream tested set (Ubuntu 18/20, Melodic/Noetic).
+ & On 22.04, \textbf{outside} it. \\
+\bottomrule
+\end{tabular}
+\end{center}
 
-\subsection{Measured, 2026-08-04}
+\subsection{Measured, 2026-08-04 --- and what the numbers do \emph{not} say}
 \label{sec:pi-benchmark}
+
+Same robot, same beacon at 1.00\,m, same afternoon --- Carolus run once on
+each machine and \texttt{/pose} measured both times:
 
 \begin{center}
 \begin{tabular}{lll}
 \toprule
-Measurement & Lab PC & \textbf{Raspberry Pi 4B} \\
+ & Carolus on the \textbf{lab PC} & Carolus on the \textbf{Pi} \\
 \midrule
-Camera publish rate & 10--15\,Hz & \textbf{30.0\,Hz} \\
-Carolus frames processed & $\sim$2.5/s & \textbf{$\sim$24/s} \\
-CPU load while processing & --- & $\sim$61\% user, 16\% idle \\
-Compatibility fixes needed & 5 & \textbf{none} \\
+\textbf{\texttt{/pose}}, beacon in view & 2.19\,Hz & \textbf{13.04\,Hz} \\
+\texttt{/postprocessed/image} & --- & 14.35\,Hz \\
+\texttt{/camera} at the Pi's publisher & 30.05\,Hz & 16.52\,Hz \\
+Pi CPU & 52--61\% idle & \textbf{12.3\% idle}, load 5.37/4 \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+\textbf{A factor of 5.95.} On the PC every frame is an \emph{uncompressed}
+$1280\times720$ \texttt{sensor\_msgs/Image} ($\approx$2.76\,MB) crossing the
+network before Carolus can touch it; on the Pi the frames never leave the
+machine that captured them.
+
+The other rows say where the limit moved to. \texttt{/pose} 13.0\,Hz,
+\texttt{/postprocessed} 14.4\,Hz and the camera at 16.5\,Hz are nearly the
+same number --- Carolus consumes almost every frame it is handed. And the
+camera drops from 30.05\,Hz to 16.52\,Hz as soon as Carolus runs beside it,
+with the Pi at 12.3\% idle: \textbf{on the Pi the bottleneck is now CPU, and
+the camera bridge is competing with Carolus for it.} If more pose rate is
+needed, that is where to look --- publishing compressed frames, or dropping
+the capture resolution.
+
+\begin{warningbox}
+\textbf{Verify which machine you are measuring.} Both numbers above are
+\texttt{/pose} rates with the same beacon, and the only difference is where
+the node ran. It is easy to get this wrong: the ROS master lives on the Pi in
+both cases, so a Carolus running on the workstation still looks Pi-side from
+the topic list. Confirm with \texttt{pgrep -f carolus\_astrobee} \emph{on the
+Pi} before attributing a rate to it.
+
+Two older figures circulate and neither is a pose rate: a $\sim$24\,frames/s
+figure for the Pi was counted \textbf{with no beacon in view}, so no P4P
+solve ran on any frame, and a $\sim$2.5\,frames/s figure for the lab PC used
+a different counting method again. Use the table above, not those.
+\end{warningbox}
 
 The Pi already had Ceres 1.14, Eigen 3.3.7 and OpenCV 4.2 installed;
 \texttt{catkin\_make} compiled and linked directly on \texttt{aarch64}.
 Available memory (7.6\,GB) was never a constraint.
 
-\textbf{Two caveats, so the figure is not over-read.} The $\sim$24 frames/s
-is a \emph{processing} rate, counted from the node's per-frame log output
-with no beacon in view; a run with four LEDs visible also executes the P4P
-solve per frame. And the pose rate a consumer sees is further gated by the
-outlier filter (\texttt{filter\_size}, \texttt{fifo\_on}). A beacon-in-view
-measurement of \texttt{/pose} itself remains to be done.
+\subsection{So which one, and why}
 
-\subsection{When to build on the lab PC instead}
+\textbf{Choose the Pi for anything resembling operation.} The decisive
+argument is autonomy, not speed: a robot whose pose estimator lives on
+another machine stops working the moment the link does, and that is a
+property of the architecture rather than a number that a future optimisation
+might change. The 2--3$\times$ camera input rate and the absence of build
+workarounds are real secondary benefits.
 
-The lab-PC path is kept in this manual as a development fallback --- editing
-and rebuilding C++ is faster on a workstation than over SSH on a Pi, and the
-GUI tooling currently runs there. It is documented in
-Section~\ref{sec:build2204}. For anything resembling normal operation,
-build on the Pi.
+\textbf{Choose the lab PC for development.} Compiling and iterating on C++ is
+faster on a workstation than over SSH, and the operator GUI runs there
+anyway. If the PC runs Ubuntu 20.04 the build is identical to the Pi's; on
+22.04 it costs the five fixes in Section~\ref{sec:build2204}.
+
+\textbf{A note on visual-inertial navigation.} MINS has been run on this
+Raspberry Pi, both on its own simulation and on data recorded from this
+robot. It builds on \texttt{aarch64} and produces a \emph{consistent}
+estimate on the simulation (RMSE 0.113\textdegree{} / 0.082\,m, NEES 0.9 and
+1.4), with no divergence, at \textbf{0.3--0.4$\times$ real time} --- under a
+sensor load far heavier than this robot's (IMU at 200\,Hz, \emph{two}
+cameras, and a LIDAR).
+
+On a 60\,s recording of \emph{this} robot's \texttt{/imu} and
+\texttt{/camera/color/image\_raw}, it processed the whole bag at
+\textbf{0.7$\times$ real time}: CAM 118\,ms, IMU 3\,ms, 122\,ms of compute
+per 88\,ms of data. So \textbf{``MINS does not run on a Raspberry Pi'' is not
+correct} --- it runs, on this robot's own data. What is correct is that
+\textbf{it does not reach real time here}, even with one camera, no LIDAR and
+a 50\,Hz IMU, and that essentially all of the cost is the camera update. The
+0.7$\times$ is also optimistic: \texttt{rosbag record} throttled the sources
+to 16\,Hz of camera against 30\,Hz live.
+
+\textbf{Two practical points if you repeat this.} MINS's live-subscribe entry
+point is \textbf{ROS 2 only} --- in \texttt{run\_subscribe.cpp} the
+\texttt{ROS\_AVAILABLE == 1} branch contains two \texttt{\#include} lines and
+nothing else, so under ROS Noetic the binary initialises, subscribes to
+nothing, and exits immediately even with data flowing. Use the \texttt{bag}
+binary and a recorded rosbag, which is the path \texttt{subscribe.launch}'s
+own hard-wired \texttt{rosbag play} node implies. And do not quote pose
+accuracy from such a run unless the camera--IMU extrinsic has been
+calibrated and the IMU units corrected (Chapter~\ref{ch:camera}) --- with a
+placeholder extrinsic and accelerations in \emph{g}, the filter diverges
+grossly while the timing figures stay valid.
 \section{Getting this project's code onto the machine that will build it}
 
 Clone the project's repository onto whichever machine will build Carolus
@@ -1444,7 +1592,7 @@ roslaunch carolus_node testcarolus.launch ubuntu2204_preload:=false
 
 Carolus and the camera bridge then both run on the Pi, and no image crosses
 the network --- which is what makes the robot usable away from the lab PC,
-and what gives the throughput measured in
+and what gives the camera input rate measured in
 Section~\ref{sec:pi-benchmark}.
 
 \textbf{On a lab PC running Ubuntu 22.04} (the development fallback), omit
