@@ -14,12 +14,15 @@
     <!-- Set to false when running on Ubuntu 20.04 (including the Raspberry
          Pi), where the log4cxx/tinyxml2 preload is unnecessary. -->
     <arg name="ubuntu2204_preload" default="true" />
+    <!-- See carolus.launch for why this defaults to true. -->
+    <arg name="stamp_from_acquisition" default="true" />
 
     <include file="$(find carolus_node)/launch/carolus.launch">
         <arg name="config"
              value="$(find carolus_node)/config/robomaster_s1.yaml" />
         <arg name="camera_topic" value="/camera/color/image_raw" />
         <arg name="ubuntu2204_preload" value="$(arg ubuntu2204_preload)" />
+        <arg name="stamp_from_acquisition" value="$(arg stamp_from_acquisition)" />
     </include>
 
     <!-- S1-specific: static transform creating the honey/body frame. -->

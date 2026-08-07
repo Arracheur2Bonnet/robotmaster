@@ -35,6 +35,21 @@
          Raspberry Pi), where no preload is needed. -->
     <arg name="ubuntu2204_preload" default="true" />
 
+    <!-- Stamp the published pose with the ACQUISITION time of the image it was
+         computed from, instead of the publication time (added 2026-08-04).
+
+         Leave this true. The previous behaviour (ros::Time::now() at publish)
+         tells every consumer that the pose describes the present, when it
+         describes an image captured some milliseconds earlier. A fusion filter
+         reads header.stamp to place the measurement in time, so that is a
+         systematic time offset it cannot detect, and it also makes the pose's
+         real latency unmeasurable from ROS alone.
+
+         Set to false only to reproduce the old behaviour, or if the image
+         stamps come from a machine whose clock is not synchronised with the
+         consumer's — in which case fix the clocks rather than the stamp. -->
+    <arg name="stamp_from_acquisition" default="true" />
+
     <node name="carolus_astrobee_rex" pkg="carolus_astrobee"
           type="carolus_astrobee" output="screen">
 
@@ -54,6 +69,8 @@
              the two names coincide, only one publisher survives and the other
              silently never publishes. -->
         <param name="pose_topic" value="/loc/ar/features" />
+
+        <param name="stamp_from_acquisition" value="$(arg stamp_from_acquisition)" />
 
     </node>
 

@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Caméra + suivi de balise — connexion SDK unique.
-Remplace rm_cam_ros.py + follow_beacon.py (deux connexions → conflit drive_speed).
+Camera and beacon tracking -- the project's single SDK connection.
+
+Replaces rm_cam_ros.py + follow_beacon.py, which held one SDK connection each: two
+simultaneous connections silently block chassis motion after a few drive_speed calls,
+with no error surfaced anywhere. This node is therefore the ONLY process allowed to
+call robot.Robot().initialize() while the stack is running.
 """
 
 import os
@@ -32,14 +36,64 @@ from cv_bridge import CvBridge
 # CONFIG
 # =========================================================
 
-# Cadence de publication /camera/color/image_raw. 30 = cadence native du capteur S1
-# (2026-07-22 : monte de 20 -> 30 pour donner a Carolus des frames plus fraiches).
-# ATTENTION : le vrai goulot de Carolus (~2.5 Hz) est le TRANSPORT RESEAU des images
-# (Pi -> PC labo), pas cette cadence. Si la latence des poses empire apres ce bump
-# (poses plus vieilles, /pose qui trainerait), REVENIR a 20 (voire 15) : plus de frames
-# = plus de bande passante sur le lien deja sature. Le vrai gain viendra de F0.C
-# (Carolus deplace sur le Pi), pas d'ici.
+# Publish rate for /camera/color/image_raw. 30 is the S1 sensor's native rate
+# (raised 20 -> 30 on 2026-07-22 to hand Carolus fresher frames).
+#
+# HISTORICAL NOTE, kept because the conclusion changed: this used to warn that
+# Carolus's ~2.5 Hz was network TRANSPORT (Pi -> lab PC) and that raising the rate
+# would only add bandwidth to an already saturated link. That was right, and F0.C
+# happened: Carolus was moved onto the Pi on 2026-08-04 and /pose went from 2.19 Hz
+# to 13.04 Hz with the same beacon. The bottleneck is now the Pi's CPU -- this very
+# bridge and Carolus compete for it, and the camera itself drops from 30.0 Hz to
+# 16.5 Hz once Carolus runs alongside. So lowering this value is once again a lever,
+# but for a different reason than it was in July.
 TARGET_FPS       = 30
+# IMU subscription rate. The SDK admits only 1, 5, 10, 20 and 50 Hz
+# (chassis.py:577); any other value is rejected. Exposed as an environment
+# variable so those values can be swept without editing this file -- see BUG-089
+# (2026-08-04): at 50 Hz the subscription is accepted and, before the fix, no
+# callback ever arrived.
+IMU_FREQ         = int(os.environ.get("RM_IMU_FREQ", "50"))
+# Accelerometer scale applied before publishing on /imu (2026-08-04, BUG-092).
+# Measured at rest: linear_acceleration.z reads -1.00664, i.e. the SDK returns
+# **g**, while sensor_msgs/Imu mandates m/s^2. So every consumer currently sees
+# accelerations 9.81x too small under a contract that says otherwise, and
+# neither Kalibr nor MINS can detect it.
+#
+# Deliberately left at 1.0 (unconverted) until a session with a KNOWN rotation
+# settles scale, sign and gyro units TOGETHER: the sign is also suspect (a
+# REP-103 z-up frame at rest should read +9.81, not -1.0 g), and fixing the
+# scale alone would produce a topic that looks correct while its frame
+# convention is still unverified -- strictly worse than one that is visibly
+# wrong. Set RM_IMU_ACCEL_SCALE=9.80665 once that session has run.
+IMU_ACCEL_SCALE  = float(os.environ.get("RM_IMU_ACCEL_SCALE", "1.0"))
+# ---- FRAME CHAIN CONSTANTS (2026-08-04) ---------------------------------
+# All four default to "no change from the pre-2026-08-04 behaviour", so the
+# chain restructure below is a pure refactor until these are measured.
+#
+# SIGNS. DJI documents its world frame as NED -- Z pointing DOWN -- while ROS
+# REP-103 has Z UP. A rotation about a down axis is the opposite sense of one
+# about an up axis, so yaw_DJI = -yaw_ROS is the expected relationship and
+# these should very likely end up at -1. They are NOT set to -1 today because
+# that is a reasoned expectation, not a measurement, and BUG-077 is what
+# happens when a sign is assumed. Protocol 22, step B1 measures them.
+GIMBAL_YAW_SIGN_TF   = float(os.environ.get("RM_GIMBAL_YAW_SIGN_TF", "1.0"))
+GIMBAL_PITCH_SIGN_TF = float(os.environ.get("RM_GIMBAL_PITCH_SIGN_TF", "1.0"))
+# TRANSLATIONS, metres, in the parent frame's axes.
+# BASE_TO_GIMBAL_XYZ: chassis rotation centre -> gimbal yaw axis.
+# GIMBAL_TO_CAM_XYZ : gimbal yaw/pitch axis intersection -> optical centre.
+# Their sum is the camera lever arm, independently estimated twice already
+# (0.165 m measured 2026-08-04, 0.123 m derived 2026-07-31). Split at the
+# gimbal yaw axis, which is physically identifiable on the robot. Protocol 22
+# step B2 measures them; until then both are zero and the composed transform
+# is identical to the old single one.
+BASE_TO_GIMBAL_XYZ = (0.0, 0.0, 0.0)
+GIMBAL_TO_CAM_XYZ  = (0.0, 0.0, 0.0)
+
+# Beacon duty-cycle report period, seconds. See _beacon_status_tick.
+DUTY_REPORT_PERIOD_S = 30.0
+# Number of poses averaged before each [LATENCY] report. See _pose_cb.
+LATENCY_REPORT_EVERY = 50
 STOP_DISTANCE_M  = 0.70
 POSE_TIMEOUT_S   = 1.5
 
@@ -48,114 +102,117 @@ MAX_WZ  = 10.0
 MIN_VX  = 0.06
 K_VX    = 0.6
 
-# ── SEARCH : sweep gimbal (robot immobile) + avancement chassis si echec ──────
-# Le gimbal est stabilise inertiellement (yaw_ground constant si le chassis tourne).
-# On balaye le gimbal en lisant yaw_rel (angle gimbal vs chassis) ; le chassis ne
-# bouge PAS pendant le sweep. Si un balayage complet de la plage echoue -> recenter
-# (gimbal aligne sur le corps) + avancer 1 m en ligne droite + recommencer.
-SEARCH_GIMBAL_YAW_S = 20.0    # consigne drive_speed gimbal (~20 deg/s reel, sens direct)
-SEARCH_YAW_LIMIT    = 200.0   # amplitude max du sweep en yaw_rel (deg, < limite meca 250)
-SEARCH_STEP_M       = 1.0     # avancement chassis si sweep complet sans detection (m)
-SEARCH_STEP_VX      = 0.15    # vitesse d'avancement du pas (m/s)
-SEARCH_MAX_STEPS    = 3       # nb max d'avancements avant arret (protege le cable Ethernet)
-SEARCH_GRACE_S      = 2.0     # pause initiale avant de commencer a balayer
-RECENTER_TIMEOUT_S  = 6.0     # timeout wait_for_completed du recenter
+# -- SEARCH: gimbal sweep (robot stationary), then a chassis step on failure ----
+# The gimbal is inertially stabilised: yaw_ground stays constant even while the
+# chassis turns underneath it. The sweep is driven by reading yaw_rel (the gimbal
+# angle relative to the chassis); the chassis does NOT move during it. If a full
+# sweep of the range finds nothing -> recenter (gimbal aligned with the body),
+# advance 1 m in a straight line, and start over.
+SEARCH_GIMBAL_YAW_S = 20.0    # gimbal drive_speed setpoint (~20 deg/s measured, direct sense)
+SEARCH_YAW_LIMIT    = 200.0   # max sweep amplitude in yaw_rel (deg, under the 250 deg mechanical limit)
+SEARCH_STEP_M       = 1.0     # chassis step after a full sweep with no detection (m)
+SEARCH_STEP_VX      = 0.15    # speed of that step (m/s)
+SEARCH_MAX_STEPS    = 3       # max steps before stopping (protects the Ethernet cable)
+SEARCH_GRACE_S      = 2.0     # initial pause before the sweep starts
+RECENTER_TIMEOUT_S  = 6.0     # wait_for_completed timeout on the recenter action
 
-# ── Motif en eventail : axe epuise (SEARCH_MAX_STEPS atteint) -> tourner et recommencer ──
-# Recommandations Perplexity 08 (research-log/07-perplexity/08-strategie-recherche-couverture.md) :
-# increment 60deg, 6 axes (2 passes de 3), borne globale 90s ou ~13.5m cumules.
-SEARCH_FAN_AXIS_COUNT    = 6      # nb total d'axes du motif en eventail (2 passes de 3)
-SEARCH_FAN_AXIS_INC_DEG  = 60.0   # increment de rotation entre deux axes (deg)
-SEARCH_FAN_ROT_WZ        = 30.0   # vitesse rotation chassis entre axes (deg/s)
-SEARCH_FAN_ROT_TIMEOUT_S = 8.0    # securite : 60deg a 30deg/s ~= 2s, marge x4
-SEARCH_TOTAL_TIMEOUT_S   = 90.0   # borne recherche autonome avant abandon (s)
-SEARCH_TOTAL_DIST_M      = 13.5   # borne recherche autonome avant abandon (m cumules, milieu plage 12-15m)
+# -- Fan pattern: axis exhausted (SEARCH_MAX_STEPS reached) -> turn and restart --
+# Parameters from a 2026-07-01 coverage-strategy research round: 60 deg increment,
+# 6 axes (two passes of three), global bound of 90 s or ~13.5 m travelled.
+SEARCH_FAN_AXIS_COUNT    = 6      # total axes in the fan pattern (two passes of three)
+SEARCH_FAN_AXIS_INC_DEG  = 60.0   # rotation increment between two axes (deg)
+SEARCH_FAN_ROT_WZ        = 30.0   # chassis rotation speed between axes (deg/s)
+SEARCH_FAN_ROT_TIMEOUT_S = 8.0    # safety: 60 deg at 30 deg/s is ~2 s, so 4x margin
+SEARCH_TOTAL_TIMEOUT_S   = 90.0   # autonomous-search bound before giving up (s)
+SEARCH_TOTAL_DIST_M      = 13.5   # autonomous-search bound before giving up (m travelled, middle of the 12-15 m range)
 
-# ── APPROACH : gimbal verrouille sur la balise + chassis suit l'angle gimbal ──
-K_GIM_YAW   = 2.0   # deg/s de servo gimbal par degre d'erreur laterale balise
-GIM_YAW_MAX = 50.0  # vitesse max servo gimbal (deg/s)
-K_BODY_YAW  = 0.8   # gain rotation chassis pour annuler yaw_rel (alignement corps)
-GIM_YAW_SIGN = -1   # signe du servo gimbal : -1 confirme au test 2026-06-26 (drive_speed(positive) = gauche, yaw_err_deg<0 = gauche -> sign negatif converge)
+# -- APPROACH: gimbal locked on the beacon, chassis follows the gimbal angle ----
+K_GIM_YAW   = 2.0   # deg/s of gimbal servo per degree of lateral beacon error
+GIM_YAW_MAX = 50.0  # max gimbal servo speed (deg/s)
+K_BODY_YAW  = 0.8   # chassis rotation gain used to null yaw_rel (body alignment)
+GIM_YAW_SIGN = -1   # gimbal servo sign: -1 confirmed by the 2026-06-26 test (drive_speed(positive) = left, yaw_err_deg<0 = left, so a negative sign converges)
 
-# ── Servo PITCH (centrage vertical) — utilise UNIQUEMENT par l'auto-suivi LOCK en
-# mode MANUEL (2026-07-22), pas par APPROACH (etat teste laisse intact). Garde les 4
-# LED de la balise dans le champ -> detection plus stable sous angle.
+# -- PITCH servo (vertical centring). Used ONLY by the MANUAL-mode LOCK auto-track
+# (2026-07-22), never by APPROACH, whose tested behaviour was left untouched. Keeps
+# the beacon's four LEDs in frame -> more stable detection at an angle.
 #
-# ⚠️ DESACTIVE le 2026-07-22 apres INCIDENT MATERIEL (BUG-058) : le signe du pitch
-# n'ayant pas ete confirme, au 1er clic LOCK la nacelle a pitche en butee et accroche
-# le cable RNDIS -> surcharge moteur -> LED rouge. Le suivi pitch reste DESACTIVE tant
-# que (a) le signe n'est pas verifie a la main gimbal libre, ET (b) des limites d'angle
-# de nacelle ne sont pas ajoutees pour empecher tout emballement d'atteindre un cable.
-# Passer GIM_PITCH_TRACK_ENABLED=True seulement apres ces deux conditions.
+# DISABLED on 2026-07-22 after a HARDWARE INCIDENT (BUG-058): the pitch sign had
+# never been confirmed, so on the first LOCK click the gimbal pitched to its
+# mechanical stop, snagged the RNDIS cable, overloaded the motor and turned the LED
+# red. Pitch tracking stays DISABLED until (a) the sign is verified by hand with the
+# gimbal free, AND (b) angle limits are added so no runaway can reach a cable.
+# Set GIM_PITCH_TRACK_ENABLED=True only once both hold.
 GIM_PITCH_TRACK_ENABLED = False
-GIM_PITCH_SPEED_MAX = 30.0   # vitesse max servo pitch (deg/s, conservateur)
-GIM_PITCH_SIGN      = -1     # ⚠️ signe NON confirme (cf. incident BUG-058)
+GIM_PITCH_SPEED_MAX = 30.0   # max pitch servo speed (deg/s, deliberately conservative)
+GIM_PITCH_SIGN      = -1     # WARNING: sign NOT confirmed (see the BUG-058 incident)
 
-# ── LOCK BALISE : centrage periodique par mouvement relatif (2026-07-23) ──────
-# Historique : un LOCK v1 (servo P continu a 20Hz, gating/rampe/rejet d'aberration)
-# a existe puis a ete retire le 2026-07-23 (juge redondant/moins pratique que le
-# centrage periodique ci-dessous). Seul ce mecanisme subsiste desormais : toutes les
-# GIM_LOCK_PERIOD_S secondes (configurable en direct via /carolus/gimbal_lock_period),
-# on lit l'erreur d'angle balise->centre camera et on envoie UNE commande de position
-# relative gimbal.move(yaw=...) qui la ramene au centre, independamment du mouvement
-# du chassis. gimbal.move() caracterise ASYNC dans test_gimbal_sweep.py (rend la main
-# immediatement).
-GIM_LOCK_PERIOD_S_DEFAULT = 3.0   # periode par defaut (s) ; repli si valeur recue invalide
-# Vitesse au plafond SDK (2026-07-23, demande explicite utilisateur : vitesse max).
-# Le SDK documente move(yaw_speed=...) dans [0, 540] deg/s. Jamais teste au-dela de
-# 80 deg/s sur CE robot avant ce changement (test_gimbal_sweep.py), mais le risque
-# BUG-058 (butee mecanique + cable accroche) est juge faible ici : ce sont des
-# mouvements ponctuels de PETIT angle borne (deadband/max_err ci-dessous, pas un grand
-# balayage vers une butee) -- une vitesse plus elevee raccourcit juste la duree du
-# mouvement, pas son amplitude angulaire.
+# -- BEACON LOCK: periodic re-centring by relative motion (2026-07-23) ---------
+# History: a LOCK v1 existed (continuous P servo at 20 Hz, with gating, ramping and
+# outlier rejection) and was removed on 2026-07-23, judged redundant and less
+# practical than the periodic re-centring below. Only this mechanism remains: every
+# GIM_LOCK_PERIOD_S seconds (live-configurable through /carolus/gimbal_lock_period)
+# we read the beacon-to-image-centre angular error and send ONE relative position
+# command, gimbal.move(yaw=...), that brings it back to centre -- independently of
+# any chassis motion. gimbal.move() was characterised as ASYNC in
+# test_gimbal_sweep.py: it returns immediately.
+GIM_LOCK_PERIOD_S_DEFAULT = 3.0   # default period (s); also the fallback if an invalid value arrives
+# Speed at the SDK ceiling (2026-07-23, explicit user request for maximum speed).
+# The SDK documents move(yaw_speed=...) over [0, 540] deg/s. Never tested above
+# 80 deg/s on THIS robot before this change (test_gimbal_sweep.py), but the BUG-058
+# risk (mechanical stop plus a snagged cable) is judged low here: these are one-shot
+# movements of SMALL bounded angle (see the deadband and max_err below), not a large
+# sweep toward a stop -- a higher speed only shortens the movement's duration, not
+# its angular amplitude.
 GIM_LOCK_YAW_SPEED   = 540.0
-GIM_LOCK_MAX_ERR_DEG = 45.0   # au-dela, pose aberrante probable -> ignorer ce tick
-# Deadband (2026-07-23) : sous ce seuil, ne pas re-corriger -- evite de "chasser" un
-# residu de bruit de mesure P4P / imprecision mecanique qui ne descendra plus.
-# 5.0° confirme par test materiel comme le bon reglage (reduction a 3.0° tentee puis
-# revert le meme soir, sur demande utilisateur -- 5.0 etait deja le comportement
-# juge correct).
+GIM_LOCK_MAX_ERR_DEG = 45.0   # beyond this the pose is probably aberrant -> skip this tick
+# Deadband (2026-07-23): below this threshold, do not re-correct -- avoids chasing a
+# residual of P4P measurement noise and mechanical imprecision that will not go down
+# any further. 5.0 deg confirmed on hardware as the right setting (a reduction to
+# 3.0 deg was tried and reverted the same evening: 5.0 was already the behaviour
+# judged correct).
 GIM_LOCK_DEADBAND_DEG = 5.0
-# RECENTRER CAM (2026-07-23 nuit) : gimbal.recenter() est une action ASYNC qui peut
-# prendre jusqu'a ~0.7s (grand angle a 360 deg/s). La boucle MANUEL reemet
-# drive_speed(0,0) a 20Hz, ce qui ANNULE l'action au tick suivant (~50ms) -> le
-# recenter n'aboutit jamais. Fix : une fenetre "gimbal occupe" pendant laquelle la
-# boucle MANUEL (et le tick LOCK) suspendent leurs commandes, laissant l'action
-# aboutir. C'est aussi pourquoi le LOCK (move() de petit angle, fini en <20ms)
-# marchait sans fenetre alors que le recenter non.
+# RECENTER CAM (night of 2026-07-23): gimbal.recenter() is an ASYNC action that can
+# take up to ~0.7 s (a large angle at 360 deg/s). The MANUAL loop re-sends
+# drive_speed(0,0) at 20 Hz, which CANCELS the action on the next tick (~50 ms), so
+# the recenter never completed. Fix: a "gimbal busy" window during which the MANUAL
+# loop and the LOCK tick suspend their commands and let the action finish. This is
+# also why LOCK worked without such a window while recenter did not -- LOCK's
+# small-angle move() completes in under 20 ms.
 GIMBAL_RECENTER_BUSY_S = 2.5
-# Pitch NON inclus par defaut : suivi pitch desactive depuis l'incident BUG-058
-# (nacelle en butee -> cable accroche). Reutilise le garde-fou GIM_PITCH_TRACK_ENABLED --
-# ne pas activer sans (a) verifier GIM_PITCH_SIGN et (b) limites d'angle.
+# Pitch NOT included by default: pitch tracking has been disabled since the BUG-058
+# incident (gimbal at its mechanical stop, cable snagged). Reuses the
+# GIM_PITCH_TRACK_ENABLED guard -- do not enable without (a) verifying
+# GIM_PITCH_SIGN and (b) adding angle limits.
 
-# ── ALIGN : pre-orientation chassis avant APPROACH ──────────────────────────────
-# Perplexity 05 + littérature visual servoing (look-and-move) :
-# orienter d'abord, approcher ensuite. Gimbal OFF pendant ALIGN (world-stabilise suffit).
-ALIGN_YAW_THRESHOLD = 12.0   # |yaw_rel| < X deg -> compter pose valide
-ALIGN_YAW_DEADBAND  = 2.0    # |yaw_rel| < X deg -> wz = 0 (evite chattering)
-ALIGN_MAX_WZ        = 8.0    # deg/s max pendant ALIGN (plus doux qu'APPROACH)
+# -- ALIGN: pre-orient the chassis before APPROACH -----------------------------
+# From the visual-servoing literature (the look-and-move pattern): orient first,
+# approach second. The gimbal servo is OFF during ALIGN -- its world stabilisation
+# is enough.
+ALIGN_YAW_THRESHOLD = 12.0   # |yaw_rel| < X deg -> count the pose as valid
+ALIGN_YAW_DEADBAND  = 2.0    # |yaw_rel| < X deg -> wz = 0 (prevents chattering)
+ALIGN_MAX_WZ        = 8.0    # max deg/s during ALIGN (gentler than APPROACH)
 ALIGN_TIMEOUT_ALPHA = 1.5    # T_max = alpha * |yaw_rel_init| / ALIGN_MAX_WZ
-ALIGN_TIMEOUT_MAX_S = 12.0   # cap du timeout dynamique (s)
-ALIGN_VALID_POSES   = 3      # nb poses consecutives valides requis avant APPROACH
+ALIGN_TIMEOUT_MAX_S = 12.0   # cap on the dynamic timeout (s)
+ALIGN_VALID_POSES   = 3      # consecutive valid poses required before APPROACH
 
-MANUAL_CMDVEL_TIMEOUT = 0.5   # arret auto si pas de commande depuis X secondes
+MANUAL_CMDVEL_TIMEOUT = 0.5   # auto-stop if no command received for X seconds
 
-# ── Évitement d'obstacles ────────────────────────────────────────────────────
-OBSTACLE_TOF_CM     = 50    # distance TOF frontale (cm) → stop d'urgence
-LOOKAHEAD_M         = 0.60  # distance de prévision collision devant le robot (m)
+# -- Obstacle avoidance --------------------------------------------------------
+OBSTACLE_TOF_CM     = 50    # front TOF distance (cm) -> emergency stop
+LOOKAHEAD_M         = 0.60  # collision look-ahead distance in front of the robot (m)
 MAP_JSON_PATH       = "/home/ubuntu/carolus_map.json"
-MAP_INFLATION_CELLS = 0     # pas d'inflation — obstacles dessinés au bloc près sur la map
+MAP_INFLATION_CELLS = 0     # no inflation -- obstacles are drawn block-exact on the map
 
-GIMBAL_PITCH_MAX = 55.0   # deg/s (limite mecanique approximative)
+GIMBAL_PITCH_MAX = 55.0   # deg/s (approximate mechanical limit)
 GIMBAL_YAW_MAX   = 90.0
 
-# ── Covariance /odom (2026-07-22) ────────────────────────────────────────────
-# Diagonale non nulle : un EKF (F3, robot_localization) refuse une covariance
-# toute-a-zero (interpretee comme "certitude parfaite" -> filtre casse). Ordre ROS
-# 6x6 aplati : [x, y, z, roll, pitch, yaw]. Robot 2D -> z/roll/pitch verrouilles a
-# grande variance (_ODOM_BIG). Valeurs indicatives (odometrie roue correcte a court
-# terme, derive lente) — a affiner en F3 si besoin. Constantes reutilisees a chaque
-# publication (pas de reconstruction de liste par tick).
+# -- /odom covariance (2026-07-22) --------------------------------------------
+# The diagonal must be non-zero: an EKF (robot_localization, roadmap item F3)
+# rejects an all-zero covariance, reading it as "perfect certainty", which breaks
+# the filter. ROS flattened 6x6 order: [x, y, z, roll, pitch, yaw]. This is a 2D
+# robot, so z/roll/pitch are pinned at a large variance (_ODOM_BIG). The values are
+# indicative -- wheel odometry is decent short-term with slow drift -- and are to be
+# refined in F3 if needed. Kept as module constants so no list is rebuilt per tick.
 _ODOM_BIG = 1e6
 _ODOM_POSE_COV = [
     0.02, 0.0,  0.0,       0.0,       0.0,       0.0,
@@ -184,12 +241,12 @@ def clamp(v, vmin, vmax):
 
 
 def _angle_diff_deg(a, b):
-    """Plus petite difference angulaire signee a-b, en degres, dans [-180, 180]."""
+    """Smallest signed angular difference a-b, in degrees, wrapped to [-180, 180]."""
     return ((a - b + 180.0) % 360.0) - 180.0
 
 
 class _FullBatSubject(_BatBase):
-    """Expose température, courant et tension ADC que BatterySubject.data_info() cache."""
+    """Expose the temperature, current and ADC voltage that BatterySubject.data_info() hides."""
     def data_info(self):
         # struct '<HhiBB' : adc_value(uint16), temperature(int16 en 0.1°C), current(int32 en mA), percent(uint8)
         temp_c = self._temperature / 10.0
@@ -202,7 +259,7 @@ class PoseData:
     y:     float
     z:     float
     stamp: float
-    yaw:   float = 0.0   # yaw balise en degrés (frame camera → estimation orientation)
+    yaw:   float = 0.0   # beacon yaw in degrees (camera frame; orientation estimate)
 
 
 class PoseBuffer:
@@ -220,7 +277,7 @@ class PoseBuffer:
             return self._pose
 
     def invalidate(self):
-        """Vide le buffer a chaque transition d'etat pour rejeter les poses stale."""
+        """Clear the buffer on every state transition, so stale poses are rejected."""
         with self._lock:
             self._pose = None
 
@@ -241,7 +298,7 @@ class EPCameraBeaconFollower:
         self.search_steps  = 0       # nb d'avancements effectues sans detection sur l'axe courant
         self._search_since = time.time()
 
-        # Motif en eventail (axe epuise -> rotation chassis -> axe suivant)
+        # Fan pattern (axis exhausted -> chassis rotation -> next axis)
         self.search_axis_idx       = 0     # index de l'axe courant (0..SEARCH_FAN_AXIS_COUNT-1)
         self._search_dist_total_m  = 0.0   # distance cumulee avancee sur l'episode de recherche courant
         self._search_episode_since = time.time()   # horodatage debut d'episode (reset a l'entree fraiche AUTO/LOCATE)
@@ -252,7 +309,7 @@ class EPCameraBeaconFollower:
         self._align_valid_n  = 0     # poses consecutives valides pendant ALIGN
 
         # Telemetrie consolidee (ESC, attitude, position, batterie, vitesse, statut, TOF)
-        # Un seul lock pour 7 flux : reduit contention + overhead vs 7 locks separes.
+        # One lock for seven streams: less contention and overhead than seven separate locks.
         self._telem_lock = threading.Lock()
         self._telem = {
             'esc':    [0, 0, 0, 0],
@@ -273,16 +330,16 @@ class EPCameraBeaconFollower:
         self._wheels_lock   = threading.Lock()
 
         # Angle gimbal lu via sub_angle : (pitch, yaw_rel, pitch_ground, yaw_ground)
-        # yaw_rel = angle gimbal vs chassis (signal d'alignement APPROACH)
-        # yaw_ground = cap absolu de la nacelle (repere monde, stabilise inertiellement)
+        # yaw_rel    = gimbal angle relative to the chassis (APPROACH's alignment signal)
+        # yaw_ground = the gimbal's absolute heading (world frame, inertially stabilised)
         self._gim_yaw_rel = 0.0
         self._gim_yaw_ground = 0.0
         self._gim_angle_lock = threading.Lock()
 
         # Mode : "AUTO" (recherche/approche) ou "MANUAL" (commandes ZQSD du GUI).
-        # DEFAUT = MANUAL depuis le 2026-07-22 (securite BUG-058) : demarrer en AUTO
-        # faisait balayer la nacelle (SEARCH) des le lancement -> risque d'accrocher un
-        # cable. En MANUAL le robot reste immobile tant que l'utilisateur ne commande
+        # DEFAULT = MANUAL since 2026-07-22 (BUG-058 safety): starting in AUTO
+        # made the gimbal sweep (SEARCH) as soon as the node started, risking a snagged
+        # cable. In MANUAL the robot stays still until the user commands
         # rien. Le passage en AUTO reste explicite (bouton MODE du launcher).
         self._mode          = "MANUAL"
         self._mode_lock     = threading.Lock()
@@ -295,152 +352,166 @@ class EPCameraBeaconFollower:
         self._gim_yaw   = 0.0
         self._gim_stamp = 0.0
         self._gim_lock  = threading.Lock()
-        # LOCK BALISE (2026-07-23) : centrage periodique, OFF par defaut. Le v1
-        # historique (servo continu 20Hz) a ete retire le meme jour (redondant).
+        # BEACON LOCK (2026-07-23): periodic re-centring, OFF by default. The v1
+        # historical version (continuous 20 Hz servo) was removed the same day as redundant.
         self._gimbal_lock = False
-        self._gimbal_lock_period_s = GIM_LOCK_PERIOD_S_DEFAULT   # configurable en direct (/carolus/gimbal_lock_period)
-        self._lock_timer = None   # rospy.Timer courant, recree quand la periode change
-        # Fenetre "gimbal occupe" (2026-07-23 nuit) : tant que time.time() < cette
-        # valeur, une action async gimbal (recenter) est en cours -> la boucle MANUEL
-        # et le tick LOCK suspendent leurs commandes pour ne pas l'annuler.
+        self._gimbal_lock_period_s = GIM_LOCK_PERIOD_S_DEFAULT   # live-configurable via /carolus/gimbal_lock_period
+        self._lock_timer = None   # current rospy.Timer, recreated when the period changes
+        # "Gimbal busy" window (night of 2026-07-23): while time.time() is below this
+        # value an async gimbal action (recenter) is in flight, so the MANUAL loop and
+        # the LOCK tick suspend their commands rather than cancelling it.
         self._gimbal_busy_until = 0.0
 
-        self._beacon_was_fresh = False   # detecte transition LOST->DETECTED (voyant/minimap)
+        self._beacon_was_fresh = False   # detects LOST->DETECTED transition (indicator/minimap)
+        # Beacon duty cycle and /pose latency, accumulated continuously
+        # (2026-08-04). Both were "the number nobody had"; they are now produced
+        # by every run instead of by a dedicated session.
+        self._duty_seen  = 0
+        self._duty_total = 0
+        self._duty_since = time.time()
+        self._lat_sum = 0.0
+        self._lat_n   = 0
 
         # Connexion unique au robot
-        rospy.loginfo("[RM] Connexion RNDIS...")
+        rospy.loginfo("[RM] Connecting over RNDIS...")
         self.ep = robot.Robot()
         self.ep.initialize(conn_type="rndis")
         self.cam     = self.ep.camera
         self.chassis = self.ep.chassis
         self.gimbal  = self.ep.gimbal
-        rospy.loginfo("[RM] Robot connecte")
+        rospy.loginfo("[RM] Robot connected")
 
-        # Sortir le gimbal de l'etat veille (sinon couple coupe, moteurs mous)
+        # ROBOT MODE (2026-08-04) -- instrumentation added after observing
+        # the chassis rotating on its own at ~0.38 deg/s while drive_speed(x=0,y=0,z=0)
+        # was being sent at 20 Hz. The official protocol documentation
+        # (robomaster-dev.readthedocs.io, text_sdk/protocol_api.html, extracted verbatim
+        # on 2026-08-04) states that in gimbal_lead mode ("chassis follows gimbal") the
+        # chassis "does not respond to the yaw axis control part of all control
+        # commands", explicitly including chassis movement speed control -- so our z
+        # would simply be ignored. In free mode it must not be.
+        #
+        # initialize() calls reset(), which already requests free (robot.py:1179), BUT
+        # on this rooted S1 a call that does not raise proves nothing (see BUG-091, same
+        # day: sub_imu returned True while no data ever arrived). So we READ the actual
+        # mode instead of assuming it, force it explicitly, and read it back to verify
+        # the request was honoured.
+        try:
+            _mode_before = self.ep.get_robot_mode()
+            rospy.loginfo(f"[MODE] mode read at connection: {_mode_before!r}")
+            _set_ok = self.ep.set_robot_mode(mode=robot.FREE)
+            _mode_after = self.ep.get_robot_mode()
+            rospy.loginfo(f"[MODE] set_robot_mode(FREE) returned {_set_ok!r} "
+                          f"-> mode read back: {_mode_after!r}")
+            if _mode_after != robot.FREE:
+                rospy.logwarn(f"[MODE] THE ROBOT IS NOT IN FREE MODE ({_mode_after!r}) -- "
+                              f"in gimbal_lead the chassis IGNORES the z component of "
+                              f"drive_speed, which would explain an uncommanded rotation")
+        except Exception as e:
+            rospy.logwarn(f"[MODE] could not read/write the robot mode: {e}")
+
+        # Wake the gimbal from its sleep state (otherwise torque is cut, motors limp)
         try:
             self.gimbal.resume()
-            rospy.loginfo("[GIMBAL] resume OK — couple actif")
+            rospy.loginfo("[GIMBAL] resume OK -- torque active")
         except Exception as e:
             rospy.logwarn(f"[GIMBAL] resume failed: {e}")
 
-        # Publishers gimbal crees AVANT sub_angle (BUG-064bis, 2026-07-23) : le SDK
-        # peut invoquer _gimbal_angle_cb des l'inscription du callback, avant que le
-        # reste de __init__ ne s'execute — AttributeError observe en session reelle
-        # sur pub_gimbal_yaw quand la creation du Publisher restait plus bas (ligne
+        # Gimbal publishers created BEFORE sub_angle (BUG-064bis, 2026-07-23): the SDK
+        # can invoke _gimbal_angle_cb the moment the callback is registered, before the
+        # rest of __init__ has run -- an AttributeError observed in a real session on
+        # pub_gimbal_yaw back when the Publisher was created further down (line
         # ~399 auparavant).
         self.pub_gimbal_yaw = rospy.Publisher("/carolus/gimbal_yaw_rel", Float32, queue_size=10)
         self.pub_gimbal_yaw_ground = rospy.Publisher("/carolus/gimbal_yaw_ground", Float32, queue_size=10)
-        # TF dynamique base_link->camera_link (BUG-067, 2026-07-23, F3) : le gimbal
-        # bouge reellement (yaw_rel/pitch_rel non nuls des que la nacelle n'est pas
-        # recentree) -- une TF statique identite (testcarolus.launch) rendait le calcul
-        # de pose absolue de beacon_absolute_pose.py faux des que la nacelle tournait
+        # BUG-089 (2026-08-04): the SAME defect as BUG-064bis, reintroduced on
+        # 2026-07-30 by adding pub_imu further down. The IMU callback raised
+        # AttributeError ('pub_imu' did not exist yet) inside the DDS dispatcher thread,
+        # that thread died, and NO further IMU callback ever ran -- hence a /imu topic
+        # that was advertised but silent, with nothing visible on the ROS side. The
+        # BUG-064bis lesson had only been applied to the gimbal: EVERY publisher touched
+        # by an SDK callback is created here, above the subscriptions, never below.
+        # Do not move these down.
+        self.pub_odom = rospy.Publisher("/odom", Odometry, queue_size=10)
+        self.pub_imu  = rospy.Publisher("/imu", Imu, queue_size=50)
+        self.pub_img  = rospy.Publisher("/camera/color/image_raw", Image, queue_size=1)
+        # Dynamic base_link->camera_link TF (BUG-067, 2026-07-23, F3): the gimbal
+        # really does move (yaw_rel/pitch_rel are non-zero as soon as the gimbal is off
+        # centre) -- a static identity TF (testcarolus.launch) made
+        # beacon_absolute_pose.py's absolute-pose computation wrong the moment it turned
         # (z aberrant observe en test reel : 1.68m au lieu de ~0m). Publiee ici, pas
-        # dans carolus_tf_broadcaster.py, car pitch_rel/yaw_rel sont deja en memoire
-        # dans ce process (pas de topic intermediaire necessaire).
+        # in carolus_tf_broadcaster.py, because pitch_rel/yaw_rel are already in memory
+        # in this process (no intermediate topic needed).
         self.tf_br_gimbal = tf2_ros.TransformBroadcaster()
 
-        # Suivi de l'angle gimbal en temps reel. REVERT a 10 Hz le 2026-07-22 : le
-        # passage a 20 Hz avait rendu sub_angle silencieux (gimbal_yaw_rel ne publiait
-        # plus, retour d'angle mort) — 20 n'est probablement pas une freq valide pour ce
-        # subject, ou le lien DDS sature. 10 Hz est la valeur d'origine, connue bonne.
-        try:
-            self.gimbal.sub_angle(freq=10, callback=self._gimbal_angle_cb)
-            rospy.loginfo("[GIMBAL] sub_angle OK — suivi yaw_rel/yaw_ground actif")
-        except Exception as e:
-            rospy.logwarn(f"[GIMBAL] sub_angle failed: {e}")
+        # Real-time gimbal-angle tracking. REVERTED to 10 Hz on 2026-07-22: raising it
+        # to 20 Hz had made sub_angle go silent (gimbal_yaw_rel stopped
+        # publishing, blind angle feedback) -- 20 is probably not a valid frequency for
+        # this subject, or the DDS link saturates. 10 Hz is the original, known-good
+        # value. 2026-08-04: that episode is retrospectively explained by the same defect
+        # as BUG-089 -- add_subject_info returns False on a refused frequency without
+        # raising, and the "OK" logged here never looked at that return. Now routed
+        # through self._sub, so a refusal is visible immediately instead of showing up
+        # as silence.
+        self._sub("GIMBAL", self.gimbal.sub_angle, freq=10,
+                  callback=self._gimbal_angle_cb)
 
         # Télémétrie batterie etendue (percent + temp + courant + tension ADC)
         try:
             self.battery = self.ep.battery
             _bat_subj = _FullBatSubject()
             _bat_subj.freq = 1
-            self.ep.dds.add_subject_info(_bat_subj, self._battery_cb, (), {})
-            rospy.loginfo("[BAT] Souscription batterie etendue OK (temp+courant+tension)")
+            # add_subject_info returns a bool, same reason as above (BUG-089).
+            _bat_ok = self.ep.dds.add_subject_info(_bat_subj, self._battery_cb, (), {})
+            if _bat_ok is False:
+                rospy.logwarn("[BAT] Extended battery subscription REFUSED (returned False)")
+            else:
+                rospy.loginfo("[BAT] Extended battery subscription OK (temp + current + voltage)")
         except Exception as e:
-            rospy.logwarn(f"[BAT] indisponible: {e}")
+            rospy.logwarn(f"[BAT] unavailable: {e}")
 
-        # Telemetrie ESC (vitesses roues) — best-effort
-        try:
-            self.chassis.sub_esc(freq=5, callback=self._esc_cb)
-            rospy.loginfo("[ESC] sub_esc OK")
-        except Exception as e:
-            rospy.logwarn(f"[ESC] sub_esc failed: {e}")
+        # SDK telemetry -- best effort, routed through self._sub, which checks the
+        # boolean return instead of settling for "nothing raised" (BUG-089).
+        self._sub("ESC", self.chassis.sub_esc, freq=5, callback=self._esc_cb)
 
-        # Telemetrie attitude (pitch/roll/yaw chassis) — best-effort.
-        # REVERT a 5 Hz le 2026-07-22 (valeur d'origine) : retour a un etat stable
-        # connu apres que les bumps a 20 Hz aient coincide avec sub_angle silencieux.
-        try:
-            self.chassis.sub_attitude(freq=5, callback=self._atti_cb)
-            rospy.loginfo("[ATTI] sub_attitude OK")
-        except Exception as e:
-            rospy.logwarn(f"[ATTI] sub_attitude failed: {e}")
-
-        # Telemetrie position (odometrie relative au demarrage) — best-effort.
-        # REVERT a 5 Hz le 2026-07-22 (valeur d'origine).
-        try:
-            self.chassis.sub_position(cs=0, freq=5, callback=self._pos_cb)
-            rospy.loginfo("[POS] sub_position OK")
-        except Exception as e:
-            rospy.logwarn(f"[POS] sub_position failed: {e}")
-
-        # Vitesse chassis en temps reel (frame corps) — best-effort.
-        # REVERT a 5 Hz le 2026-07-22 (valeur d'origine).
-        try:
-            self.chassis.sub_velocity(freq=5, callback=self._vel_cb)
-            rospy.loginfo("[VEL] sub_velocity OK")
-        except Exception as e:
-            rospy.logwarn(f"[VEL] sub_velocity failed: {e}")
-
-        # Statut chassis (pickup/slip/roll/impact) — best-effort
-        try:
-            self.chassis.sub_status(freq=5, callback=self._status_cb)
-            rospy.loginfo("[STATUS] sub_status OK")
-        except Exception as e:
-            rospy.logwarn(f"[STATUS] sub_status failed: {e}")
+        # REVERTED to 5 Hz on 2026-07-22 (the original value): back to a known-good
+        # state after the 20 Hz bumps coincided with sub_angle going silent.
+        self._sub("ATTI", self.chassis.sub_attitude, freq=5, callback=self._atti_cb)
+        self._sub("POS", self.chassis.sub_position, cs=0, freq=5, callback=self._pos_cb)
+        self._sub("VEL", self.chassis.sub_velocity, freq=5, callback=self._vel_cb)
+        self._sub("STATUS", self.chassis.sub_status, freq=5, callback=self._status_cb)
 
         # IMU brute (accelero + gyro), 2026-07-30 (prerequis calibration MINS,
-        # cf. research-log/20-protocole-calibration-camera-imu-kalibr.md) — best-effort.
-        # freq=50 : seule valeur vue utilisee sur cette famille S1 rootee (exemple
-        # ROS2 communautaire, s1_sdk_hack_v0.0.5/.../ros2_robot.py:42) ; pas confirme
-        # comme le plafond reel du SDK. La doc officielle OpenVINS demande 200-500Hz
-        # pour une bonne calibration Kalibr (docs.openvins.com/gs-calibration.html) —
-        # a re-verifier avant la session de calibration si 50Hz s'avere insuffisant.
-        try:
-            self.chassis.sub_imu(freq=50, callback=self._imu_cb)
-            rospy.loginfo("[IMU] sub_imu OK")
-        except Exception as e:
-            rospy.logwarn(f"[IMU] sub_imu failed: {e}")
+        # cf. research-log/02-protocoles/protocoles-terrain, protocole Kalibr).
+        # BUG-089 (2026-08-04): on THIS robot the subscription was accepted but the
+        # callback was NEVER called -- 0 /imu messages in 40 s while /odom ran at
+        # 16.5 Hz over the same SDK connection. Root cause turned out to be ours (the
+        # publisher did not exist yet when the first callback fired, killing the DDS
+        # dispatcher thread), and it is fixed. IMU_FREQ is still exposed here so the
+        # SDK's other admissible rates (1, 5, 10, 20, 50 -- chassis.py:577) can be
+        # swept without reopening the file: only 50 has ever been tried, taken as-is
+        # from a community ROS2 example (s1_sdk_hack_v0.0.5/.../ros2_robot.py:42) and
+        # never validated on our hardware. Override with RM_IMU_FREQ.
+        self._sub("IMU", self.chassis.sub_imu, freq=IMU_FREQ, callback=self._imu_cb)
 
-        # Distance TOF (capteur IR frontal, évitement réactif) — best-effort
-        try:
-            self.ep.sensor.sub_distance(freq=10, callback=self._dist_cb)
-            rospy.loginfo("[TOF] sub_distance OK")
-        except Exception as e:
-            rospy.logwarn(f"[TOF] sub_distance failed (normal sur S1): {e}")
+        self._sub("TOF", self.ep.sensor.sub_distance, freq=10, callback=self._dist_cb)
 
         # Carte d'obstacles
         if self._colmap.loaded:
-            rospy.loginfo(f"[MAP] Carte obstacle chargee depuis {MAP_JSON_PATH}")
+            rospy.loginfo(f"[MAP] Obstacle map loaded from {MAP_JSON_PATH}")
         else:
-            rospy.logwarn(f"[MAP] {MAP_JSON_PATH} absent — collision map desactive")
+            rospy.logwarn(f"[MAP] {MAP_JSON_PATH} missing -- collision map disabled")
 
         self.cam.start_video_stream(display=False)
-        rospy.loginfo("[RM] Flux camera demarre")
+        rospy.loginfo("[RM] Camera stream started")
 
-        # Publishers / subscribers ROS
-        self.pub_img = rospy.Publisher("/camera/color/image_raw", Image, queue_size=1)
-        # Odometrie chassis (F2, 2026-07-21) : republie sub_position/sub_attitude (deja
-        # souscrits ci-dessus, connexion SDK unique) sur /odom pour capture propre
-        # (rostopic echo > fichier) au lieu de lire les logs texte a l'oeil. Position
-        # convertie en REP-103 (y_ros=-y_ep, cf. Perplexity 07 / GitHub SDK officiel :
-        # EP y+=droite, ROS y+=gauche). Yaw publie tel quel (signe EP non confirme pour
-        # une orientation absolue — suffisant pour une mesure de derive relative comme
-        # ici ; a verifier avant reutilisation dans l'EKF robot_localization de F3).
-        self.pub_odom = rospy.Publisher("/odom", Odometry, queue_size=10)
-        # IMU brute pour la calibration Kalibr / MINS (2026-07-30) — voir _imu_cb.
-        self.pub_imu = rospy.Publisher("/imu", Imu, queue_size=50)
-        # pub_gimbal_yaw / pub_gimbal_yaw_ground crees plus haut (avant sub_angle,
-        # cf. commentaire ligne ~311) — pas de re-creation ici.
+        # Subscribers ROS. Les publishers touches par un callback SDK (pub_img,
+        # pub_odom, pub_imu, pub_gimbal_*) are ALL created above, before the SDK
+        # subscriptions -- see BUG-064bis and BUG-089. Do not recreate any here.
+        # Note /odom : position convertie en REP-103 (y_ros=-y_ep, cf. Perplexity 07 /
+        # GitHub SDK officiel : EP y+=droite, ROS y+=gauche). Yaw publie tel quel
+        # (the EP sign is unconfirmed for an absolute orientation -- adequate for a
+        # mesure de derive relative comme ici ; a verifier avant reutilisation dans
+        # l'EKF robot_localization de F3).
         rospy.Subscriber("/pose",               PoseStamped, self._pose_cb)
         rospy.Subscriber("/carolus/mode",       String,      self._mode_cb)
         rospy.Subscriber("/carolus/cmd_vel",    Twist,       self._cmdvel_cb)
@@ -451,23 +522,84 @@ class EPCameraBeaconFollower:
         rospy.Subscriber("/carolus/gimbal_recenter", String, self._gimbal_recenter_cb)
         rospy.loginfo("[ROS] Subscriptions actives (/pose, /carolus/mode, /carolus/cmd_vel, /carolus/gimbal_vel, /carolus/wheels, /carolus/gimbal_lock, /carolus/gimbal_lock_period, /carolus/gimbal_recenter)")
 
-        # LOCK BALISE (2026-07-23) : timer independant de la boucle principale 20Hz --
-        # centrage periodique, pas un servo continu. Stocke sur self._lock_timer pour
-        # pouvoir le recreer avec une nouvelle periode (cf. _gimbal_lock_period_cb).
+        # BEACON LOCK (2026-07-23): a timer independent of the 20 Hz main loop --
+        # periodic re-centring, not a continuous servo. Held on self._lock_timer so it
+        # can be recreated with a new period (see _gimbal_lock_period_cb).
         self._lock_timer = rospy.Timer(rospy.Duration(self._gimbal_lock_period_s), self._gimbal_lock_tick)
-        # Statut balise DETECTED/LOST (2026-07-23) : log periodique parse par
-        # carolus_launcher.py (meme pattern que [BAT]/[ATTI]/[POS]) pour le voyant et
-        # la minimap. 5Hz -- independant de l'etat ON/OFF du LOCK.
+        # Beacon DETECTED/LOST status (2026-07-23): a periodic log parsed by
+        # carolus_launcher.py (same pattern as [BAT]/[ATTI]/[POS]) to drive the
+        # indicator and the minimap. 5 Hz, independent of the LOCK ON/OFF state.
         rospy.Timer(rospy.Duration(0.2), self._beacon_status_tick)
 
         self.rate = rospy.Rate(TARGET_FPS)
 
+    # ---- souscriptions telemetrie SDK ----
+
+    def _sub(self, tag, fn, **kw):
+        """Subscribe to an SDK telemetry channel and log the REAL result.
+
+        The SDK's sub_* methods return a bool (from dds.add_subject_info): a
+        subscription the robot refuses returns False WITHOUT raising. The original
+        code (2026-07-30) discarded that return and logged "OK" as soon as nothing
+        had raised -- which is why BUG-089 (sub_imu reporting OK while /imu never
+        published anything) looked like a success for a whole session. An "OK" must
+        only mean OK if the robot said so.
+        """
+        try:
+            ok = fn(**kw)
+        except Exception as e:
+            rospy.logwarn(f"[{tag}] {fn.__name__} exception: {e}")
+            return False
+        if ok is False:
+            # Not an exception: the robot explicitly refused. Distinct from a crash,
+            # and distinct from an "OK" -- see BUG-089.
+            rospy.logwarn(f"[{tag}] {fn.__name__} REFUSED by the robot "
+                          f"(returned False) -- no data will ever arrive")
+            return False
+        rospy.loginfo(f"[{tag}] {fn.__name__} OK (returned {ok!r})")
+        return True
+
     # ---- callbacks ROS ----
 
     def _pose_cb(self, msg):
+        # LATENCY, not rate (2026-08-04). We measured Carolus's pose RATE
+        # (13.04 Hz on the Pi) and quoted it to the supervisor, but for drift
+        # correction the metric that decides quality is LATENCY: a correction
+        # arriving at 13 Hz but 200 ms late is worse than one at 5 Hz arriving
+        # in 30 ms, because the filter has to roll its state back that far.
+        #
+        # This is only meaningful because carolus_astrobee now stamps the pose
+        # with the image's ACQUISITION time (stamp_from_acquisition, same day).
+        # Before that the stamp was ros::Time::now() at publication, so this
+        # subtraction would have measured nothing but transport delay -- and,
+        # worse, every fusion consumer was being told the pose described the
+        # present when it described an image from N ms earlier.
+        try:
+            lat_ms = (rospy.Time.now() - msg.header.stamp).to_sec() * 1000.0
+            # A negative or absurd value means the stamp is not an acquisition
+            # time (old binary, or clocks not synchronised between machines) --
+            # say so rather than reporting a meaningless number.
+            if -1.0 < lat_ms < 5000.0:
+                self._lat_sum += lat_ms
+                self._lat_n   += 1
+                if self._lat_n >= LATENCY_REPORT_EVERY:
+                    rospy.loginfo(f"[LATENCY] /pose {self._lat_sum / self._lat_n:.0f} ms "
+                                  f"(mean over {self._lat_n} poses)")
+                    self._lat_sum = 0.0
+                    self._lat_n   = 0
+            else:
+                rospy.logwarn_throttle(
+                    30.0,
+                    f"[LATENCY] implausible ({lat_ms:.0f} ms) — /pose is probably "
+                    f"stamped at publication time, not acquisition. Check that "
+                    f"carolus_astrobee runs with stamp_from_acquisition:=true, "
+                    f"and that both machines' clocks agree.")
+        except Exception:
+            pass
+
         p = msg.pose.position
         q = msg.pose.orientation
-        # Yaw de la balise (rotation autour de l'axe y camera = tilt horizontal)
+        # Beacon yaw (rotation about the camera's y axis = horizontal tilt)
         siny = 2.0 * (q.w * q.y + q.z * q.x)
         cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         yaw_deg = math.degrees(math.atan2(siny, cosy))
@@ -542,9 +674,9 @@ class EPCameraBeaconFollower:
         rospy.loginfo(f"[LOCK] Lock balise (centrage periodique) -> {'ON' if self._gimbal_lock else 'OFF'}")
 
     def _gimbal_lock_period_cb(self, msg):
-        """Periode de centrage configurable en direct (2026-07-23), en SECONDES
-        uniquement. Repli silencieux sur GIM_LOCK_PERIOD_S_DEFAULT si la valeur recue
-        n'est pas un nombre positif (meme logique de tolerance qu'un champ web)."""
+        """Live-configurable re-centring period (2026-07-23), in SECONDS only.
+        Silent fallback to GIM_LOCK_PERIOD_S_DEFAULT if the received value is not
+        a positive number (the same tolerance logic as a web form field)."""
         try:
             period = float(msg.data)
             if period <= 0:
@@ -553,28 +685,28 @@ class EPCameraBeaconFollower:
             period = GIM_LOCK_PERIOD_S_DEFAULT
             rospy.logwarn(f"[LOCK] periode recue invalide ({msg.data!r}) -> repli sur {period}s")
         self._gimbal_lock_period_s = period
-        # Garde-fou : les subscribers sont enregistres (~ligne 435) AVANT la creation
-        # du timer (~ligne 442) dans __init__ ; un message arrivant dans cette fenetre
-        # trouverait _lock_timer=None (ligne 302) -> AttributeError sur .shutdown().
+        # Guard: the subscribers are registered (~line 435) BEFORE the timer is created
+        # (~line 442) in __init__; a message arriving in that window
+        # would find _lock_timer=None (line 302) -> AttributeError on .shutdown().
         if self._lock_timer is not None:
             self._lock_timer.shutdown()
         self._lock_timer = rospy.Timer(rospy.Duration(period), self._gimbal_lock_tick)
-        rospy.loginfo(f"[LOCK] periode de centrage -> {period}s")
+        rospy.loginfo(f"[LOCK] re-centring period -> {period}s")
 
     def _gimbal_lock_tick(self, event):
-        """LOCK BALISE (2026-07-23) : toutes les self._gimbal_lock_period_s secondes,
-        si actif et une pose fraiche existe, envoie UNE commande gimbal.move() relative
-        qui centre la balise dans le champ. Independant du mouvement chassis.
-        Yaw seulement -- pitch reste derriere GIM_PITCH_TRACK_ENABLED (BUG-058)."""
+        """BEACON LOCK (2026-07-23): every self._gimbal_lock_period_s seconds,
+        if active and a fresh pose exists, send ONE relative gimbal.move() command
+        that centres the beacon in frame. Independent of chassis motion.
+        Yaw only -- pitch stays behind GIM_PITCH_TRACK_ENABLED (BUG-058)."""
         if not self._gimbal_lock:
             return
         if self._mode != "MANUAL":
             return
-        # Une action RECENTER en cours ? -> ne pas la perturber par un move() concurrent.
+        # A RECENTER action in flight? Do not disturb it with a competing move().
         if time.time() < self._gimbal_busy_until:
             return
-        # NB : le numpad n'a plus la priorite ici (2026-07-23 nuit) -- tant que LOCK est
-        # ON, le pilotage manuel de la nacelle est ignore (cote boucle MANUEL aussi).
+        # Note: the numpad no longer has priority here (night of 2026-07-23) -- while
+        # LOCK is ON, manual gimbal piloting is ignored (in the MANUAL loop too).
         if not self.has_fresh_pose():
             return
         p = self.posebuf.get()
@@ -585,7 +717,7 @@ class EPCameraBeaconFollower:
             rospy.logwarn(f"[LOCK] erreur trop grande ({yaw_err_deg:.1f}°), pose probablement aberrante -> ignoree")
             return
         if abs(yaw_err_deg) < GIM_LOCK_DEADBAND_DEG:
-            rospy.loginfo(f"[LOCK] deja centre (err={yaw_err_deg:.1f}°) -> pas de correction")
+            rospy.loginfo(f"[LOCK] already centred (err={yaw_err_deg:.1f} deg) -> no correction")
             return
         pitch_delta = 0.0
         if GIM_PITCH_TRACK_ENABLED:
@@ -599,10 +731,43 @@ class EPCameraBeaconFollower:
             rospy.logwarn(f"[LOCK] gimbal.move a echoue: {e}")
 
     def _beacon_status_tick(self, event):
-        """Log periodique DETECTED/LOST (2026-07-23), parse par carolus_launcher.py
-        (voyant, minimap)."""
+        """Periodic DETECTED/LOST log (2026-07-23), parsed by carolus_launcher.py
+        (indicator, minimap). Also accumulates the beacon DUTY CYCLE.
+
+        The duty cycle -- the fraction of time the beacon is actually in view --
+        is arguably the most decision-relevant number in this project, and until
+        2026-08-04 nobody had it. Carolus is the only drift-free source in the
+        stack; everything else (wheel odometry, gyro integration) drifts without
+        bound. So how often Carolus can correct decides how much inertial
+        quality has to be bought:
+
+          ~90% in view -> drift between corrections is negligible, and the
+                          IMU-rate question (the SDK caps us at 50 Hz where
+                          VIO tooling wants 200-500 Hz) largely stops mattering
+          ~20% in view -> drift dominates, and that 50 Hz ceiling becomes a
+                          structural limit of the robot
+
+        Measuring it used to require a dedicated session. It is accumulated here
+        instead, on the tick that already knows the answer, so every run reports
+        it for free and the number is never stale.
+        """
         fresh = self.has_fresh_pose()
         self._beacon_was_fresh = fresh
+
+        # --- duty cycle accumulation (2026-08-04) ---
+        self._duty_total += 1
+        if fresh:
+            self._duty_seen += 1
+        now = time.time()
+        if now - self._duty_since >= DUTY_REPORT_PERIOD_S and self._duty_total > 0:
+            pct = 100.0 * self._duty_seen / self._duty_total
+            rospy.loginfo(f"[DUTY] beacon in view {pct:.1f}% "
+                          f"({self._duty_seen}/{self._duty_total} samples over "
+                          f"{now - self._duty_since:.0f}s)")
+            self._duty_since = now
+            self._duty_seen = 0
+            self._duty_total = 0
+
         if fresh:
             p = self.posebuf.get()
             if p is not None and abs(p.z) > 0.05:
@@ -613,24 +778,24 @@ class EPCameraBeaconFollower:
         rospy.loginfo("[BEACON] status=LOST")
 
     def _gimbal_recenter_cb(self, msg):
-        """RECENTRER CAM (2026-07-23) : ramene la nacelle a sa position de base
-        (pitch=0, yaw=0 repere power-on du gimbal, gimbal.recenter() du SDK) --
-        orientation de la CAMERA, independant de l'orientation du chassis. Meme
-        scope que LOCK (mode MANUEL uniquement)."""
+        """RECENTER CAM (2026-07-23): returns the gimbal to its base position
+        (pitch=0, yaw=0 in the gimbal's power-on frame, via the SDK's
+        gimbal.recenter()) -- the CAMERA's orientation, independent of the
+        chassis orientation. Same scope as LOCK (MANUAL mode only)."""
         if self._mode != "MANUAL":
             rospy.logwarn("[GIMBAL] RECENTER ignore : hors mode MANUEL")
             return
-        # Fenetre "occupe" AVANT de lancer l'action : sinon la boucle MANUEL (20Hz)
-        # ou le tick LOCK enverraient une commande concurrente qui annulerait le
-        # recenter avant qu'il n'aboutisse (cause du bug "recenter ne marche pas").
+        # Open the "busy" window BEFORE starting the action: otherwise the MANUAL loop
+        # (20 Hz) or the LOCK tick would send a competing command that cancels the
+        # recenter before it completes -- the cause of the "recenter does not work" bug.
         self._gimbal_busy_until = time.time() + GIMBAL_RECENTER_BUSY_S
         try:
             # recenter() plafonne a [-360,360] deg/s (different de move(), 540 max) --
-            # ne pas reutiliser GIM_LOCK_YAW_SPEED (540) tel quel, hors plage ici.
+            # do not reuse GIM_LOCK_YAW_SPEED (540) as-is, it is out of range here.
             self.gimbal.recenter(pitch_speed=360.0, yaw_speed=360.0)
-            rospy.loginfo("[GIMBAL] RECENTER : nacelle vers position de base (pitch=0, yaw=0)")
+            rospy.loginfo("[GIMBAL] RECENTER: gimbal to base position (pitch=0, yaw=0)")
         except Exception as e:
-            self._gimbal_busy_until = 0.0   # echec -> liberer tout de suite
+            self._gimbal_busy_until = 0.0   # failure -> release immediately
             rospy.logwarn(f"[GIMBAL] RECENTER : gimbal.recenter a echoue: {e}")
 
     def _gimbal_angle_cb(self, info):
@@ -642,20 +807,99 @@ class EPCameraBeaconFollower:
         self.pub_gimbal_yaw.publish(Float32(data=info[1]))
         self.pub_gimbal_yaw_ground.publish(Float32(data=info[3]))
 
-        # TF dynamique base_link->camera_link (F3, 2026-07-23) — pitch_rel=info[0],
-        # yaw_rel=info[1], convention SDK EP non confirmee (meme reserve deja notee
-        # pour yaw_rel/yaw_ground ailleurs dans ce fichier) : signe a verifier au 1er
-        # test hardware dedie (comparer TF affichee vs mouvement gimbal connu).
+        # ---- FRAME CHAIN (reworked 2026-08-04) -------------------------------
+        # Until 2026-08-04 this published ONE transform, base_link -> camera_link,
+        # carrying a rotation and NO translation at all. Three things were wrong
+        # with that, and they explain several older open bugs:
+        #
+        #  1. The translation was never assigned, so we declared the camera to
+        #     be at the chassis centre. Measured the same day: a beacon 1.00 m
+        #     from the chassis centre reads 0.835 m through Carolus -- a 16.5 cm
+        #     lever arm, the same order as the 12.3 cm the 2026-07-31 analysis
+        #     needed to explain a +12 deg bearing drift.
+        #
+        #  2. Worse than a missing constant: the camera is NOT rigidly attached
+        #     to base_link, it is on a gimbal. Its position in base_link is not
+        #     a fixed offset -- the camera SWINGS ON AN ARC as the gimbal yaws.
+        #     One collapsed transform models a moving point as stationary, and a
+        #     bearing error that GROWS with gimbal rotation is exactly the
+        #     signature recorded on 2026-07-31 (+12 deg over 97 deg).
+        #
+        #  3. The child was named camera_link while carrying GIMBAL axes. DJI
+        #     puts X along the optical axis; ROS camera_link is X forward and
+        #     camera_optical is Z forward. Anyone applying standard ROS camera
+        #     conventions to that frame was 90 deg out.
+        #
+        # The chain below is the standard decomposition:
+        #     base_link  -> gimbal_base    static translation (chassis centre
+        #                                  to the gimbal yaw axis)
+        #     gimbal_base-> gimbal_link    dynamic rotation (yaw/pitch, signed)
+        #     gimbal_link-> camera_link    static translation (yaw/pitch axis
+        #                                  intersection to the optical centre)
+        #     camera_link-> camera_optical static (-90, 0, -90), the ROS optical
+        #                                  convention
+        #
+        # SAFETY OF THIS CHANGE: with the default constants (both translations
+        # zero, both signs +1) the composed base_link -> camera_link transform is
+        # numerically identical to what this function published before. Nothing
+        # moves until protocol 22's B1 supplies a measured sign and B2 a measured
+        # lever arm. That is deliberate -- three of the four defects above cannot
+        # be fixed without a measured sign, and writing a fix on an unverified
+        # sign is precisely how BUG-077 became a workaround instead of a fix.
+        now = rospy.Time.now()
+        tfs = []
+
         t = TransformStamped()
-        t.header.stamp = rospy.Time.now()
+        t.header.stamp = now
         t.header.frame_id = "base_link"
-        t.child_frame_id = "camera_link"
-        q = tft.quaternion_from_euler(0.0, math.radians(info[0]), math.radians(info[1]))
+        t.child_frame_id = "gimbal_base"
+        t.transform.translation.x = BASE_TO_GIMBAL_XYZ[0]
+        t.transform.translation.y = BASE_TO_GIMBAL_XYZ[1]
+        t.transform.translation.z = BASE_TO_GIMBAL_XYZ[2]
+        t.transform.rotation.w = 1.0
+        tfs.append(t)
+
+        t = TransformStamped()
+        t.header.stamp = now
+        t.header.frame_id = "gimbal_base"
+        t.child_frame_id = "gimbal_link"
+        q = tft.quaternion_from_euler(
+            0.0,
+            math.radians(GIMBAL_PITCH_SIGN_TF * info[0]),
+            math.radians(GIMBAL_YAW_SIGN_TF * info[1]))
         t.transform.rotation.x = q[0]
         t.transform.rotation.y = q[1]
         t.transform.rotation.z = q[2]
         t.transform.rotation.w = q[3]
-        self.tf_br_gimbal.sendTransform(t)
+        tfs.append(t)
+
+        t = TransformStamped()
+        t.header.stamp = now
+        t.header.frame_id = "gimbal_link"
+        t.child_frame_id = "camera_link"
+        t.transform.translation.x = GIMBAL_TO_CAM_XYZ[0]
+        t.transform.translation.y = GIMBAL_TO_CAM_XYZ[1]
+        t.transform.translation.z = GIMBAL_TO_CAM_XYZ[2]
+        t.transform.rotation.w = 1.0
+        tfs.append(t)
+
+        # camera_link (X forward, body convention) -> camera_optical (Z forward,
+        # X right, Y down). Fixed rotation, the ROS convention every camera
+        # driver publishes. Consumers expecting optical axes must use
+        # camera_optical; camera_link keeps body axes so existing consumers
+        # (beacon_absolute_pose.py) are unaffected.
+        t = TransformStamped()
+        t.header.stamp = now
+        t.header.frame_id = "camera_link"
+        t.child_frame_id = "camera_optical"
+        q = tft.quaternion_from_euler(-math.pi / 2.0, 0.0, -math.pi / 2.0)
+        t.transform.rotation.x = q[0]
+        t.transform.rotation.y = q[1]
+        t.transform.rotation.z = q[2]
+        t.transform.rotation.w = q[3]
+        tfs.append(t)
+
+        self.tf_br_gimbal.sendTransform(tfs)
 
     def _esc_cb(self, sub_info):
         try:
@@ -709,16 +953,17 @@ class EPCameraBeaconFollower:
         bloc) : un consommateur type Kalibr/MINS a besoin de chaque echantillon
         avec son propre timestamp, pas d'un dernier-etat interroge a la demande.
 
-        Ordre de retour (ax, ay, az, wx, wy, wz) confirme par un exemple ROS2
-        communautaire pour cette meme famille S1 rootee (sub_imu(freq=50), voir
-        s1_sdk_hack_v0.0.5/.../ros2_robot.py:83-91) — mais les UNITES ne sont PAS
-        confirmees (m/s^2 et rad/s supposes par analogie avec sensor_msgs/Imu, pas
-        verifie contre la doc SDK ni sur materiel). A verifier avant la session de
-        calibration : comparer une lecture au repos (gravite attendue ~9.81 sur un
-        axe) et une rotation connue au gyro. Meme reserve deja appliquee ailleurs
-        dans ce fichier aux conventions de signe SDK non confirmees.
-        orientation_covariance[0]=-1 : convention ROS standard pour "pas de
-        donnee d'orientation" (sub_imu ne donne que accelero+gyro).
+        Return order (ax, ay, az, wx, wy, wz) confirmed by a community ROS2
+        example for this same rooted-S1 family (sub_imu(freq=50), see
+        s1_sdk_hack_v0.0.5/.../ros2_robot.py:83-91) -- but the UNITS were NOT
+        confirmed at the time (m/s^2 and rad/s assumed by analogy with
+        sensor_msgs/Imu). Since measured: the accelerometer returns **g**, not
+        m/s^2 (BUG-092) -- at rest one axis reads 1.00664 where 9.81 was
+        expected. The gyro units remain unconfirmed, which is why
+        IMU_ACCEL_SCALE is left at 1.0 until scale, sign and gyro units can be
+        settled together against a known rotation.
+        orientation_covariance[0]=-1: the standard ROS convention for "no
+        orientation data" (sub_imu provides only accelerometer + gyro).
         """
         try:
             ax, ay, az, wx, wy, wz = sub_info
@@ -728,13 +973,26 @@ class EPCameraBeaconFollower:
         msg.header.stamp = rospy.Time.now()
         msg.header.frame_id = "base_link"
         msg.orientation_covariance[0] = -1.0
-        msg.linear_acceleration.x = float(ax)
-        msg.linear_acceleration.y = float(ay)
-        msg.linear_acceleration.z = float(az)
+        # IMU_ACCEL_SCALE: 1.0 by default = published as the SDK returns them,
+        # which measurement shows to be **g**, not the m/s^2 sensor_msgs/Imu
+        # mandates (BUG-092). See the constant for why this is not simply set
+        # to 9.80665 today.
+        msg.linear_acceleration.x = float(ax) * IMU_ACCEL_SCALE
+        msg.linear_acceleration.y = float(ay) * IMU_ACCEL_SCALE
+        msg.linear_acceleration.z = float(az) * IMU_ACCEL_SCALE
         msg.angular_velocity.x = float(wx)
         msg.angular_velocity.y = float(wy)
         msg.angular_velocity.z = float(wz)
-        self.pub_imu.publish(msg)
+        # Guard (BUG-089, 2026-08-04): on the SDK build installed on the Pi,
+        # dds.py:201 calls the callback DIRECTLY inside the dispatcher thread, with no
+        # executor -- an exception propagating out kills that thread and cuts all
+        # telemetry. That is exactly what happened for a whole session. The publisher
+        # creation order is fixed above, but we no longer let an exception from this
+        # callback be able to take the dispatcher down with it.
+        try:
+            self.pub_imu.publish(msg)
+        except Exception as e:
+            rospy.logwarn_throttle(10.0, f"[IMU] publish failed: {e}")
 
     def _dist_cb(self, sub_info):
         try:
@@ -804,23 +1062,23 @@ class EPCameraBeaconFollower:
             pass
 
     def _gimbal_servo_yaw(self, p):
-        """Vitesse yaw nacelle (deg/s) pour centrer la balise sur l'erreur laterale.
+        """Gimbal yaw speed (deg/s) that centres the beacon, from the lateral error.
         Utilise par l'etat APPROACH (AUTO)."""
         yaw_err_deg = math.degrees(math.atan2(p.x, abs(p.z)))
         return clamp(GIM_YAW_SIGN * K_GIM_YAW * yaw_err_deg, -GIM_YAW_MAX, GIM_YAW_MAX)
 
     def do_gimbal_sweep(self):
-        """Balaye le gimbal dans le sens courant. INSENSIBLE AU SIGNE de drive_speed :
-        la fin de course est detectee par |yaw_rel| > limite OU par STALL (yaw_rel
-        ne progresse plus = butee mecanique atteinte). Le chassis ne bouge PAS.
-        Renvoie : 'FOUND' (pose detectee) / 'EDGE' (fin de course) / 'MANUAL' (switch).
+        """Sweep the gimbal in the current direction. INSENSITIVE TO drive_speed's SIGN:
+        end of travel is detected by |yaw_rel| > limit OR by a STALL (yaw_rel
+        stops progressing = mechanical stop reached). The chassis does NOT move.
+        Returns: 'FOUND' (pose detected) / 'EDGE' (end of travel) / 'MANUAL' (switch).
         Pilotage a l'angle lu (yaw_rel), la consigne de vitesse n'est pas fiable."""
         last_yaw = self.get_gimbal_yaw_rel()
         stall_t  = time.time()
         t_log    = 0.0
-        # "armed" : on ne peut detecter une fin de course que si on est d'abord
-        # revenu en zone centrale. Evite le re-declenchement immediat quand on
-        # demarre la passe en ayant deja depasse la borne (overshoot du pass precedent).
+        # "armed": an end-of-travel can only be detected once we have first returned to
+        # the central zone. Prevents an immediate re-trigger when a pass starts already
+        # past the bound (overshoot from the previous pass).
         armed = abs(last_yaw) < (SEARCH_YAW_LIMIT - 15)
         while self.running and not rospy.is_shutdown():
             if self.has_fresh_pose():
@@ -838,11 +1096,12 @@ class EPCameraBeaconFollower:
             if abs(yaw - last_yaw) > 2.0:
                 last_yaw = yaw
                 stall_t  = now
-            # armement une fois revenu en zone centrale
+            # arm once back in the central zone
             if not armed and abs(yaw) < (SEARCH_YAW_LIMIT - 15):
                 armed = True
-            # fin de course : borne (seulement si arme) OU stall (toujours, gere le
-            # signe inverse : si on pousse dans la butee mecanique, yaw ne bouge plus)
+            # End of travel: the bound (only once armed) OR a stall (always checked,
+            # and it covers the opposite sign too: pushing into the mechanical stop
+            # leaves yaw unchanged)
             hit_limit = armed and abs(yaw) > SEARCH_YAW_LIMIT
             hit_stall = (now - stall_t > 1.5)
             if hit_limit or hit_stall:
@@ -860,9 +1119,9 @@ class EPCameraBeaconFollower:
         return "MANUAL"
 
     def do_step_forward(self):
-        """Sweep complet sans cible : recentre le gimbal sur le corps (yaw_rel -> 0),
-        puis avance d'un pas en ligne droite. Surveille pose/mode pendant l'avance."""
-        rospy.loginfo(f"[SEARCH] Cycle complet sans cible -> recenter + avance {SEARCH_STEP_M}m")
+        """Full sweep with no target: re-centre the gimbal on the body (yaw_rel -> 0),
+        then advance one step in a straight line. Watches pose/mode while driving."""
+        rospy.loginfo(f"[SEARCH] Full cycle with no target -> recenter + advance {SEARCH_STEP_M}m")
         try:
             self.gimbal.recenter(pitch_speed=0, yaw_speed=60)
         except Exception as e:
@@ -893,17 +1152,17 @@ class EPCameraBeaconFollower:
         self.stop_chassis()
 
     def _rotate_body_by(self, delta_deg):
-        """Tourne le chassis d'un angle fixe (valeur absolue mesuree via l'attitude EP).
-        Rotation toujours dans le meme sens de commande — on vise une rotation RELATIVE
-        fixe, pas un cap absolu, donc le signe exact de sub_attitude n'a pas besoin
-        d'etre connu a l'avance (contrairement au servo gimbal ou au corps en ALIGN,
-        qui visent une valeur cible precise).
+        """Rotate the chassis by a fixed angle (absolute value measured via EP attitude).
+        The command is always issued in the same direction -- we target a fixed
+        RELATIVE rotation, not an absolute heading, so sub_attitude's exact sign
+        need not be known in advance (unlike the gimbal servo or the body in
+        ALIGN, which aim at a precise target value).
 
-        Le gimbal est recentre au prealable (comme dans do_step_forward) : il est
-        stabilise inertiellement (repere monde), donc apres un sweep il peut etre
-        proche de sa limite meca (~250deg). Tourner le chassis sous un gimbal reste
-        au monde deplacerait yaw_rel d'autant — recentrer avant evite de le pousser
-        au-dela de la limite."""
+        The gimbal is recentred beforehand (as in do_step_forward): it is
+        inertially stabilised (world frame), so after a sweep it can sit close to
+        its ~250 deg mechanical limit. Rotating the chassis under a gimbal that
+        holds its world heading would move yaw_rel by the same amount --
+        recentring first avoids pushing it past the limit."""
         try:
             self.gimbal.recenter(pitch_speed=0, yaw_speed=60)
         except Exception as e:
@@ -938,7 +1197,7 @@ class EPCameraBeaconFollower:
     def _control_loop(self):
         state = "SEARCH"
         self._search_since = time.time()
-        rospy.loginfo("[CTRL] Demarrage — place la balise devant la camera")
+        rospy.loginfo("[CTRL] Started -- place the beacon in front of the camera")
         time.sleep(2.0)
         rospy.loginfo(f"[CTRL] State: SEARCH (grace period {SEARCH_GRACE_S:.0f}s)")
 
@@ -960,8 +1219,8 @@ class EPCameraBeaconFollower:
             rospy.loginfo_throttle(1.0, f"[ATTI] yaw={_yaw:.1f} pitch={_pitch:.1f} roll={_roll:.1f}")
             rospy.loginfo_throttle(1.0, f"[POS] x={_px:.3f} y={_py:.3f}")
 
-            # Publication /odom (F2, 2026-07-21) — memes valeurs deja lues ci-dessus,
-            # aucune souscription/connexion supplementaire. y converti REP-103 (-y_ep).
+            # /odom publication (F2, 2026-07-21) -- the same values already read above,
+            # with no extra subscription or connection. y converted to REP-103 (-y_ep).
             odom = Odometry()
             odom.header.stamp = rospy.Time.now()
             odom.header.frame_id = "odom"
@@ -986,7 +1245,7 @@ class EPCameraBeaconFollower:
             if _tof < 200:
                 rospy.loginfo_throttle(1.0, f"[TOF] front={_tof:.0f}cm")
 
-            # Position balise (pour map) si une pose fraiche existe
+            # Beacon position (for the map) if a fresh pose exists
             _p = self.posebuf.get()
             if _p is not None and (time.time() - _p.stamp < POSE_TIMEOUT_S):
                 rospy.loginfo_throttle(0.5,
@@ -1010,15 +1269,15 @@ class EPCameraBeaconFollower:
                     except Exception:
                         pass
                 else:
-                    # Bug 4 : timeout securite — arret si pas de commande recente
+                    # Bug 4: safety timeout -- stop if no recent command
                     if time.time() - stamp > MANUAL_CMDVEL_TIMEOUT:
                         vx, wz = 0.0, 0.0
 
                     # Garde-fou minimal en MANUEL (2026-07-22) : bloque l'AVANCE si un
-                    # obstacle TOF est proche. Rotation (wz) et marche arriere (vx<0)
-                    # restent autorisees pour se degager. TOF-only volontairement (pas
-                    # la map/geofence, qui exigent une origine odometrique calibree —
-                    # eviter les faux blocages en pilotage manuel). Inerte si le TOF est
+                    # TOF obstacle is close. Rotation (wz) and reverse (vx<0) stay
+                    # allowed so the robot can free itself. Deliberately TOF-only, not
+                    # the map/geofence, which need a calibrated odometric origin --
+                    # avoids false blocks while driving manually. Inert if the TOF is
                     # absent (S1 roote) : _telem['dist'] reste a 999.0 -> jamais declenche.
                     if vx > 0.0:
                         with self._telem_lock:
@@ -1027,20 +1286,20 @@ class EPCameraBeaconFollower:
                             vx = 0.0
                             rospy.logwarn_throttle(1.0, f"[MANUAL] avance bloquee (TOF={_tof_cm:.0f}cm)")
 
-                    # Envoi chassis a chaque tick (20 Hz) — le SDK invalide les commandes sans repetition
+                    # Sent every tick (20 Hz): the SDK invalidates commands that are not repeated
                     try:
                         self.chassis.drive_speed(x=vx, y=0.0, z=wz, timeout=1)
                     except Exception:
                         pass
 
                 # Gimbal (MANUEL) : arbitrage en 3 priorites (2026-07-23 nuit) :
-                #   1. Action async en cours (RECENTER) -> ne rien emettre, la laisser
-                #      aboutir (sinon drive_speed(0,0) l'annulerait, cf. GIMBAL_RECENTER_BUSY_S).
-                #   2. LOCK ON -> le tick _gimbal_lock_tick pilote via move() ; le numpad
-                #      est IGNORE tant que le LOCK est actif (demande utilisateur).
-                #   3. Sinon -> relais direct numpad (0,0 si aucune touche = maintien).
-                # Le SDK invalide les commandes de vitesse apres ~0.1-0.5s sans repetition,
-                # d'ou l'envoi systematique a chaque tick dans le cas 3.
+                #   1. Async action in flight (RECENTER) -> emit nothing, let it finish
+                #      (drive_speed(0,0) would cancel it, see GIMBAL_RECENTER_BUSY_S).
+                #   2. LOCK ON -> the _gimbal_lock_tick drives via move(); the numpad
+                #      is IGNORED while LOCK is active (user request).
+                #   3. Otherwise -> direct numpad relay (0,0 when no key is held = hold).
+                # The SDK invalidates velocity commands after ~0.1-0.5 s without a
+                # repeat, hence the unconditional send on every tick in case 3.
                 if time.time() < self._gimbal_busy_until:
                     pass
                 elif self._gimbal_lock:
@@ -1071,7 +1330,7 @@ class EPCameraBeaconFollower:
                         state = "ALIGN"
                         rospy.loginfo(f"[CTRL] State: ALIGN (yaw_rel_init={yaw_init:.1f}deg)")
                     else:
-                        # LOCATE : balise visible, on fige la position et on logue
+                        # LOCATE: beacon visible -- freeze the position and log it
                         self.stop_gimbal()
                         self.stop_chassis()
                         time.sleep(0.2)
@@ -1097,8 +1356,8 @@ class EPCameraBeaconFollower:
                 elif result == "MANUAL":
                     continue
                 elif result == "EDGE":
-                    # Limite atteinte : inverser le sens. Deux bords = cycle complet
-                    # (gimbal a couvert +/-limite) -> avancer d'un pas en ligne droite.
+                    # Limit reached: reverse direction. Two edges make a full cycle
+                    # (the gimbal covered +/-limit) -> take one step in a straight line.
                     self.search_edges += 1
                     self.search_dir   = -self.search_dir
                     if self.search_edges >= 2:
@@ -1109,7 +1368,7 @@ class EPCameraBeaconFollower:
                         elif self.search_steps < SEARCH_MAX_STEPS:
                             # Borne globale de l'episode de recherche (temps ou distance
                             # cumulee) — Perplexity 08 : 90s ou ~13.5m plutot qu'un
-                            # nombre d'axes fixe, plus robuste face a la variabilite terrain.
+                            # a fixed axis count, more robust to field variability.
                             elapsed = time.time() - self._search_episode_since
                             if (elapsed >= SEARCH_TOTAL_TIMEOUT_S
                                     or self._search_dist_total_m >= SEARCH_TOTAL_DIST_M):
@@ -1125,8 +1384,8 @@ class EPCameraBeaconFollower:
                                 self._search_dist_total_m += SEARCH_STEP_M
                         elif self.search_axis_idx < SEARCH_FAN_AXIS_COUNT - 1:
                             # Axe epuise (SEARCH_MAX_STEPS avancements sans cible) : motif
-                            # en eventail -> tourner le chassis vers l'axe suivant plutot
-                            # que d'abandonner (Perplexity 08 : increment 60deg, 6 axes).
+                            # fan pattern -> turn the chassis to the next axis rather
+                            # than giving up (60 deg increment, 6 axes).
                             self.search_axis_idx += 1
                             rospy.loginfo(
                                 f"[SEARCH] axe {self.search_axis_idx + 1}/{SEARCH_FAN_AXIS_COUNT} "
@@ -1134,7 +1393,7 @@ class EPCameraBeaconFollower:
                             self._rotate_body_by(SEARCH_FAN_AXIS_INC_DEG)
                             self.search_steps = 0
                         else:
-                            # Tous les axes du motif en eventail epuises sans detection.
+                            # Every axis of the fan pattern exhausted with no detection.
                             self.stop_chassis()
                             rospy.logwarn_throttle(
                                 10.0,
@@ -1176,7 +1435,7 @@ class EPCameraBeaconFollower:
                 else:
                     wz = clamp(K_BODY_YAW * yaw_rel, -ALIGN_MAX_WZ, ALIGN_MAX_WZ)
 
-                # Compter poses consecutives valides quand le yaw_rel est dans le seuil
+                # Count consecutive valid poses while yaw_rel is within the threshold
                 p = self.posebuf.get()
                 if p is not None and abs(yaw_rel) < ALIGN_YAW_THRESHOLD:
                     depth = abs(p.z)
@@ -1201,7 +1460,7 @@ class EPCameraBeaconFollower:
                         f"{ALIGN_VALID_POSES} poses valides)")
                     continue
 
-                # Gimbal OFF pendant ALIGN — world-stabilise suffit a garder la balise
+                # Gimbal servo OFF during ALIGN -- world stabilisation is enough to keep
                 self.stop_gimbal()
 
                 try:
@@ -1239,17 +1498,17 @@ class EPCameraBeaconFollower:
                     rospy.loginfo("[CTRL] Reached target -> STOP")
                     continue
 
-                # Gimbal : verrouille la balise au centre (servo sur l'erreur laterale).
-                # Le gimbal etant stabilise monde, il garde la cible meme si le corps tourne.
-                # Servo partage avec l'auto-suivi MANUEL (_gimbal_servo_yaw).
+                # Gimbal: lock the beacon at the image centre (servo on the lateral
+                # error). Being world-stabilised, it holds the target even while the body
+                # turns. Servo shared with the MANUAL auto-track (_gimbal_servo_yaw).
                 gim_yaw = self._gimbal_servo_yaw(p)
                 try:
                     self.gimbal.drive_speed(pitch_speed=0, yaw_speed=gim_yaw)
                 except Exception:
                     pass
 
-                # Chassis : tourne pour annuler yaw_rel (se realigner derriere la camera)
-                # et avance proportionnellement a la distance restante.
+                # Chassis: turn to null yaw_rel (realigning the body behind the camera)
+                # and advance in proportion to the remaining distance.
                 yaw_rel = self.get_gimbal_yaw_rel()
                 vx = clamp(K_VX * dist_err, 0.0, MAX_VX)
                 if vx < MIN_VX and dist_err > 0.15:
@@ -1299,7 +1558,7 @@ class EPCameraBeaconFollower:
         ctrl = threading.Thread(target=self._control_loop, daemon=True)
         ctrl.start()
 
-        rospy.loginfo("[CAM] Publication sur /camera/color/image_raw")
+        rospy.loginfo("[CAM] Publishing on /camera/color/image_raw")
         while not rospy.is_shutdown():
             try:
                 frame = self.cam.read_cv2_image(strategy="newest")

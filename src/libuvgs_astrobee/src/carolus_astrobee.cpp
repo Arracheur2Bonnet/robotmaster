@@ -74,6 +74,23 @@ public:
         private_nh_.param("mono", mono, true);
         private_nh_.param("bot_name", _bot_name, std::string("wannabee"));
         private_nh_.param("frame_id_conv", frame_id_conv, false);
+        // TIMESTAMP SOURCE FOR THE PUBLISHED POSE (added 2026-08-04).
+        // true  -> stamp the pose with the ACQUISITION time of the image it was
+        //          computed from (last_valid_timestamp).
+        // false -> legacy behaviour: ros::Time::now() at publication time.
+        //
+        // The legacy behaviour is wrong for any fusion consumer and silently so.
+        // A filter (robot_localization, MINS, any EKF) reads header.stamp to
+        // place the measurement in time; stamping with now() asserts the pose
+        // describes the present, when it describes an image captured N ms ago.
+        // That injects a systematic time offset no filter can detect. It also
+        // makes the pose's true latency unmeasurable from ROS alone, and it
+        // corrupts every TF lookup done at the pose's stamp -- beacon_absolute_
+        // pose.py composes the pose with the gimbal angle at the WRONG instant.
+        //
+        // Kept as a parameter so the previous behaviour can be restored in one
+        // launch argument if a clock-skew problem surfaces between machines.
+        private_nh_.param("stamp_from_acquisition", stamp_from_acquisition_, true);
         //PREPROCESSING PARAMETERS
         private_nh_.param("kernel_size_gaussian", kernel_size_gaussian_, 3);
         private_nh_.param("kernel_size_morph", kernel_size_morph_, 3);
@@ -1161,7 +1178,19 @@ private:
         ff_msgs::VisualLandmarks PoseAstrobee;
         geometry_msgs::PoseStamped PoseAstrobeeMsgs;
 
-        PoseAstrobee.header.stamp = ros::Time::now();  
+        // See stamp_from_acquisition_ in the parameter block for why this is not
+        // ros::Time::now(). last_valid_timestamp is the acquisition time of the
+        // most recent image that contributed to this pose (set where the pose is
+        // pushed into pose_queue_); the published pose may be an average over
+        // the outlier-filter window, and the most recent contributing
+        // measurement is the conventional stamp for such an average.
+        // Falls back to now() if no pose has been accepted yet, so the very
+        // first publication can never carry a zero timestamp.
+        if (stamp_from_acquisition_ && !last_valid_timestamp.isZero()) {
+            PoseAstrobee.header.stamp = last_valid_timestamp;
+        } else {
+            PoseAstrobee.header.stamp = ros::Time::now();
+        }
         if (frame_id_conv){
             if (_bot_name == "wannabee") {
                 PoseAstrobee.header.frame_id = "wannabee/body";
@@ -1403,6 +1432,9 @@ void extractXYZ(const Eigen::Vector3d& translationVector, double& xExtracted, do
     int reject_limit;
     int reject_count;
     ros::Time last_valid_timestamp;
+    // Stamp the published pose with the image's acquisition time rather than
+    // the publication time (2026-08-04). See the parameter block for why.
+    bool stamp_from_acquisition_;
 
 
     //QUEUE STUFF
