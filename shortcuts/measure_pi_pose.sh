@@ -87,13 +87,27 @@ echo "[2/6] RNDIS link checked." | tee -a "$REPORT"
 # --- start the stack on the Pi --------------------------------------------
 # The SDK needs Python 3.7 (venv) AND ROS's python deps (system) -- neither
 # interpreter alone has both, so the venv must be activated with ROS sourced.
+#
+# BUG-097 (2026-08-08): `nohup foo &` alone, run inside a single SSH command,
+# does NOT reliably survive that SSH session's teardown on this Pi -- nohup
+# blocks SIGHUP specifically, but session-end here kills the whole process
+# group, which nohup does not detach from. Caught live: an identical pattern
+# left `roscore` never actually running -- no log file created, port 11311
+# closed, the dependent process silently blocked forever waiting for a master
+# that did not exist. `setsid ... & disown` puts the process in its own
+# session, immune to the parent group's teardown. Applied here as a
+# precaution mirroring the confirmed fix; not independently re-verified on
+# this exact script, since the failure showed up in an ad-hoc command of the
+# same shape rather than here -- confirm on the next Pi session.
 remote 'source /opt/ros/noetic/setup.bash
         export ROS_MASTER_URI=http://'"$PI_HOST"':11311 ROS_IP='"$PI_HOST"'
-        pgrep -f "[r]oscore" >/dev/null || { nohup roscore >/tmp/roscore.log 2>&1 & sleep 6; }
+        pgrep -f "[r]oscore" >/dev/null || \
+          { setsid nohup roscore >/tmp/roscore.log 2>&1 </dev/null & disown; sleep 6; }
         source ~/Python-3.7.17/env/bin/activate
         cd ~/carolus_ws
         pgrep -f "[r]m_cam_beacon" >/dev/null || \
-          { nohup python src/robomaster_cam/scripts/rm_cam_beacon.py >/tmp/cam.log 2>&1 & }
+          { setsid nohup python src/robomaster_cam/scripts/rm_cam_beacon.py \
+              >/tmp/cam.log 2>&1 </dev/null & disown; }
         sleep 22
         echo "  nodes:"; rosnode list 2>&1 | sed "s/^/    /"' | tee -a "$REPORT"
 echo "[3/6] Camera bridge up." | tee -a "$REPORT"
@@ -102,8 +116,8 @@ remote 'source /opt/ros/noetic/setup.bash
         export ROS_MASTER_URI=http://'"$PI_HOST"':11311 ROS_IP='"$PI_HOST"'
         cd ~/carolus_ws && source devel/setup.bash
         pgrep -f "[c]arolus_astrobee" >/dev/null || \
-          { nohup roslaunch carolus_node testcarolus.launch ubuntu2204_preload:=false \
-              >/tmp/carolus.log 2>&1 & }
+          { setsid nohup roslaunch carolus_node testcarolus.launch ubuntu2204_preload:=false \
+              >/tmp/carolus.log 2>&1 </dev/null & disown; }
         sleep 20; echo "  carolus started"' | tee -a "$REPORT"
 echo "[4/6] Carolus up." | tee -a "$REPORT"
 
