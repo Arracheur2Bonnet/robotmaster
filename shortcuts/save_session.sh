@@ -18,6 +18,11 @@ FILES=(
     # doit etre ici, sinon la sauvegarde donne une fausse impression de filet.
     "carolus_ws/src/robomaster_cam/scripts/beacon_docking.py"
     "carolus_ws/src/carolus_node/scripts/beacon_absolute_pose.py"
+    # 2026-08-11 : ajoute apres avoir constate qu'il en etait absent au moment
+    # meme ou il devenait le fichier central de la question quaternion (mail
+    # Hector 2026-08-11). Meme regle qu'en 2026-07-28 : un fichier source
+    # activement modifie doit etre dans cette liste, sans exception.
+    "carolus_ws/src/carolus_node/scripts/carolus_tf_broadcaster.py"
     "carolus_ws/src/carolus_node/launch/testcarolus.launch"
     "carolus_ws/src/CMakeLists.txt"
     "carolus_ws/src/libuvgs_astrobee/CMakeLists.txt"

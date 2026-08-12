@@ -72,11 +72,15 @@
 This manual is self-sufficient: following it from Chapter~\ref{ch:poweron}
 onward requires no other document, inherited tutorial, or vendor PDF. It
 covers the complete path from unboxing a rooted RoboMaster S1 and a
-Raspberry Pi 4B to a running Carolus/uVGS-2 pose-estimation pipeline with
-autonomous beacon docking, using only the corrected, currently-working
+Raspberry Pi 4B to a running Carolus/uVGS-2 pose-estimation pipeline, then
+to driving the robot and running its beacon-docking behaviour
+(Chapter~\ref{ch:launcher}), using only the corrected, currently-working
 configuration of this project --- not the historical or inherited versions
 of any script, launch file, or procedure. Every program listed here is the
 version that actually runs today.
+
+\textbf{Already set up?} Chapter~\ref{ch:quickstart} is the five-minute
+routine for a normal session.
 \end{abstract}
 
 \tableofcontents
@@ -106,18 +110,15 @@ point it occurs.
   RoboMaster EP SDK (chassis drive, gimbal control, onboard camera, wheel
   odometry, IMU) over a local API not officially released for the S1.
   \item \textbf{Companion computer:} Raspberry Pi~4B, mounted at the turret,
-  connected to the robot over USB via RNDIS (a virtual Ethernet link over
-  USB). The Pi holds the single connection to the robot's SDK, runs the
-  camera/beacon-tracking node, and --- in the recommended configuration ---
+  connected to the robot over USB via RNDIS. The Pi holds the single
+  connection to the robot's SDK, runs the camera/beacon-tracking node, and
   \textbf{runs Carolus itself}, so the full perception pipeline is onboard
-  and the robot needs no network link to estimate its pose.
-  \item \textbf{Lab PC:} runs the operator GUI, and serves as a development
-  machine for editing and rebuilding. Not physically connected to the robot;
-  communicates with the Pi over the local network. \textbf{Carolus can also
-  be built and run here} --- both options are documented and compared in
-  Section~\ref{sec:where-carolus-runs}. In the recommended configuration it
-  runs on the Pi, so the robot does not depend on a network link to the PC to
-  localise; running it on the PC is the better choice while developing.
+  and the robot needs no network link to estimate its pose
+  (Section~\ref{sec:where-carolus-runs}).
+  \item \textbf{Lab PC:} runs the operator GUI and builds/edits the same
+  Carolus code for development, but does not operate the robot with it ---
+  not physically connected to the robot, communicating with the Pi over the
+  local network.
   \item \textbf{Camera:} the S1's own internal camera (built into the
   gimbal/head), streamed over the SDK. This project does not use an external
   Intel RealSense D455 --- some inherited reference material describes a
@@ -141,6 +142,35 @@ point it occurs.
   Perspective-4-Point (P4P) pose solve.
 \end{itemize}
 
+\section{How the pieces fit together}
+
+Three machines, one data path. The robot never talks to the lab PC directly
+--- everything goes through the Pi, which holds the only SDK connection.
+
+\begin{lstlisting}[style=shell]
+  RoboMaster S1              Raspberry Pi 4B              Lab PC
+  camera, chassis,   USB /   SDK bridge, Carolus,  local  launcher (GUI),
+  gimbal             RNDIS   ROS master            net    development
+      [ ] <-------------------> [ ] <-------------------> [ ]
+   192.168.42.2            192.168.42.3  /            192.168.0.100
+                           192.168.0.103
+\end{lstlisting}
+
+Inside the Pi, the pipeline is a straight line from pixels to a pose:
+
+\begin{lstlisting}[style=shell]
+  camera      blob         P4P solve      /pose        control
+  frames  --> detection --> (Ceres)   --> 6-DOF    --> SEARCH / ALIGN
+                 |                                     / APPROACH
+                 |  4 LEDs                                  |
+                 +------------------------------------------+
+                        /carolus/cmd_vel  -> back to the robot
+\end{lstlisting}
+
+\texttt{rm\_cam\_beacon.py} (Chapter~\ref{ch:camera}) owns both ends --- it
+publishes the frames and it is the only thing that sends motion commands to
+the robot. Carolus (Chapter~\ref{ch:carolus-node}) owns the middle.
+
 \section{What Carolus is}
 
 Carolus (internally named uVGS-2, Unified Visual Guidance System version~2)
@@ -152,15 +182,27 @@ which known 3D point on the physical beacon, and solves a Perspective-4-Point
 optimization (via Ceres Solver, not OpenCV's \texttt{solvePnP} family) to
 recover the beacon's full 6-DOF pose relative to the camera.
 
-\textbf{Carolus's own native coordinate frame is left-handed.} This is not
-obvious from the code and is stated here because it matters for every
-transform downstream: converting a Carolus pose or orientation into ROS's
-right-handed convention (REP-103) requires a true change-of-basis on the
-rotation, not a component-wise permutation of a quaternion's vector part ---
-the latter is only valid for a proper (determinant~$+1$) rotation, and a
-left-to-right-handed conversion is improper (determinant~$-1$). The correct
-method (quaternion composition, not permutation) is given at the point it is
-needed in this manual.
+\textbf{Carolus's camera frame follows the standard computer-vision
+convention} --- $X$ right, $Y$ down, $Z$ forward --- which is
+\emph{right-handed}, as is ROS's REP-103 body frame ($X$ forward, $Y$ left,
+$Z$ up). Converting between them is therefore an ordinary change of basis
+between two right-handed frames, and is necessarily a \emph{proper} rotation
+(determinant~$+1$). Chapter~\ref{ch:tf-conversion} derives the conversion in
+full and explains why the operation is a similarity transform rather than a
+component-wise permutation of the quaternion's vector part.
+
+\begin{warningbox}
+\textbf{Correction, 2026-08-11.} Earlier revisions of this manual stated that
+Carolus's native frame is \emph{left-handed}, and that the conversion to
+REP-103 is therefore improper (determinant~$-1$). \textbf{That was wrong.}
+REP-103 defines both the body frame and the camera ``\_optical'' frame it
+names, and states that all its frames are right-handed; a change of basis
+between two right-handed orthonormal frames is orientation-preserving by the
+definition of a rotation, so determinant~$+1$ is the only possibility. The
+claim is corrected here rather than quietly deleted, because a reader who saw
+the earlier version may have carried the improper-conversion idea forward
+into their own work.
+\end{warningbox}
 
 \section{The four operating states}
 
@@ -180,27 +222,166 @@ Once running, the robot's autonomous behavior is a state machine:
 
 A separate, more deliberate \textbf{docking} behavior performs a calibrated,
 verified approach-and-stop sequence rather than the lighter continuous
-SEARCH/ALIGN/APPROACH loop. It runs through this project's own operator
-tooling, not yet covered in this manual (see the note at the end of
-Chapter~\ref{ch:carolus-node}).
+SEARCH/ALIGN/APPROACH loop (Section~\ref{sec:docking}).
 
 \section{How to use this manual}
 
-Follow the chapters in order for a from-scratch setup: power the robot on
-and confirm it is rooted (Chapter~\ref{ch:poweron}), root it if it is not
+\textbf{If the hardware is already set up}, go straight to
+Chapter~\ref{ch:quickstart} --- it is the five-minute routine for a normal
+session, and it is what you will use every day after the first one.
+
+\textbf{From scratch}, follow the chapters in order: power the robot on and
+confirm it is rooted (Chapter~\ref{ch:poweron}), root it if it is not
 (Chapter~\ref{ch:rooting}), set up the Raspberry Pi
 (Chapter~\ref{ch:raspberrypi}), bring up the network link
 (Chapter~\ref{ch:network}), bring up the camera pipeline
 (Chapter~\ref{ch:camera}), calibrate the camera
-(Chapter~\ref{ch:calibration}), then build and launch Carolus
-(Chapter~\ref{ch:carolus-node}). At that point the core pipeline is running
-and can be driven manually over the topics named in
-Chapter~\ref{ch:camera}; the operator GUI and autonomous docking behavior
-are this project's own tooling on top of it, documented separately.
+(Chapter~\ref{ch:calibration}), build and launch Carolus
+(Chapter~\ref{ch:carolus-node}), then drive the robot
+(Chapter~\ref{ch:launcher}).
+
+\textbf{Do not calibrate the camera on a first run.} The values already in
+the repository work on this robot. Chapter~\ref{ch:calibration} is for a
+different camera, or for when poses look physically wrong --- skipping it
+initially is the right call, not a shortcut.
+
+\subsection*{What you need, and how long it takes}
+
+\begin{center}
+\begin{tabular}{p{0.30\textwidth}p{0.28\textwidth}p{0.32\textwidth}}
+\toprule
+Stage & Time & What it needs \\
+\midrule
+Rooting the S1 (Ch.~\ref{ch:rooting})
+ & $\sim$30\,min, once ever
+ & a \textbf{Windows or macOS} machine, micro-USB cable, Android
+   Platform-Tools, the RoboMaster app \\
+\addlinespace
+Raspberry Pi from blank (Ch.~\ref{ch:raspberrypi})
+ & \textbf{half a day} --- building Python 3.7 from source is the long part
+ & Pi 4B, SD card ($\ge$16\,GB), card reader, keyboard + monitor for first
+   boot, Ethernet cable \\
+\addlinespace
+Network, camera, Carolus build (Ch.~\ref{ch:network}--\ref{ch:carolus-node})
+ & 1--2\,h, mostly compiling
+ & USB-C cable (Pi$\leftrightarrow$robot), the lab PC on the same network \\
+\addlinespace
+A normal session afterwards (Ch.~\ref{ch:quickstart})
+ & \textbf{5\,min}
+ & a charged robot battery, a powered beacon \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Everything above except the rooting step runs from Linux. The rooting step
+is the one exception, and it is needed only once per robot.
 
 Every command, parameter value, and code listing in this manual is the
 \emph{current, corrected} version --- the one that actually runs on this
 project today.
+
+\chapter{Quick Start --- A Typical Session}
+\label{ch:quickstart}
+
+\runson{the \textbf{lab PC} (the launcher and these commands), driving the
+\textbf{Raspberry Pi} over SSH. The robot must be powered on.}
+
+\textbf{This chapter is for a machine that is already set up.} If you are
+starting from bare hardware, skip it and follow
+Chapters~\ref{ch:poweron}--\ref{ch:carolus-node} in order, then come back
+here --- this is what every session after the first one looks like.
+
+\section{The five-minute version}
+
+\begin{enumerate}
+  \item \textbf{Power on the robot} --- listen for \textbf{two chimes}, not
+  one (Chapter~\ref{ch:poweron}). One chime means the root hack is not
+  active and nothing below will work.
+  \item \textbf{Power on the Pi} with the button on the UPS HAT
+  (Section~\ref{sec:pi-power} --- the HAT's port, not the Pi's).
+  \item \textbf{Bring up the RNDIS link}, on the Pi. It does not survive a
+  reboot, so this is needed every session (Chapter~\ref{ch:network}):
+\begin{lstlisting}[style=shell]
+sudo ip link set eth1 up
+sudo ip addr add 192.168.42.3/24 dev eth1
+ping -c 4 192.168.42.2        # the robot -- expect 0% loss
+\end{lstlisting}
+  \item \textbf{Start the launcher}, on the lab PC:
+\begin{lstlisting}[style=shell]
+python3 shortcuts/carolus_launcher.py
+\end{lstlisting}
+  \item \textbf{Click the tabs in order} (Chapter~\ref{ch:launcher}): T1,
+  then T2, then T3. Each one waits for the previous.
+\end{enumerate}
+
+That is a working stack: camera streaming, Carolus solving poses, the robot
+drivable from the keyboard.
+
+\section{Without the launcher, by hand}
+
+Useful when debugging, or when the launcher itself is the suspect. Three
+separate SSH shells to the Pi, in this order --- each needs its own
+\texttt{ROS\_MASTER\_URI}/\texttt{ROS\_IP}, they are per-shell:
+
+\begin{lstlisting}[style=shell]
+# --- Shell 1, on the Pi: the ROS master ---
+source /opt/ros/noetic/setup.bash
+export ROS_MASTER_URI=http://192.168.0.103:11311
+export ROS_IP=192.168.0.103
+roscore
+
+# --- Shell 2, on the Pi: the camera + SDK bridge (Chapter 6) ---
+source /opt/ros/noetic/setup.bash
+export ROS_MASTER_URI=http://192.168.0.103:11311
+export ROS_IP=192.168.0.103
+source ~/Python-3.7.17/env/bin/activate
+python3.7 carolus_ws/src/robomaster_cam/scripts/rm_cam_beacon.py
+
+# --- Shell 3, on the Pi: Carolus itself (Chapter 8) ---
+source /opt/ros/noetic/setup.bash
+export ROS_MASTER_URI=http://192.168.0.103:11311
+export ROS_IP=192.168.0.103
+source ~/carolus_ws/devel/setup.bash
+roslaunch carolus_node testcarolus.launch ubuntu2204_preload:=false
+\end{lstlisting}
+
+\section{Is it working? Three checks from the lab PC}
+
+Run these on the \textbf{lab PC}, not the Pi --- that is the whole point:
+they confirm the nodes are visible across the network, not just locally.
+
+\begin{lstlisting}[style=shell]
+export ROS_MASTER_URI=http://192.168.0.103:11311
+export ROS_IP=192.168.0.100
+
+rostopic hz /camera/color/image_raw   # expect ~16-30 Hz
+rostopic hz /pose                     # ~13 Hz, ONLY with a beacon in view
+rosnode list                          # expect /ep_camera_beacon_follower
+\end{lstlisting}
+
+\textbf{If \texttt{rostopic} finds nothing while the Pi says the node is
+running}, the cause is almost always a missing
+\texttt{ROS\_MASTER\_URI}/\texttt{ROS\_IP} in the shell that launched it ---
+\texttt{rospy} then falls back to \texttt{localhost} and the node is
+invisible from anywhere else.
+
+\section{Shutting down}
+
+Close the launcher --- it kills its own remote processes and verifies they
+died. By hand, on the Pi, the bracket in each pattern is not optional (see
+Chapter~\ref{ch:launcher}):
+
+\begin{lstlisting}[style=shell]
+pkill -f "[r]m_cam_beacon"
+pkill -f "[r]oscore"; pkill -f "[r]osmaster"
+pgrep -af "roscore|rosmaster|rm_cam_beacon"   # confirm nothing is left
+\end{lstlisting}
+
+\textbf{Always confirm the bridge is dead before the next session.} An
+orphaned \texttt{rm\_cam\_beacon.py} keeps the robot's single SDK connection
+open, and the next launch then hits the double-connection failure ---
+motion commands stop working with no error shown
+(Chapter~\ref{ch:camera}).
 
 \chapter{Powering On the Robot}
 \label{ch:poweron}
@@ -444,6 +625,35 @@ This chapter takes a blank Raspberry Pi~4B to a working Ubuntu~20.04
 installation with Python~3.7, the RoboMaster SDK, ROS Noetic, and SSH
 access. If the Pi is already set up, skip to Chapter~\ref{ch:network}.
 
+\section{Powering the Pi --- two USB-C ports, only one of them right}
+\label{sec:pi-power}
+
+\begin{warningbox}
+\textbf{Read this before plugging anything in.} The Pi carries a UPS HAT (a
+green PCB underneath it, with its own battery and a physical ON/OFF button
+on the back). That means \textbf{two different USB-C ports}, which look
+interchangeable and are not:
+
+\begin{itemize}
+  \item \textbf{The HAT's USB-C port} (on the green PCB underneath) ---
+  \textbf{this is the one to use.} It charges the internal battery, a blue
+  ``Charge'' LED lights up, the ON/OFF button works, and the Pi then runs
+  standalone on battery.
+  \item \textbf{The Pi's own POWER IN port} (on the Pi board itself, to the
+  left of the HDMI connectors) --- powers the Pi directly. It boots, but the
+  HAT's ON/OFF button is ignored and the Pi is tethered to the cable. Not
+  for normal sessions.
+\end{itemize}
+
+\textbf{If the Pi will not turn on:} check the cable is on the HAT port and
+not the Pi's POWER IN, and that the charge LED is blue. This is the single
+most common physical blocker on this setup.
+\end{warningbox}
+
+\textbf{Normal routine:} plug the charger into the HAT port the evening
+before a session. The next day the Pi runs on its own battery, started and
+stopped with the physical button --- no cable, no tether.
+
 \section{Flashing Ubuntu Server}
 
 \begin{enumerate}
@@ -574,6 +784,11 @@ python3.7 -c "import ssl; print(ssl.OPENSSL_VERSION)"
 
 \section{Virtual environment and the RoboMaster SDK}
 
+Still in \texttt{\textasciitilde/Python-3.7.17/} from the previous section
+--- the venv is created there, not at the home directory root, and every
+later reference to it in this manual (Chapter~\ref{ch:camera}) uses the
+full path for exactly that reason:
+
 \begin{lstlisting}[style=shell]
 python3.7 -m venv env
 source env/bin/activate
@@ -629,13 +844,13 @@ git clone git@github.com:Arracheur2Bonnet/robotmaster.git carolus_ws
 \end{lstlisting}
 
 This uses an SSH key registered against \emph{your own} GitHub account
-(Chapter~\ref{ch:carolus-node} covers generating and registering one). If
-the repository is private you will also need collaborator access --- ask the
-project supervisor. Either way, \textbf{do not paste a shared personal
-access token into the clone URL}: it grants whoever reads it the full rights
-of the account that made it, and cannot be traced back to an individual. If
-SSH is not set up, an HTTPS clone with your own GitHub credentials works the
-same way:
+(Chapter~\ref{ch:carolus-node} covers generating and registering one). The
+repository is public, so no collaborator access is needed to read it ---
+this only matters the moment you are given write access. Either way,
+\textbf{do not paste a shared personal access token into the clone URL}: it
+grants whoever reads it the full rights of the account that made it, and
+cannot be traced back to an individual. If SSH is not set up, an HTTPS clone
+works with no credentials at all:
 
 \begin{lstlisting}[style=shell]
 git clone https://github.com/Arracheur2Bonnet/robotmaster.git carolus_ws
@@ -745,13 +960,24 @@ Device & Address \\
 Robot (over RNDIS) & \texttt{192.168.42.2} \\
 Raspberry Pi (over RNDIS, to the robot) & \texttt{192.168.42.3} \\
 Raspberry Pi (on the local network, to the lab PC) & \texttt{192.168.0.103} \\
+Lab PC (on the local network, to the Pi) & \texttt{192.168.0.100} \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-The last of these is a DHCP-assigned local-network address and may differ on
-a different network; find it with \texttt{hostname -I} run on the Pi
-(Chapter~\ref{ch:raspberrypi}).
+The last two are DHCP-assigned local-network addresses and may differ on a
+different network; find them with \texttt{hostname -I} run on each machine
+(Chapter~\ref{ch:raspberrypi}). Both are used again in
+Chapter~\ref{ch:carolus-node} as \texttt{ROS\_IP} when launching a node from
+that machine.
+
+\begin{warningbox}
+\textbf{Checkpoint --- do not continue until this passes.} From the Pi,
+\texttt{ping -c4 192.168.42.2} returns 0\% loss. From the lab PC,
+\texttt{ping -c4 192.168.0.103} reaches the Pi. If either fails, nothing in
+the following chapters can work, and the failure will look like a broken
+camera or a broken node rather than a broken link.
+\end{warningbox}
 
 \chapter{The Camera and Robot Bridge}
 \label{ch:camera}
@@ -778,16 +1004,29 @@ running.}
 \section{Starting the bridge}
 
 On the Pi, with the RNDIS link up (Chapter~\ref{ch:network}) and the Python
-3.7 virtual environment active (Chapter~\ref{ch:raspberrypi}):
+3.7 virtual environment active (Chapter~\ref{ch:raspberrypi}). The ROS
+master runs on the Pi itself (Section~\ref{sec:where-carolus-runs}), so
+\texttt{ROS\_MASTER\_URI} and \texttt{ROS\_IP} must both point at the Pi's
+own address on the lab network, \texttt{192.168.0.103}
+(Chapter~\ref{ch:network}) --- without them \texttt{rospy} falls back to
+\texttt{localhost} and the node is invisible to every other machine:
 
 \begin{lstlisting}[style=shell]
-source ~/env/bin/activate
+source /opt/ros/noetic/setup.bash
+export ROS_MASTER_URI=http://192.168.0.103:11311
+export ROS_IP=192.168.0.103
+source ~/Python-3.7.17/env/bin/activate
 python3.7 carolus_ws/src/robomaster_cam/scripts/rm_cam_beacon.py
 \end{lstlisting}
 
+Source ROS \emph{before} activating the venv, in the same shell: the venv
+only prepends its own \texttt{bin/} to \texttt{PATH}, it does not clear the
+ROS environment variables sourced ahead of it.
+
 In normal operation this is launched automatically by this project's own
-operator tooling, over SSH from the lab PC --- it is not usually started by
-hand.
+operator tooling (the Tkinter launcher in \texttt{shortcuts/}, documented in
+\texttt{shortcuts/README.md} in the repository), over SSH from the lab PC
+--- it is not usually started by hand.
 
 \section{What it connects to}
 
@@ -888,6 +1127,22 @@ If the camera topic is silent, confirm the RNDIS link
 (Chapter~\ref{ch:network}) before suspecting the script itself --- a dead
 network link and a dead camera stream look identical from this check alone.
 
+\textbf{Two further diagnostic lines to expect in this node's own log},
+neither of which needs any setup: \texttt{[MODE]} appears once at startup,
+reading the robot's current mode, forcing \texttt{FREE}, then reading it
+back and warning on a mismatch; \texttt{[DUTY] beacon in view NN\%} appears
+every 30\,s, the fraction of that window with a beacon actually detected
+--- 0\% with no beacon in view is correct, not a fault.
+
+\begin{warningbox}
+\textbf{Checkpoint --- do not continue until this passes.} From the
+\textbf{lab PC} (not the Pi --- that is the point of the check):
+\texttt{rostopic hz /camera/color/image\_raw} reports a rate, and
+\texttt{rostopic echo -n1 /odom} returns one message. If the topics exist on
+the Pi but not from the PC, the bridge was launched without
+\texttt{ROS\_MASTER\_URI}/\texttt{ROS\_IP} --- see the launch command above.
+\end{warningbox}
+
 \section{Gimbal yaw: two signals, two different meanings}
 
 \texttt{/carolus/gimbal\_yaw\_rel} and \texttt{/carolus/gimbal\_yaw\_ground}
@@ -971,17 +1226,26 @@ camera (Section~\ref{sec:kalibr-alt}).
   \item Print a checkerboard target with known square size (25\,mm squares
   is a proven working size for this class of camera).
   \item Capture a set of images of the board with the robot's camera
-  (Chapter~\ref{ch:camera}): at least 10 images, 15 or more for better
-  accuracy. The board should occupy roughly 20--25\% of the frame area, and
-  be tilted more than 45\textdegree{} from the camera's optical axis in each
-  shot to avoid detection errors. Capture from a wide variety of positions
-  and orientations across the field of view.
-  \item In MATLAB (desktop or MATLAB Online, no additional software
-  required): open the \textbf{Camera Calibration app} (Apps tab), add the
-  captured images, select the checkerboard pattern with the correct square
-  size, and enable \textbf{tangential distortion} and \textbf{three radial
-  distortion coefficients} (this camera class shows moderate wide-angle
-  distortion that the default two-coefficient model under-fits).
+  (Chapter~\ref{ch:camera}) using \texttt{shortcuts/capture\_checkerboard.py}
+  (run on the lab PC; it subscribes to \texttt{/camera/color/image\_raw} over
+  the network and saves a PNG on each keypress): at least 10 images, 15 or
+  more for better accuracy. The board should occupy roughly 20--25\% of the
+  frame area, and be tilted more than 45\textdegree{} from the camera's
+  optical axis in each shot to avoid detection errors. Capture from a wide
+  variety of positions and orientations across the field of view.
+  \item In MATLAB: open the \textbf{Camera Calibration app} (Apps tab), add
+  the captured images, select the checkerboard pattern with the correct
+  square size, and enable \textbf{tangential distortion} and \textbf{three
+  radial distortion coefficients} (this camera class shows moderate
+  wide-angle distortion that the default two-coefficient model under-fits).
+  \textbf{Requires the Computer Vision Toolbox} --- checked directly
+  (\texttt{2026-08-11}, this lab PC's desktop MATLAB R2025b): the app and
+  its underlying functions (\texttt{cameraCalibrator},
+  \texttt{estimateCameraParameters}, \texttt{detectCheckerboardPoints}) are
+  not present by default even with a valid MATLAB licence covering the
+  toolbox; install it once via Home~$\to$~Add-Ons~$\to$~Get Add-Ons if the
+  app does not appear. MATLAB Online comes with every toolbox already
+  provisioned and needs no such install.
   \item Run the calibration. Export the resulting coefficients to the MATLAB
   workspace and generate the calibration script --- this script contains the
   intrinsic matrix, distortion coefficients, and reprojection errors in a
@@ -989,6 +1253,40 @@ camera (Section~\ref{sec:kalibr-alt}).
   \texttt{fx}/\texttt{fy}/\texttt{cx}/\texttt{cy}/\texttt{distortion}
   parameters (Chapter~\ref{ch:carolus-node}).
 \end{enumerate}
+
+\section{Known limitation: no confirmed auto-exposure control}
+\label{sec:no-auto-exposure-control}
+
+Two independent prior integrations of Carolus on other robots (a Leo Rover
+and a Limo, both using standard UVC/V4L2-accessible cameras) report the same
+failure mode: camera auto-exposure drifting while the robot moves biases
+every pose Carolus reports, because the beacon-detection threshold
+(Section~\ref{sec:beacon-params}) is tuned for one brightness level. One of the
+two integrations spent real effort misattributing the resulting trajectory
+distortion to lens/fisheye distortion before finding the actual cause. Both
+fixed it by disabling auto-exposure and locking a fixed exposure time at the
+OS/driver level.
+
+\textbf{This project's camera does not offer a confirmed equivalent.} The
+\texttt{robomaster} Python package this project's code actually calls
+(\texttt{rm\_cam\_beacon.py}) exposes no exposure control of any kind ---
+checked directly against the installed package source, not assumed. Unlike
+the two prior integrations, this camera is not a plain V4L2/UVC device the
+Pi can address directly; it is delivered through DJI's own SDK protocol. The
+rooted SDK's own protocol tables do list one lower-level command
+(\texttt{camera.exposure}, four discrete bias levels, no way to read the
+current value back), reachable only through the separate on-robot Scratch
+API layer, not confirmed reachable from the SDK connection this project's
+code holds --- and even if it were, it biases auto-exposure rather than
+disabling it, which is a different capability from what fixed the problem
+for the two prior integrations.
+
+\textbf{Practical consequence.} Auto-exposure drift while the robot moves is
+a plausible, currently unquantified contributor to beacon-detection
+instability on this platform. It has not been measured here. If Carolus's
+pose grows visibly less reliable during motion than at rest, this is a
+candidate cause worth checking before assuming a geometric or software
+explanation --- the same trap one of the two prior integrations fell into.
 
 \section{Alternative / complementary method: Kalibr}
 \label{sec:kalibr-alt}
@@ -1108,33 +1406,40 @@ filter.
 \chapter{Building and Launching Carolus}
 \label{ch:carolus-node}
 
-\runson{\textbf{either machine} --- both builds are documented here. The
-\textbf{Raspberry Pi 4B} is the recommended target for operation, the
-\textbf{lab PC} the better one for development;
-Section~\ref{sec:where-carolus-runs} compares them with the measurements
-behind the recommendation.}
+\runson{\textbf{the Raspberry Pi 4B} for actually running Carolus --- this
+is where the node executes, full stop, not one of two equally valid
+options. The \textbf{lab PC} build is documented too, but only as a
+development environment for editing and compiling the C++ before
+deploying it to the Pi; Section~\ref{sec:where-carolus-runs} gives the
+measurements behind why operation and development are split this way.}
 
-Carolus (the ROS package name is \texttt{carolus\_astrobee}) runs on
-whichever machine you build it on. It has no SDK connection of its own ---
-it consumes \texttt{/camera/color/image\_raw} (published by
-\texttt{rm\_cam\_beacon.py}, Chapter~\ref{ch:camera}) and publishes a pose on
-\texttt{/pose} --- so it only needs to reach the ROS master, not the robot.
-That is exactly why it can sit on either side, and why the choice is an
-architectural one rather than a technical constraint.
+Carolus (the ROS package name is \texttt{carolus\_astrobee}) has no SDK
+connection of its own --- it consumes \texttt{/camera/color/image\_raw}
+(published by \texttt{rm\_cam\_beacon.py}, Chapter~\ref{ch:camera}) and
+publishes a pose on \texttt{/pose}, so it only needs to reach the ROS
+master, not the robot. That is \emph{why the lab PC can build and run this
+code at all} despite never touching the robot directly --- not a reason to
+operate it there, which the next section settles.
 
 \section{Where Carolus runs}
 \label{sec:where-carolus-runs}
 
-Both machines work, and this manual documents both. \textbf{The
-recommendation is the Pi}, but the reasons matter more than the verdict, so
-they are given with their evidence and their limits rather than as a slogan.
+\textbf{The Pi runs Carolus, always --- autonomy, not speed, is the
+decisive argument.} A robot whose pose estimator lives on another machine
+stops working the moment the link does; that is a property of the
+architecture, not a number a future optimisation could fix. The 2--3$\times$
+camera input rate and the absence of build workarounds (below) are real,
+but secondary. \textbf{The lab PC builds and edits the same code but never
+operates the robot with it} --- a development convenience, kept because
+compiling and iterating C++ is faster on a workstation than over SSH and
+the operator GUI already runs there.
 
-\subsection{The two options, side by side}
+\subsection{The two machines, side by side}
 
 \begin{center}
 \begin{tabular}{p{0.30\textwidth}p{0.30\textwidth}p{0.30\textwidth}}
 \toprule
- & \textbf{Raspberry Pi 4B (recommended)} & \textbf{Lab PC} \\
+ & \textbf{Raspberry Pi 4B (where Carolus runs)} & \textbf{Lab PC (development only)} \\
 \midrule
 Robot autonomy
  & Complete. No network link is needed to estimate pose.
@@ -1184,19 +1489,15 @@ Pi CPU & 52--61\% idle & \textbf{12.3\% idle}, load 5.37/4 \\
 \end{tabular}
 \end{center}
 
-\textbf{A factor of 5.95.} On the PC every frame is an \emph{uncompressed}
-$1280\times720$ \texttt{sensor\_msgs/Image} ($\approx$2.76\,MB) crossing the
-network before Carolus can touch it; on the Pi the frames never leave the
-machine that captured them.
-
-The other rows say where the limit moved to. \texttt{/pose} 13.0\,Hz,
-\texttt{/postprocessed} 14.4\,Hz and the camera at 16.5\,Hz are nearly the
-same number --- Carolus consumes almost every frame it is handed. And the
-camera drops from 30.05\,Hz to 16.52\,Hz as soon as Carolus runs beside it,
-with the Pi at 12.3\% idle: \textbf{on the Pi the bottleneck is now CPU, and
-the camera bridge is competing with Carolus for it.} If more pose rate is
-needed, that is where to look --- publishing compressed frames, or dropping
-the capture resolution.
+\textbf{A factor of 5.95}, from an uncompressed $1280\times720$
+\texttt{sensor\_msgs/Image} ($\approx$2.76\,MB) crossing the network on the
+PC versus never leaving the machine on the Pi. The other rows say where the
+limit moved to: \texttt{/pose} 13.0\,Hz, \texttt{/postprocessed} 14.4\,Hz
+and the camera at 16.5\,Hz are nearly the same number, and the camera itself
+drops from 30.05\,Hz to 16.52\,Hz once Carolus runs beside it, with the Pi
+at 12.3\% idle --- \textbf{the bottleneck on the Pi is now CPU}, camera
+bridge and Carolus competing for it. If more pose rate is needed, look
+there: compressed frames, or a lower capture resolution.
 
 \begin{warningbox}
 \textbf{Verify which machine you are measuring.} Both numbers above are
@@ -1216,23 +1517,10 @@ The Pi already had Ceres 1.14, Eigen 3.3.7 and OpenCV 4.2 installed;
 \texttt{catkin\_make} compiled and linked directly on \texttt{aarch64}.
 Available memory (7.6\,GB) was never a constraint.
 
-\subsection{So which one, and why}
+\subsection{A note on visual-inertial navigation}
 
-\textbf{Choose the Pi for anything resembling operation.} The decisive
-argument is autonomy, not speed: a robot whose pose estimator lives on
-another machine stops working the moment the link does, and that is a
-property of the architecture rather than a number that a future optimisation
-might change. The 2--3$\times$ camera input rate and the absence of build
-workarounds are real secondary benefits.
-
-\textbf{Choose the lab PC for development.} Compiling and iterating on C++ is
-faster on a workstation than over SSH, and the operator GUI runs there
-anyway. If the PC runs Ubuntu 20.04 the build is identical to the Pi's; on
-22.04 it costs the five fixes in Section~\ref{sec:build2204}.
-
-\textbf{A note on visual-inertial navigation.} MINS has been run on this
-Raspberry Pi, both on its own simulation and on data recorded from this
-robot. It builds on \texttt{aarch64} and produces a \emph{consistent}
+MINS has been run on this Raspberry Pi, both on its own simulation and on
+data recorded from this robot. It builds on \texttt{aarch64} and produces a \emph{consistent}
 estimate on the simulation (RMSE 0.113\textdegree{} / 0.082\,m, NEES 0.9 and
 1.4), with no divergence, at \textbf{0.3--0.4$\times$ real time} --- under a
 sensor load far heavier than this robot's (IMU at 200\,Hz, \emph{two}
@@ -1259,6 +1547,86 @@ accuracy from such a run unless the camera--IMU extrinsic has been
 calibrated and the IMU units corrected (Chapter~\ref{ch:camera}) --- with a
 placeholder extrinsic and accelerations in \emph{g}, the filter diverges
 grossly while the timing figures stay valid.
+
+\subsection{MINS on the ground station (lab PC)}
+\label{sec:mins-ground-station}
+
+\textbf{MINS's deployment target is the lab PC, not the Pi.} The relocalisation
+work this manual builds towards fuses MINS with Carolus on a ground station
+that receives the robot's data over the network, not on board the robot
+itself --- the Pi build above remains useful (it is inside MINS's own tested
+OS/ROS combination, Section~\ref{sec:where-carolus-runs}) but is a secondary
+path, not the one this section documents.
+
+MINS is built in its own catkin workspace on the lab PC
+(\texttt{mins\_sandbox/}), kept entirely separate from the workspace this
+manual otherwise describes --- nothing under \texttt{carolus\_ws} depends on
+it, and nothing here should be built alongside the main pipeline. This is
+also separate from the \texttt{T6 MINS (simulation, Pi)} launcher button
+(Section~\ref{sec:launcher-tabs}), which runs MINS's own bundled simulation
+demo on the Pi's \texttt{\textasciitilde{}/mins\_sandbox\_ws} and is
+unaffected by anything in this section --- both are real, both are
+separate MINS installs for separate purposes, and neither depends on the
+other.
+
+\textbf{Verified 2026-08-11: the workspace builds cleanly, and the
+camera-image boundary has been tested against real data, not only compiled.}
+Three fixes were needed on this exact machine (Ubuntu 22.04.5) that a
+20.04/Noetic build does not need:
+
+\begin{enumerate}
+\item \textbf{C++ standard.} \texttt{ov\_core} and \texttt{ov\_eval} request
+  C++14; on this machine, \texttt{ros/console.h} pulls in a \texttt{log4cxx}
+  header that requires \texttt{std::shared\_mutex} (C++17). Raise
+  \texttt{CMAKE\_CXX\_STANDARD} to \texttt{17} in both packages'
+  \texttt{CMakeLists.txt}.
+\item \textbf{A consistent OpenCV build throughout the workspace.} This
+  machine exposes a single OpenCV development package, version 4.5.4. The
+  ROS-distributed \texttt{cv\_bridge} package, however, is linked against a
+  separate, older OpenCV 4.2 set of libraries that Ubuntu 22.04 also carries
+  for compatibility. Building MINS's own code against 4.5.4 while linking
+  the distributed \texttt{cv\_bridge} mixes two different OpenCV builds in
+  one process --- this is unsafe and has been observed to crash (not on
+  every code path, but reproducibly on the one that matters: converting a
+  camera image and running feature tracking on it). \textbf{Fix: build
+  \texttt{cv\_bridge} and \texttt{image\_geometry} from source
+  (\texttt{ros-perception/vision\_opencv}, \texttt{noetic} branch) inside
+  \texttt{mins\_sandbox/catkin\_ws/src/}}, so they resolve to the same 4.5.4
+  as the rest of the workspace:
+\begin{lstlisting}[style=shell]
+cd mins_sandbox/catkin_ws/src
+git clone --depth 1 -b noetic \
+  https://github.com/ros-perception/vision_opencv.git
+rm -rf vision_opencv/opencv_tests   # not needed
+catkin build cv_bridge image_geometry
+\end{lstlisting}
+  One further fix is needed in this freshly-cloned \texttt{cv\_bridge}:
+  its own \texttt{src/CMakeLists.txt} calls \texttt{boost::regex} without
+  linking \texttt{libboost\_regex} (an upstream gap, not specific to this
+  project). Add \texttt{boost\_regex} to that target's
+  \texttt{target\_link\_libraries} call before building.
+\item \textbf{Build the rest of the workspace on top of the fixed
+  \texttt{cv\_bridge}}, sourcing its \texttt{devel/setup.bash} first so
+  later packages resolve against it rather than the system one:
+\begin{lstlisting}[style=shell]
+source /opt/ros/noetic/setup.bash
+cd mins_sandbox/catkin_ws
+source devel/setup.bash
+catkin build
+\end{lstlisting}
+\end{enumerate}
+
+\textbf{What ``verified'' means here, precisely.} All eight packages build
+without error. The specific code path this fixes --- converting a
+\texttt{sensor\_msgs/Image} with \texttt{cv\_bridge} and running the same
+corner-detection and optical-flow calls MINS's own tracker makes on it ---
+was re-run three times against real recorded camera frames (twice directly,
+once under a debugger) after the \texttt{cv\_bridge} rebuild, with no crash.
+\textbf{This is not the same as a validated pose estimate.} The rectangular-motion
+experiment that exercises the full estimator against a measured ground truth
+has not been run yet; nothing in this section should be read as MINS's
+accuracy being confirmed on this robot's real sensor data end to end.
+
 \section{Getting this project's code onto the machine that will build it}
 
 Clone the project's repository onto whichever machine will build Carolus
@@ -1276,30 +1644,17 @@ manual) at the top level:
 
 \begin{lstlisting}[style=shell]
 git clone git@github.com:Arracheur2Bonnet/robotmaster.git carolus_ws
-# or, over HTTPS with your own GitHub credentials:
+# or, over HTTPS -- the repository is public, no credentials needed:
 # git clone https://github.com/Arracheur2Bonnet/robotmaster.git carolus_ws
 \end{lstlisting}
 
 Repository web address:
 \url{https://github.com/Arracheur2Bonnet/robotmaster}
 
-\subsection{If the clone fails, or the link shows 404}
-
-The repository may be private. \textbf{If you open the link above and get
-404 Not Found}, that does not mean the address is wrong --- GitHub answers
-404 rather than ``403 Forbidden'' for a private repository you have no
-access to, deliberately, so that the existence of private repositories is
-not confirmed to strangers. A 404 here reads as ``you do not have access
-yet''.
-
-To get access, ask the repository owner or the project supervisor to add
-your GitHub account as a collaborator (\emph{Settings $\to$ Collaborators
-$\to$ Add people}). You will need to give them your GitHub username, and
-you must accept the emailed invitation before cloning works.
-
-If the repository is public, both clone commands above work as-is with no
-access request --- but the SSH setup below is still worth doing, since it
-avoids retyping credentials on every push and is required if you are ever
+\textbf{The repository is public.} Both clone commands above work as-is,
+from any machine, with no access request and no credentials needed to
+read it. The SSH setup below is still worth doing even so --- it avoids
+retyping credentials on every push, and it is required the moment you are
 given write access.
 
 \subsection{Setting up an SSH key}
@@ -1584,8 +1939,11 @@ library mismatch (Fix 5), and it hardcodes \texttt{x86\_64} paths, so
 leaving it on would be not merely unnecessary but wrong on \texttt{aarch64}.
 
 \begin{lstlisting}[style=shell]
-# On the Pi, with the camera bridge already running (Chapter 6):
+# On the Pi, with the camera bridge already running (Chapter 6), in a
+# SEPARATE shell -- ROS_MASTER_URI/ROS_IP are per-shell, not inherited:
 source /opt/ros/noetic/setup.bash
+export ROS_MASTER_URI=http://192.168.0.103:11311
+export ROS_IP=192.168.0.103
 source ~/carolus_ws/devel/setup.bash
 roslaunch carolus_node testcarolus.launch ubuntu2204_preload:=false
 \end{lstlisting}
@@ -1595,16 +1953,23 @@ the network --- which is what makes the robot usable away from the lab PC,
 and what gives the camera input rate measured in
 Section~\ref{sec:pi-benchmark}.
 
-\textbf{On a lab PC running Ubuntu 22.04} (the development fallback), omit
-the argument so the preload stays enabled:
+\textbf{On a lab PC running Ubuntu 22.04} (development only, per
+Section~\ref{sec:where-carolus-runs}), the master is still on the Pi ---
+\texttt{ROS\_MASTER\_URI} points there, \texttt{ROS\_IP} is the PC's own
+address (Chapter~\ref{ch:network}), and the preload argument is omitted so
+it stays enabled:
 
 \begin{lstlisting}[style=shell]
+export ROS_MASTER_URI=http://192.168.0.103:11311
+export ROS_IP=192.168.0.100
 roslaunch carolus_node testcarolus.launch
 \end{lstlisting}
 
 \textbf{On a different robot entirely}, copy the profile, substitute your own
-measured values, and point Carolus at your own camera topic. No source file
-and no launch file needs editing:
+measured values, and point Carolus at your own camera topic --- and set
+\texttt{ROS\_MASTER\_URI}/\texttt{ROS\_IP} for \emph{that} robot's own
+network, not this project's addresses above. No source file and no launch
+file needs editing:
 
 \begin{lstlisting}[style=shell]
 roslaunch carolus_node carolus.launch \
@@ -1617,11 +1982,31 @@ The \texttt{robomaster\_cam} package (Chapter~\ref{ch:camera}) is the DJI SDK
 bridge for this specific robot and is \textbf{not} needed on other hardware
 --- supply the camera stream however your own platform already does.
 
-Launch it (after sourcing the workspace):
+\subsection{The pose timestamp: \texttt{stamp\_from\_acquisition}}
+
+\texttt{/pose}'s header is stamped with the ACQUISITION time of the image it
+was computed from, not the time it was published --- \textbf{leave this at
+its default of \texttt{true}.} The alternative
+(\texttt{stamp\_from\_acquisition:=false}) reproduces the old behaviour,
+where every pose is stamped \texttt{ros::Time::now()} at the moment Carolus
+finishes computing it. That difference is not cosmetic: a fusion filter
+reads \texttt{header.stamp} to place the measurement in time, so the old
+behaviour hands it a systematic offset it has no way to detect, and it also
+makes the pose's real latency unmeasurable from ROS alone --- the gap
+between capture and publication silently disappears into "now".
 
 \begin{lstlisting}[style=shell]
-roslaunch carolus_node testcarolus.launch
+roslaunch carolus_node testcarolus.launch stamp_from_acquisition:=false
 \end{lstlisting}
+
+The only legitimate reason to set it \texttt{false} is if the image
+timestamps come from a machine whose clock is not synchronised with
+whatever consumes \texttt{/pose} --- and even then, fix the clock sync
+rather than the stamp. \textbf{Check this before trusting it}: the Pi's
+system clock is not guaranteed to be NTP-synchronised (observed drifted by
+several days on this project, 2026-08-10), and a drifted clock corrupts
+this exact mechanism silently, the same way the old publish-time stamping
+did.
 
 \section{Verifying it is running}
 
@@ -1636,33 +2021,27 @@ With a beacon visible to the camera, \texttt{/pose} publishes a
 adding an \textbf{Image} display on \texttt{/postprocessed/image}: correctly
 detected blobs appear as small circles over the live feed.
 
-\section{Warnings you can safely ignore}
+\textbf{Check the latency, not just the rate.} A high \texttt{/pose} rate
+says nothing about whether \texttt{stamp\_from\_acquisition} landed
+correctly (previous section). In the camera bridge's own log
+(\texttt{rm\_cam\_beacon.py}, Chapter~\ref{ch:camera}), every 50 poses
+prints \texttt{[LATENCY] /pose NN ms (mean over 50 poses)} --- a plausible
+value confirms acquisition-time stamping and synchronised clocks. A value
+outside $-1$--5000\,ms instead logs
+\texttt{[LATENCY] implausible (NN ms) --- /pose is probably stamped at
+publication time, not acquisition}, naming the same two causes: an old
+binary running without the flag, or the two machines' clocks disagreeing.
 
-Three messages appear routinely on a healthy system. They are listed here so
-that nobody spends an afternoon diagnosing them, which has happened on this
-project more than once.
-
-\begin{itemize}
-  \item \texttt{bash: .../catkin\_ws/devel/setup.bash: No such file or
-  directory} --- a leftover line in a shell profile referring to a workspace
-  that no longer exists. Harmless; remove the line from \texttt{\textasciitilde/.bashrc}
-  if it bothers you.
-
-  \item \texttt{WARNING: disk usage in log directory [...] is over 1GB} ---
-  accumulated ROS logs. Clear them when convenient:
-
-\begin{lstlisting}[style=shell]
-rosclean purge
-\end{lstlisting}
-
-  \item \texttt{imageio 2.35.1 has requirement pillow>=8.3.2, but you'll have
-  pillow 7.0.0} --- printed while installing the \texttt{robomaster} SDK. It
-  comes from \texttt{myqr}, a transitive dependency used only for generating
-  Wi-Fi QR codes, which this RNDIS-based setup never uses. The version
-  conflict has no effect here.
-\end{itemize}
+\begin{warningbox}
+\textbf{Checkpoint --- the core pipeline is now complete.} With a powered
+beacon in the camera's view, \texttt{rostopic hz /pose} reports roughly
+13\,Hz on the Pi. No beacon in view means no pose at all --- that is correct
+behaviour, not a fault. Once this passes, go to Chapter~\ref{ch:launcher} to
+actually drive the robot.
+\end{warningbox}
 
 \section{Beacon geometry and blob-filtering parameters}
+\label{sec:beacon-params}
 
 The parameters most likely to need tuning for a new beacon or lighting
 condition:
@@ -1691,6 +2070,21 @@ blue LEDs, hence the 90--140 window in the launch file. If you enter a value
 from the 0--360 convention (e.g.\ 240 for blue), every blob is rejected and
 the node runs normally while never publishing a pose.
 
+\begin{warningbox}
+\textbf{This beacon has a physical LED intensity control.} Turning it
+changes every LED's brightness at once, which shifts the blob's measured
+saturation and can push it outside \texttt{saturation\_threshold},
+\texttt{min\_area}/\texttt{max\_area}, or the hue window above --- \textbf{the
+whole table on this page is only valid for the intensity the beacon was set
+to when these values were tuned.} If the knob has been touched since, or you
+are not sure, re-run the detection tuning (adjust the parameters above while
+watching \texttt{[BEACON] status=DETECTED} in the launcher log) before
+trusting any pose Carolus reports. This does not affect \texttt{known\_points}
+below, which is a geometric measurement, not a brightness one --- but a
+beacon that has been physically disassembled or rebuilt needs that
+re-measured too.
+\end{warningbox}
+
 \texttt{known\_points} is the beacon's four LED positions in metres, in
 Carolus's own left-handed frame, with one point deliberately off the plane
 of the other three (needed for P4P to resolve pose unambiguously).
@@ -1700,5 +2094,543 @@ Chapter~\ref{ch:calibration}. A beacon built to different dimensions needs
 these four points re-measured and substituted; reusing this project's values
 against a differently-sized beacon will make the P4P solve fail silently or
 produce a plausible-looking but wrong pose.
+
+\begin{warningbox}
+\textbf{The \emph{sign} of the out-of-plane coordinate matters more than its
+magnitude, and getting it wrong is nearly undetectable.} Recording the fourth
+LED on the wrong side of the plane of the other three --- writing
+\texttt{+0.0555} where the hardware has it at \texttt{-0.0555} --- describes
+a beacon that is the mirror image of the real one. The solver still
+converges, the residual still looks healthy, and the reported pose is still
+a valid rotation. What changes is its handedness: rotations about two of the
+three axes come back with \textbf{inverted sign}, while the third reads
+correctly.
+
+Demonstrated numerically rather than assumed (2026-08-11): projecting the
+real four-LED geometry and re-solving with that one coordinate's sign
+flipped inverts the recovered rotation about X and Y while leaving Z
+correct. By contrast, corrupting the \emph{camera intrinsics} severely --- a
+25\% focal-length error, a 60-pixel principal-point shift, and distortion
+ignored entirely --- shifts the recovered angles by only a few percent and
+\textbf{never flips a sign}.
+
+Practical consequence: if orientation readings look mirrored, suspect this
+value's sign before suspecting the camera calibration. Measure which side of
+the plane the fourth LED sits on and confirm it against the sign written
+here.
+\end{warningbox}
+
+\chapter{Converting a Carolus Pose into the ROS Frame}
+\label{ch:tf-conversion}
+
+\runson{the machine running the TF broadcaster --- normally the \textbf{Raspberry Pi}, alongside Carolus itself.}
+
+Carolus reports where the beacon is \emph{in its own camera frame}. Every ROS
+consumer downstream --- TF2, RViz, any sensor-fusion filter --- expects
+REP-103 conventions instead. This chapter derives that conversion rather than
+just stating the constant, because the constant alone is impossible to check
+and easy to get subtly, silently wrong.
+
+\section{Why this is harder than it looks}
+
+Two independent earlier integrations of Carolus, on a Leo Rover and on a
+Limo, each arrived at their conversion constants by trial and error against
+real hardware. Both worked on their own platform. Neither derivation was
+written down, so neither transfers, and there is no way to tell from the
+constants alone whether they encode a genuine convention difference or a
+compensating error.
+
+The failure mode this invites is specific and nasty: an orientation
+conversion that is wrong can still produce a perfectly valid unit quaternion.
+Nothing raises an error, RViz draws a plausible set of axes, and the mistake
+only surfaces as motion in the wrong direction much further downstream.
+
+\section{Step 1 --- what Carolus actually publishes}
+
+Carolus's P4P solver minimises reprojection error in the standard
+computer-vision form: for each known beacon LED at position $\mathbf{p}_b$ in
+the \emph{beacon's} own frame, it predicts a pixel by
+
+\[
+\mathbf{p}_c \;=\; R_{\text{solved}}\,\mathbf{p}_b \;+\; \mathbf{t},
+\qquad
+u = f_x\frac{p_{c,x}}{p_{c,z}} + c_x,
+\qquad
+v = f_y\frac{p_{c,y}}{p_{c,z}} + c_y .
+\]
+
+$R_{\text{solved}}$ therefore maps \emph{beacon-frame} coordinates into
+\emph{camera-frame} coordinates: it is $R_{\text{beacon}\to\text{camera}}$.
+This is the same convention OpenCV's \texttt{solvePnP} documents for its own
+output, and the two are interchangeable as a sanity check.
+
+\textbf{But that is not what reaches the ROS topic.} Before publishing,
+Carolus transposes it. What appears in the \texttt{/pose} message's
+\texttt{orientation} field is
+
+\[
+R_{\text{published}} \;=\; R_{\text{solved}}^{\top} \;=\; R_{\text{camera}\to\text{beacon}} .
+\]
+
+\begin{warningbox}
+This transpose is the single most commonly missed step. A quaternion built
+from $R_{\text{published}}$ describes the \emph{opposite} rotation to the one
+the solver computed. Both are valid quaternions; only one is the one you
+want.
+\end{warningbox}
+
+\section{Step 2 --- what TF2 expects}
+
+The broadcaster publishes the edge
+\texttt{camera\_link}~$\rightarrow$~\texttt{beacon\_observed}. By TF2's
+convention, the rotation on a parent~$\rightarrow$~child edge must take a
+vector expressed in the \emph{child} frame and give it in the \emph{parent}
+frame. Here that is beacon~$\rightarrow$~camera:
+
+\[
+R_{\text{needed}} \;=\; R_{\text{beacon}\to\text{camera}}
+\;=\; R_{\text{published}}^{-1}.
+\]
+
+So the published quaternion must be \textbf{inverted} before anything else is
+done to it. Combined with Step~1, the two transposes do not cancel: the
+solver transposes once on the way out, and the TF convention requires
+inverting once on the way in.
+
+\section{Step 3 --- the change of basis, and why it is proper}
+
+The remaining task is to re-express that rotation from Carolus's camera axes
+($X$ right, $Y$ down, $Z$ forward) in ROS's body axes ($X$ forward, $Y$ left,
+$Z$ up). Writing the correspondence as a matrix acting on coordinate columns:
+
+\[
+B \;=\;
+\begin{bmatrix}
+0 & 0 & -1\\
+1 & 0 & 0\\
+0 & -1 & 0
+\end{bmatrix},
+\qquad \det B = +1 .
+\]
+
+Both frames are right-handed, so $B$ is necessarily a proper rotation. An
+improper (determinant~$-1$) matrix here would assert that one of the two
+frames is a mirror image of what its own convention says, which is not the
+case for either.
+
+\section{Step 4 --- a rotation is re-based by conjugation, not permutation}
+
+This is the step both prior integrations had to find empirically. A
+\emph{vector} changes basis by a single multiplication, $\mathbf{v}' =
+B\mathbf{v}$. A \emph{rotation operator} does not: it must be conjugated,
+
+\[
+R' \;=\; B\,R\,B^{-1},
+\qquad\text{equivalently}\qquad
+q' \;=\; b \otimes q \otimes b^{-1},
+\]
+
+where $b$ is the unit quaternion corresponding to $B$. Permuting and
+negating the components of $q$ directly --- the tempting shortcut, because it
+is what works for a vector --- is not the same operation and does not
+generally give the same result.
+
+\begin{warningbox}
+The quaternion form $q' = b \otimes q \otimes b^{-1}$ exists only when $B$ is
+proper. Unit quaternions parametrise proper rotations and nothing else, so an
+improper change of basis has no quaternion representation at all and must be
+handled as a matrix. This is another reason to establish the determinant
+before reaching for quaternions.
+\end{warningbox}
+
+\section{The result}
+
+Composing Steps 1--4, with $q$ the quaternion read from \texttt{/pose}:
+
+\[
+\boxed{\;q_{\text{ROS}} \;=\; b \otimes q^{-1} \otimes b^{-1}\;}
+\]
+
+and the position, which is an ordinary vector and so takes the single
+multiplication:
+
+\[
+(x,y,z)_{\text{ROS}} \;=\; (-z,\; x,\; -y)_{\text{camera}} .
+\]
+
+In the broadcaster this is a few lines: build $b$ once from $B$ at import
+time, invert the incoming quaternion, conjugate, normalise, publish.
+
+\section{Cross-checking the result against an independent implementation}
+
+A derivation that only reproduces its own assumptions is worth little. The
+Limo integration mentioned earlier arrived, by trial and error and with no
+derivation, at a component-wise rule for its own quaternion conversion, using
+the same axis correspondence $B$ as above.
+
+Evaluating both expressions on randomly generated unit quaternions gives
+identical rotations, agreeing to machine precision (differences of order
+$10^{-16}$, i.e.\ floating-point round-off) across every trial. The formula
+derived here therefore \emph{predicts} an empirical result obtained
+independently, on different hardware, by people who were not deriving it ---
+which is the strongest available evidence that the derivation is not merely
+self-consistent.
+
+Applying the same comparison to the pre-correction formula (composition
+without the inversion of Step~2) gives a substantially different rotation on
+every trial, confirming the inversion is load-bearing rather than cosmetic.
+
+\section{Validation status}
+
+\textbf{Verified:} the derivation above, checked against the solver's own
+source; the determinant argument, checked against REP-103's stated axis
+conventions; and the numerical agreement with the independent Limo result,
+computed directly.
+
+\textbf{Not yet verified:} an end-to-end physical measurement on this robot
+--- placing the beacon at a known orientation and comparing
+\texttt{rosrun tf tf\_echo camera\_link beacon\_observed} against it. Until
+that is done, treat this chapter as a derivation that has passed every
+available desk check but has not been confirmed against a ruler. The test
+itself is cheap: rotate the beacon by a known angle about one camera axis at
+a time and confirm the reported rotation matches in both axis and sign. Note
+that a $180^\circ$ test rotation cannot distinguish a correct conversion from
+a mirrored one --- the two coincide exactly at that angle --- so use
+something well away from both $0^\circ$ and $180^\circ$.
+
+\chapter{Operating the Robot: the Launcher}
+\label{ch:launcher}
+
+\runson{the \textbf{lab PC} --- the launcher is a Tkinter GUI that starts
+everything else over SSH. The robot and the Pi must both be on.}
+
+Everything up to here produced a pose on \texttt{/pose}. This chapter is how
+the robot is actually driven. The tool is
+\texttt{shortcuts/carolus\_launcher.py}, in the repository you cloned; it
+starts the whole stack with no commands to type, shows a live dashboard, and
+pilots the robot from the keyboard.
+
+\begin{lstlisting}[style=shell]
+python3 shortcuts/carolus_launcher.py
+\end{lstlisting}
+
+\textbf{Fuller reference:} \texttt{shortcuts/README.md} in the repository
+documents every button, panel and keyboard binding, and is kept current with
+the code. This chapter covers what a first-time operator needs.
+
+\section{The launch tabs, in order}
+\label{sec:launcher-tabs}
+
+Each tab is one process. They are started in order --- the first two wait for
+a concrete signal before unlocking the next, rather than a fixed delay.
+
+\begin{center}
+\begin{tabular}{p{0.16\textwidth}p{0.30\textwidth}p{0.42\textwidth}}
+\toprule
+Tab & What it starts & Unlocks when \\
+\midrule
+\textbf{T1} roscore [Pi]
+ & SSH: \texttt{eth1 up} + \texttt{roscore} on the Pi
+ & port 11311 is open (60\,s timeout) \\
+\addlinespace
+\textbf{T2} Camera [Pi]
+ & SSH: \texttt{rm\_cam\_beacon.py} + \texttt{cam\_view\_helper.py}
+ & \texttt{/camera/color/image\_raw} is publishing (60\,s timeout) \\
+\addlinespace
+\textbf{T3} Carolus [Pi]
+ & SSH: \texttt{roslaunch carolus\_node testcarolus.launch
+   ubuntu2204\_preload:=false}
+ & manual --- no wait \\
+\addlinespace
+\textbf{T4} TF [Pi]
+ & SSH: \texttt{carolus\_tf\_broadcaster.py}
+ & manual. Republishes \texttt{/pose} as a TF
+   (\texttt{camera\_link}$\rightarrow$\texttt{beacon\_observed}). Not needed
+   by the SEARCH/ALIGN/APPROACH pipeline, which reads \texttt{/pose}
+   directly \\
+\addlinespace
+\textbf{T5} Docking [PC]
+ & local: \texttt{beacon\_docking.py}
+ & manual (see Section~\ref{sec:docking}) \\
+\addlinespace
+\textbf{T6} MINS [Pi]
+ & SSH: MINS's own \texttt{simulation.launch}, in a separate sandbox
+   workspace
+ & independent --- runs its own master, unrelated to the pipeline above \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{T1--T3 are the working stack.} T4 is for validating orientation and
+for future sensor-fusion work; T5 is the docking behaviour; T6 is
+unrelated experimental work. A normal session is T1, T2, T3.
+
+\textbf{Every tab label names its machine} (\texttt{T1 roscore [Pi]},
+\texttt{T5 Docking [PC]}). This is deliberate: the ROS master lives on the
+Pi in every configuration, so nothing else on screen distinguishes a node
+running on the Pi from one running on the workstation --- and a rate
+measurement was once attributed to the wrong machine for exactly that
+reason.
+
+\section{Driving the robot by hand}
+
+Click \texttt{MODE: AUTO} to switch to \texttt{MODE: MANUAL} (the button
+turns orange). Two key blocks appear and light up as keys are pressed.
+
+\begin{center}
+\begin{tabular}{p{0.44\textwidth}p{0.44\textwidth}}
+\toprule
+\textbf{Chassis --- ZQSD} & \textbf{Gimbal --- numpad} \\
+\midrule
+\texttt{Z} forward \quad \texttt{S} reverse
+
+\texttt{Q} rotate left \quad \texttt{D} rotate right
+
+0.20\,m/s linear, 20\,\textdegree/s angular.
+Stops automatically when keys are released.
+ & \texttt{8} pitch up \quad \texttt{2} pitch down
+
+\texttt{4} yaw left \quad \texttt{6} yaw right \quad \texttt{5} stop
+
+30\,\textdegree/s pitch, 40\,\textdegree/s yaw.
+Works with NumLock on or off. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Clicking \texttt{MODE} again returns to AUTO and stops both immediately.
+
+\begin{warningbox}
+\textbf{If the keys stop responding, move the mouse over the launcher
+window.} T1 and T3 can open external terminal windows that steal the
+system's keyboard focus. Hovering over the launcher reclaims it
+automatically. This is not a bug in the robot --- the commands are simply
+not reaching the application.
+
+\textbf{The numpad does nothing while LOCK is on.} LOCK takes exclusive
+control of the gimbal; the chassis keys keep working normally. Turn LOCK off
+to get manual gimbal control back.
+\end{warningbox}
+
+\section{The main controls}
+
+\begin{center}
+\begin{tabular}{p{0.24\textwidth}p{0.68\textwidth}}
+\toprule
+Control & What it does \\
+\midrule
+\texttt{MODE: AUTO/MANUAL} & Switches between the autonomous state machine
+  and keyboard piloting. \\
+\addlinespace
+\texttt{LOCK} & Periodically re-centres the gimbal on the beacon. Period
+  configurable in seconds. Ignores corrections below a 5\,\textdegree{}
+  deadband and skips any beyond 45\,\textdegree{} (an implausible pose). \\
+\addlinespace
+\texttt{RECENTER CAM} & Returns the gimbal to its base position. \\
+\addlinespace
+\texttt{CAM PREVIEW} & Toggles the camera view. \textbf{Off by default} ---
+  it costs network bandwidth and GUI smoothness, so turn it on only when you
+  need to see the image. \\
+\addlinespace
+\texttt{LOCATE} & Localises the beacon without advancing. Activates
+  automatically 500\,ms after T2 confirms the camera is ready. \\
+\addlinespace
+\texttt{Kill} & Stops everything and \emph{verifies} the remote processes
+  actually died. \\
+\addlinespace
+\texttt{F11} / \texttt{Escape} & Fullscreen on / off. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{The dashboard} shows the current state (SEARCH / APPROACH / STOP /
+LOCATE / MANUAL), the beacon distance, the robot's battery, and the Pi's
+own temperature, load and RAM (refreshed every 20\,s). The Pi's temperature
+turns amber at 65\,\textdegree C and red at 75\,\textdegree C, ahead of the
+Pi 4B's 80\,\textdegree C thermal throttle.
+
+\textbf{The beacon indicator} reads \texttt{BEACON: DETECTED} (green) or
+\texttt{BEACON: LOST} (red), and a small minimap shows where the beacon sits
+\emph{within the camera frame} --- green when centred within
+$\pm$3\,\textdegree{}, orange otherwise.
+
+\section{Session logs on disk}
+
+Every line shown in any tab is also written to
+\texttt{shortcuts/logs/session-YYYY-MM-DD-HH-MM-SS.log}, one file per
+launcher start, each line tagged with its tab. The on-screen tabs are
+truncated to 300 lines and lost on exit, so the file is the only durable
+record --- and it makes questions answerable after the fact:
+
+\begin{lstlisting}[style=shell]
+grep '\[T2\].*\[LOCK\]'  shortcuts/logs/session-*.log
+grep '\[T3\].*\[LATENCY\]' shortcuts/logs/session-*.log
+\end{lstlisting}
+
+\section{Shutting down, and why it matters}
+
+Use the launcher's \texttt{Kill}, or close the window --- both clean up the
+remote processes and re-read the Pi to confirm each one actually died,
+logging \texttt{TOUJOURS VIVANT} for any survivor rather than failing
+silently.
+
+\begin{warningbox}
+\textbf{An orphaned \texttt{rm\_cam\_beacon.py} breaks the next session.}
+It keeps the robot's single SDK connection open, so the next launch hits
+the double-connection failure --- motion commands stop responding with no
+error anywhere. If you ever kill processes by hand, \textbf{bracket the
+pattern}: \texttt{pkill -f "[r]m\_cam\_beacon"}. Without the bracket, the
+remote shell's own command line contains the pattern and \texttt{pkill}
+can kill that shell before it reaches the real target, non-deterministically
+and with nothing reported.
+\end{warningbox}
+
+\section{Beacon docking (T5)}
+\label{sec:docking}
+
+\textbf{Status: works, with a known limitation --- read this before running
+it near anything fragile.} The docking behaviour drives the robot to a fixed
+distance from the beacon (0.20\,m) in three phases: align the gimbal to the
+beacon, rotate the chassis until it agrees with the gimbal, then drive
+forward.
+
+The \textbf{DOCKING BALISE} panel has four buttons:
+
+\begin{center}
+\begin{tabular}{p{0.22\textwidth}p{0.70\textwidth}}
+\toprule
+Button & What it does \\
+\midrule
+\texttt{CALIBRATE} & Step 1 of a two-step calibration: measures the beacon
+  face-on. \\
+\texttt{CAL STEP 2} & Step 2: measures again after \emph{you} have pivoted
+  the robot roughly 30--45\,\textdegree{}. No time pressure between the two
+  steps. \\
+\texttt{START} & Runs the docking sequence. \\
+\texttt{ABORT} & Stops it. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The buttons only unlock once the node has reported its own status at least
+once --- commands sent before that used to be silently dropped.
+
+\begin{warningbox}
+\textbf{Known limitation, unresolved:} nothing corrects the chassis heading
+\emph{during} the drive --- only the camera tracks the beacon. A run can
+therefore finish close to the beacon but off-centre. A collision has
+happened once on this project, caused by a silent gimbal-probe failure that
+let the chassis align to the wrong reference (since fixed, with a retry and
+an abort guard). \textbf{Run docking with clear space around the robot, and
+keep a hand near ABORT.}
+\end{warningbox}
+
+\chapter{Troubleshooting}
+\label{ch:troubleshooting}
+
+\runson{wherever the symptom appears. Each entry names the machine to check
+on.}
+
+Work down from the symptom. Each step either fixes the problem or rules out
+a layer --- the ordering matters, because a dead network link and a dead
+node look identical from most checks.
+
+\section{Nothing responds: the robot ignores every command}
+
+\begin{enumerate}
+  \item \textbf{Did the robot chime twice at power-on?} One chime means the
+  root hack is not active and the SDK will not answer at all
+  (Chapter~\ref{ch:poweron}). Power-cycle and listen again.
+  \item \textbf{Is a second script holding the SDK?} Only
+  \texttt{rm\_cam\_beacon.py} may connect. On the Pi:
+  \texttt{pgrep -af "[r]m\_cam\_beacon"} --- more than one result, or an
+  orphan from a previous session, causes exactly this symptom with no error
+  message anywhere. Kill it and relaunch.
+  \item \textbf{Is the RNDIS link up?} From the Pi:
+  \texttt{ping -c4 192.168.42.2}. It does not survive a Pi reboot
+  (Chapter~\ref{ch:network}).
+\end{enumerate}
+
+\section{The Pi will not turn on}
+
+The cable is almost certainly in the Pi's own POWER IN port instead of the
+UPS HAT's port underneath. Check that the HAT's blue charge LED is lit
+(Section~\ref{sec:pi-power}).
+
+\section{\texttt{rostopic} from the lab PC finds nothing}
+
+\begin{enumerate}
+  \item \textbf{Is the node actually running?} On the Pi:
+  \texttt{pgrep -af "[r]m\_cam\_beacon"}.
+  \item \textbf{If it is running but invisible from the PC}, the shell that
+  launched it was missing \texttt{ROS\_MASTER\_URI}/\texttt{ROS\_IP} ---
+  \texttt{rospy} falls back to \texttt{localhost} and the node is reachable
+  only from the Pi itself. Relaunch with both exported
+  (Chapter~\ref{ch:camera}). This is the single most common cause.
+  \item \textbf{Is your own shell pointed at the right master?} On the PC:
+  \texttt{echo \$ROS\_MASTER\_URI} should read
+  \texttt{http://192.168.0.103:11311}.
+  \item \textbf{A black image or an \texttt{AF\_INET} error} instead of no
+  topic at all is hostname resolution --- add the Pi to
+  \texttt{/etc/hosts} on the PC (Chapter~\ref{ch:network}).
+\end{enumerate}
+
+\section{The camera publishes but \texttt{/pose} never does}
+
+\begin{enumerate}
+  \item \textbf{Is a beacon actually in view, powered on?} Check
+  \texttt{[BEACON] status=} in the T2 log, or the launcher's beacon
+  indicator. \texttt{[DUTY] beacon in view 0.0\%} confirms it is not.
+  \item \textbf{Is Carolus running?} On the Pi:
+  \texttt{pgrep -f carolus\_astrobee}.
+  \item \textbf{Are the hue bounds right for your LEDs?} This is the classic
+  silent failure: the node runs, looks healthy, and rejects every blob.
+  \texttt{lb\_hue}/\texttt{ub\_hue} are on \textbf{OpenCV's 0--180 scale},
+  not 0--360 --- entering 240 for blue rejects everything. See the end of
+  Chapter~\ref{ch:carolus-node}.
+  \item \textbf{Are all four LEDs visible?} P4P needs four points; three is
+  not enough and produces nothing rather than a degraded pose.
+\end{enumerate}
+
+\section{The keyboard does not drive the robot}
+
+\begin{enumerate}
+  \item \textbf{Is the launcher in MANUAL mode?} The button must read
+  \texttt{MODE: MANUAL} in orange (Chapter~\ref{ch:launcher}).
+  \item \textbf{Move the mouse over the launcher window} --- an external
+  terminal opened by T1/T3 has probably stolen keyboard focus.
+  \item \textbf{Numpad specifically dead?} LOCK is on and holds the gimbal
+  exclusively. The chassis keys should still work.
+\end{enumerate}
+
+\section{\texttt{/imu} is silent}
+
+Do not suspect the robot first. If a ROS publisher is created \emph{after}
+its SDK subscription, the first callback raises inside the SDK's dispatcher
+thread and kills it --- after which no telemetry callback ever fires again,
+with the topic still advertised and nothing logged. See the second warning
+box in Chapter~\ref{ch:camera}.
+
+\section{The build fails}
+
+On the Pi (Ubuntu 20.04) the build is standard; a failure there is usually
+memory --- pass \texttt{-j2}. On a lab PC running Ubuntu 22.04, the five
+fixes in Section~\ref{sec:build2204} are all required, and a segfault at
+launch rather than at build time is Fix 5 (the \texttt{LD\_PRELOAD}).
+
+\section{Messages you can safely ignore}
+
+Three appear routinely on a healthy system and have each cost someone an
+afternoon:
+
+\begin{itemize}
+  \item \texttt{bash: .../catkin\_ws/devel/setup.bash: No such file or
+  directory} --- a leftover line in a shell profile. Harmless.
+  \item \texttt{WARNING: disk usage in log directory [...] is over 1GB} ---
+  accumulated ROS logs. \texttt{rosclean purge} when convenient.
+  \item \texttt{imageio 2.35.1 has requirement pillow>=8.3.2, but you'll
+  have pillow 7.0.0} --- from \texttt{myqr}, a transitive dependency of the
+  SDK used only for Wi-Fi QR codes, which this RNDIS setup never uses.
+\end{itemize}
 
 \end{document}

@@ -20,6 +20,7 @@ _R_BASIS_XYZW = tft.quaternion_from_matrix(np.array([
     [0, -1, 0, 0],
     [0, 0,  0, 1],
 ], dtype=float))
+_R_BASIS_INV_XYZW = tft.quaternion_inverse(_R_BASIS_XYZW)
 
 
 class CarolusTFBroadcaster:
@@ -95,16 +96,42 @@ class CarolusTFBroadcaster:
         z_ros = -p.y
 
         # =====================================================
-        # QUATERNION REMAPPING (composition, PAS permutation de composantes)
+        # QUATERNION REMAPPING (conjugation on the INVERSE of q_cam)
         #
-        # q represente R_camera->beacon (verifie dans carolus_astrobee.cpp:1187,
-        # bestPose.R.transpose() -- cf. research-log/07-perplexity/10-fix-...md).
-        # Un quaternion de rotation change de base par composition, pas par
-        # permutation des composantes comme un vecteur : q_ros = r ⊗ q, avec r
-        # le quaternion de la rotation de changement de base Carolus->ROS.
+        # 2026-08-11 -- fixes a direction bug introduced by BUG-048's own fix.
+        #
+        # q (msg.pose.orientation) is R_camera->beacon: carolus_astrobee.cpp
+        # solves camera_point = R_raw * beacon_point + t (standard PnP
+        # extrinsic, R_raw = R_beacon->camera -- see ceresP4P.cpp's
+        # ReprojectionErrorWithAnalyticDiff::Evaluate), then TRANSPOSES before
+        # publishing (carolus_astrobee.cpp:1249), so what actually reaches
+        # /pose is R_raw^T = R_camera->beacon.
+        #
+        # This TF edge is camera_link -> beacon_observed, which by TF2
+        # convention needs R_beacon->camera (v_camera_link = R * v_beacon),
+        # i.e. exactly R_raw, i.e. exactly q_cam INVERTED, not q_cam itself.
+        # BUG-048 (2026-07-20) fixed the operation (composition instead of a
+        # vector-style component permutation) but kept the wrong direction --
+        # a rotation operator's change of basis is a similarity transform,
+        # q_ros = r * q_operator * r^-1, and q_operator here is q_cam^-1, not
+        # q_cam.
+        #
+        # Verified two ways before changing this: (1) algebraically, from the
+        # cost function above, not inferred from behaviour; (2) numerically,
+        # against LIMO's independently-found (by trial and error, per
+        # Hector's 2026-08-11 mail) empirical formula on their document's own
+        # matrix (identical det=+1 matrix to ours) -- r*q_cam^-1*r^-1 matches
+        # LIMO's formula exactly (< 1e-15) over 8 random quaternions, while
+        # the previous r*q_cam formula differs from it by ~1.0-1.3 on every
+        # trial. Not yet validated on hardware (tf_echo against a physically
+        # known beacon orientation) -- see roadmap.md.
         # =====================================================
         q_cam_xyzw = (q.x, q.y, q.z, q.w)
-        qx_ros, qy_ros, qz_ros, qw_ros = tft.quaternion_multiply(_R_BASIS_XYZW, q_cam_xyzw)
+        q_cam_inv_xyzw = tft.quaternion_inverse(q_cam_xyzw)
+        qx_ros, qy_ros, qz_ros, qw_ros = tft.quaternion_multiply(
+            tft.quaternion_multiply(_R_BASIS_XYZW, q_cam_inv_xyzw),
+            _R_BASIS_INV_XYZW,
+        )
 
         # =====================================================
         # QUATERNION NORMALIZATION (SAFETY)

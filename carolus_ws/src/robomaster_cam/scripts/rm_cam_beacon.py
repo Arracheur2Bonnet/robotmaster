@@ -196,6 +196,31 @@ ALIGN_TIMEOUT_MAX_S = 12.0   # cap on the dynamic timeout (s)
 ALIGN_VALID_POSES   = 3      # consecutive valid poses required before APPROACH
 
 MANUAL_CMDVEL_TIMEOUT = 0.5   # auto-stop if no command received for X seconds
+# BUG-100 (2026-08-10): the gimbal had NO equivalent. `_gim_stamp` was written on
+# every /carolus/gimbal_vel message and never read, so the last commanded gimbal
+# speed was re-sent at 20 Hz forever -- a lost KeyRelease (X11 focus change, GUI
+# stall, operator window switch) left the gimbal turning with nothing to stop it.
+# The chassis has been protected this way since "Bug 4"; the gimbal simply was
+# not. Same value, same reasoning.
+MANUAL_GIMBAL_TIMEOUT = 0.5
+
+# ---- protocol 22 / B4 test flags (2026-08-10) --------------------------------
+# BUG-093: the chassis rotates ~0.12-0.38 deg/s with an SDK session open and is
+# still without one. Two hypotheses fit every observation equally well, and no
+# test run so far can separate them:
+#   HA  gimbal reaction torque -- the gimbal fights its own drifting gyro and
+#       the yaw motor's reaction turns the chassis, which Mecanum wheels at zero
+#       commanded velocity do not resist.
+#   HB  our own chassis velocity loop -- a session means drive_speed(0,0,0) at
+#       20 Hz, i.e. a closed loop that simply does not exist without a session;
+#       its deadband or integral behaviour could be the whole effect.
+# Three conditions, one flag each, so B4 is three launches rather than three
+# hand edits. Both default OFF: normal operation is unchanged.
+#   1. neither flag           -> HA drifts, HB drifts   (today's state)
+#   2. RM_B4_SUSPEND_GIMBAL=1 -> HA STOPS, HB drifts
+#   3. RM_B4_NO_DRIVE=1       -> HA drifts, HB STOPS
+B4_SUSPEND_GIMBAL = os.environ.get("RM_B4_SUSPEND_GIMBAL", "0") == "1"
+B4_NO_DRIVE       = os.environ.get("RM_B4_NO_DRIVE", "0") == "1"
 
 # -- Obstacle avoidance --------------------------------------------------------
 OBSTACLE_TOF_CM     = 50    # front TOF distance (cm) -> emergency stop
@@ -346,6 +371,7 @@ class EPCameraBeaconFollower:
         self._man_vx        = 0.0
         self._man_wz        = 0.0
         self._man_stamp     = 0.0   # timestamp derniere commande MANUEL recue
+        self._idle_braked   = False # BUG-093: has the one-shot idle brake been sent?
         self._man_lock      = threading.Lock()
         # Gimbal manuel
         self._gim_pitch = 0.0
@@ -410,11 +436,25 @@ class EPCameraBeaconFollower:
             rospy.logwarn(f"[MODE] could not read/write the robot mode: {e}")
 
         # Wake the gimbal from its sleep state (otherwise torque is cut, motors limp)
-        try:
-            self.gimbal.resume()
-            rospy.loginfo("[GIMBAL] resume OK -- torque active")
-        except Exception as e:
-            rospy.logwarn(f"[GIMBAL] resume failed: {e}")
+        if B4_SUSPEND_GIMBAL:
+            # B4 condition 2: cut gimbal torque instead. Documented as "the motors
+            # of the gimbal axes will no longer exercise control", which is exactly
+            # what HA needs removed. Everything else stays identical.
+            try:
+                self.gimbal.suspend()
+                rospy.logwarn("[B4] RM_B4_SUSPEND_GIMBAL=1 -- gimbal.suspend() called, "
+                              "torque CUT. Test mode, not normal operation.")
+            except Exception as e:
+                rospy.logwarn(f"[B4] gimbal.suspend() failed: {e}")
+        else:
+            try:
+                self.gimbal.resume()
+                rospy.loginfo("[GIMBAL] resume OK -- torque active")
+            except Exception as e:
+                rospy.logwarn(f"[GIMBAL] resume failed: {e}")
+        if B4_NO_DRIVE:
+            rospy.logwarn("[B4] RM_B4_NO_DRIVE=1 -- the 20 Hz chassis command loop is "
+                          "SUPPRESSED. The robot cannot be driven. Test mode.")
 
         # Gimbal publishers created BEFORE sub_angle (BUG-064bis, 2026-07-23): the SDK
         # can invoke _gimbal_angle_cb the moment the callback is registered, before the
@@ -1269,8 +1309,10 @@ class EPCameraBeaconFollower:
                     except Exception:
                         pass
                 else:
-                    # Bug 4: safety timeout -- stop if no recent command
-                    if time.time() - stamp > MANUAL_CMDVEL_TIMEOUT:
+                    # Bug 4: safety timeout -- stop if no recent command.
+                    # `cmd_fresh` is consumed by the BUG-093 brake-once logic below.
+                    cmd_fresh = (time.time() - stamp) <= MANUAL_CMDVEL_TIMEOUT
+                    if not cmd_fresh:
                         vx, wz = 0.0, 0.0
 
                     # Garde-fou minimal en MANUEL (2026-07-22) : bloque l'AVANCE si un
@@ -1286,11 +1328,34 @@ class EPCameraBeaconFollower:
                             vx = 0.0
                             rospy.logwarn_throttle(1.0, f"[MANUAL] avance bloquee (TOF={_tof_cm:.0f}cm)")
 
-                    # Sent every tick (20 Hz): the SDK invalidates commands that are not repeated
-                    try:
-                        self.chassis.drive_speed(x=vx, y=0.0, z=wz, timeout=1)
-                    except Exception:
-                        pass
+                    # BUG-093 FIX (2026-08-10) — brake once, then go silent.
+                    #
+                    # Measured by protocol 22's B4 the same day: re-sending
+                    # drive_speed(0,0,0) at 20 Hz IS the uncommanded rotation.
+                    # Normal +0.1734 deg/s; gimbal torque cut +0.1327 deg/s (77%
+                    # of it survives); commands suppressed +0.0000 deg/s. It was
+                    # never the gimbal's gyro -- it is this loop.
+                    #
+                    # But simply not sending is NOT the fix, also measured: from
+                    # 0.15 m/s, ceasing to send leaves a 16.2 cm tail over 1.1 s
+                    # (the SDK's own command timeout eventually stops it, slowly).
+                    # Sending ONE explicit zero first cuts that to 1.7 cm in
+                    # 0.1 s -- a 10x shorter stopping distance for one extra call.
+                    #
+                    # So: while a command is fresh, drive normally. When the
+                    # deadman expires, brake ONCE and then send nothing at all,
+                    # which is the state B4 measured at exactly zero drift.
+                    if not B4_NO_DRIVE:
+                        try:
+                            if cmd_fresh:
+                                self._idle_braked = False
+                                self.chassis.drive_speed(x=vx, y=0.0, z=wz, timeout=1)
+                            elif not self._idle_braked:
+                                self.chassis.drive_speed(x=0.0, y=0.0, z=0.0, timeout=1)
+                                self._idle_braked = True
+                            # else: deliberately send NOTHING -- see above
+                        except Exception:
+                            pass
 
                 # Gimbal (MANUEL) : arbitrage en 3 priorites (2026-07-23 nuit) :
                 #   1. Async action in flight (RECENTER) -> emit nothing, let it finish
@@ -1308,6 +1373,10 @@ class EPCameraBeaconFollower:
                     with self._gim_lock:
                         gim_pitch = self._gim_pitch
                         gim_yaw   = self._gim_yaw
+                        gim_stamp = self._gim_stamp
+                    # BUG-100: same deadman the chassis already had.
+                    if time.time() - gim_stamp > MANUAL_GIMBAL_TIMEOUT:
+                        gim_pitch, gim_yaw = 0.0, 0.0
                     try:
                         self.gimbal.drive_speed(pitch_speed=gim_pitch, yaw_speed=gim_yaw)
                     except Exception as e:
@@ -1558,6 +1627,17 @@ class EPCameraBeaconFollower:
         ctrl = threading.Thread(target=self._control_loop, daemon=True)
         ctrl.start()
 
+        # 2026-08-11 -- makes "which code is actually running?" answerable from
+        # the log instead of by inference. BUG-093's fix (brake once when the
+        # MANUAL deadman expires, then send nothing) was deployed and then
+        # measured as still drifting, and there is no record of whether the
+        # node had been restarted between the two -- a Python file on disk
+        # changes nothing until the process is relaunched. Reading the code
+        # afterwards could not settle it either way. This line settles it for
+        # every future session: if it is absent from the log, the running node
+        # predates the fix regardless of what the file on disk says.
+        rospy.loginfo("[IDLE-POLICY] MANUAL deadman=%.2fs -> brake once, then silent "
+                      "(BUG-093 fix present)", MANUAL_CMDVEL_TIMEOUT)
         rospy.loginfo("[CAM] Publishing on /camera/color/image_raw")
         while not rospy.is_shutdown():
             try:

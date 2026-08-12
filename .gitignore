@@ -1,24 +1,61 @@
-# Secrets (added 2026-07-28) — defence in depth. No .env is expected inside
-# this repository (the project's .env lives at the project root, outside it),
-# but an accidental copy here would otherwise be tracked and pushed.
+# Root .gitignore -- ALLOWLIST. Ignore everything, then re-admit by name.
+# Fails CLOSED: a folder nobody thought about stays private by default.
+#
+# Installed 2026-08-12, replacing the 2026-07-28 secrets-only version, as
+# part of collapsing carolus_repo/ into a single repo rooted here. See
+# research-log/01-projet/plan-restructuration-repo.md for the full plan and
+# research-log/01-projet/audit-systeme-fichiers.md for what stays private
+# and why.
+
+# 1. Ignore every top-level entry.
+/*
+
+# 2. Re-admit only what is published.
+!/carolus_ws/
+!/shortcuts/
+!/overleaf/
+!/README.md
+!/LICENSE
+!/NOTICE
+!/.gitignore
+!/.env.example
+
+# 3. Inside those, exclude what must not travel.
+#    (Migrated from sync_repo.sh's --exclude flags, which is retired by
+#    this restructure.)
+
+# Build output -- regenerable
+carolus_ws/build/
+carolus_ws/devel/
+carolus_ws/build_isolated/
+carolus_ws/devel_isolated/
+carolus_ws/logs/
+
+# Upstream clone, not ours to vendor
+carolus_ws/src/robot_localization/
+
+# Absolute symlink into /opt/ros on this machine -- meaningless elsewhere
+/carolus_ws/src/CMakeLists.txt
+
+# Session logs -- robot telemetry, no value to a reader
+shortcuts/logs/
+
+# Python / editor noise
+__pycache__/
+*.pyc
+*.swp
+*.swo
+
+# Secrets -- defence in depth; none are expected in the published set
 .env
 .env.*
 !.env.example
 *.key
 *.pem
 
-build/
-build_isolated/
-devel/
-devel_isolated/
-__pycache__/
-*.pyc
-*.swp
-*.swo
-
-# LaTeX build artifacts (added 2026-08-03) — keep only .tex sources and the
-# compiled .pdf tracked, not the intermediate files pdflatex regenerates.
+# LaTeX intermediates: keep .tex sources and the built .pdf, drop the rest
 *.aux
 *.log
 *.out
 *.toc
+*.synctex.gz

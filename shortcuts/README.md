@@ -6,9 +6,9 @@ Shortcut scripts for frequent operations. Common prerequisites: robot powered on
 
 ## `carolus_launcher.py`
 
-**What:** Tkinter GUI (dark theme) — T1/T2/T3/T4/T5 sequence, live dashboard, integrated live map, manual chassis (ZQSD) and gimbal (numpad) piloting, interactive key blocks, LOCATE mode (beacon localization without advancing), LOCK button (periodic beacon re-centering, period configurable in seconds, 2026-07-23), beacon indicator + minimap (2026-07-23, see dedicated section), RECENTER CAM button (gimbal base position, 2026-07-23), CAM PREVIEW button (OFF by default — toggles the camera subscription, gains smoothness + network bandwidth), fullscreen (**F11** toggles, **Escape** exits, 2026-07-23), DOCKING BALISE panel — CALIBRATE/CAL STEP 2/START/ABORT buttons + status readout (2026-07-27, see T5 below).
+**What:** Tkinter GUI (dark theme) — T1/T2/T3/T4/T5 sequence, live dashboard, manual chassis (ZQSD) and gimbal (numpad) piloting, interactive key blocks, LOCATE mode (beacon localization without advancing), LOCK button (periodic beacon re-centering, period configurable in seconds, 2026-07-23), beacon indicator + minimap (2026-07-23, see dedicated section), RECENTER CAM button (gimbal base position, 2026-07-23), CAM PREVIEW button (OFF by default — toggles the camera subscription, gains smoothness + network bandwidth), fullscreen (**F11** toggles, **Escape** exits, 2026-07-23), DOCKING BALISE panel — CALIBRATE/CAL STEP 2/START/ABORT buttons + status readout (2026-07-27, see T5 below).
 
-**Why:** launches the stack with no commands to type; a live dashboard (SEARCH/APPROACH/STOP/LOCATE/MANUAL state, depth, robot battery, camera); a real-time live map (robot + beacon position over a JSON background); immediate piloting without leaving the window; visual feedback for active keys.
+**Why:** launches the stack with no commands to type; a live dashboard (SEARCH/APPROACH/STOP/LOCATE/MANUAL state, depth, robot battery, camera); immediate piloting without leaving the window; visual feedback for active keys.
 
 **Usage:**
 ```bash
@@ -17,7 +17,7 @@ python3 shortcuts/carolus_launcher.py
 
 | Button | What runs | Unlocked when |
 |---|---|---|
-| 1 · roscore + Pi | gnome-terminal → SSH → `eth1 up` + `roscore` | port 11311 open (60s timeout) |
+| 1 · roscore + Pi | integrated SSH → `eth1 up` + `roscore` | port 11311 open (60s timeout) |
 | 2 · Camera + Beacon | integrated SSH → `rm_cam_beacon.py` + `cam_view_helper.py` | `/camera/color/image_raw` published (60s timeout) |
 | 3 · Carolus **[Pi]** | SSH → `roslaunch carolus_node testcarolus.launch ubuntu2204_preload:=false` **on the Pi** | — (manual) |
 | 4 · TF Broadcaster (quat fix) | integrated SSH → `carolus_tf_broadcaster.py` on the Pi | — (manual, no wait — a lightweight node, near-instant startup) |
@@ -43,24 +43,85 @@ python3 shortcuts/carolus_launcher.py
 
 > **Remote kills go through `remote_kill()` since 2026-08-04 (BUG-095), and they now verify.** `ssh` runs a compound command inside a remote shell whose own `/proc` cmdline **contains the pattern being matched**, so a plain `pkill -9 -f rm_cam_beacon.py` could kill that shell before reaching the real target — non-deterministically, depending on PID scan order, and with nothing reported. Demonstrated on 2026-08-04: the unbracketed multi-line form produced *no output at all* (the shell died mid-way) and left 1 of 3 targets alive; the bracketed form printed its confirmation and left 0. Patterns are now bracketed automatically (`[r]m_cam_beacon.py`) by a single helper so they are never hand-written again, and `remote_kill()` **re-reads the Pi afterwards** — a survivor logs `> !! TOUJOURS VIVANT sur le Pi : …` in the tab instead of failing silently. The most important instance was the on-close cleanup, whose own comment explains that an orphaned `rm_cam_beacon.py` keeps the SDK connection and causes the next launch to hit the double-connection bug ("manual mode stopped working") — that cleanup was one of the broken ones, so it failed exactly in the case it exists to prevent. It now also kills `carolus_astrobee` and `roslaunch`, since T3 runs on the Pi.
 
+
+> **Log drain ceiling raised 2026-08-10 (BUG-098).** Reader threads push into an
+> unbounded `queue.Queue`; `_flush_log_queue` drained it on the main thread at
+> **50 lines per 50 ms tick — a hard 1000 lines/s ceiling**. Measured on a real
+> session (`logs/session-2026-08-10-15-54-11.log`, 467050 lines / 919 s): the
+> arrival rate is a median of **614** and a peak of **915** lines/s, i.e. **92 %
+> of that ceiling**, 99.5 % of it from T3's per-blob logging. At peak, one
+> delayed tick backs the queue up and it never recovers — the operator then
+> reads a log and a dashboard lagging reality by seconds while the robot moves.
+> Raised to 400 lines/tick (**8000 lines/s**, ~9× headroom); the cap is kept so
+> one tick's worst case after a backlog stays bounded, and a backlog now says so
+> (`> !! log backlog N lines`, once per 5 s) instead of being absorbed silently.
+> **This is a real defect found while investigating the GUI-freeze report — it
+> is not a demonstrated cause of it.** That symptom is still unexplained; see
+> `research-log/journal.md`, 2026-08-10 entries (10) and (11).
+
+
+> **Camera preview decodes only on change, 2026-08-10.** `_refresh_cam` called
+> `tk.PhotoImage(file=CAM_PNG)` every 50 ms unconditionally — a full PNG decode
+> on the main thread, **measured at 6.19 ms, i.e. 12.4 % of it at that period**.
+> The helper writes at its own 20 Hz and the two are not synchronised, so the
+> same bytes were frequently decoded twice. An `os.path.getmtime` comparison now
+> skips unchanged files: with a static image that is **1 decode instead of 20
+> per second (~118 ms/s of main thread returned)**, and a changed file still
+> goes through on the next tick. `_cam_png_mtime` is reset to `None` wherever
+> the canvas is cleared (CAM OFF, and the dashboard reset) — without that the
+> preview would stay blank until the helper happened to rewrite the file.
+
+
+> **BUG-099 / BUG-100 fixed 2026-08-10 — manual piloting had no heartbeat, the
+> gimbal had no deadman.** The Pi stops the chassis if no `/carolus/cmd_vel`
+> arrives within 0.5 s (`MANUAL_CMDVEL_TIMEOUT`). The launcher only ever sent on
+> a key *event*, and since BUG-060's auto-repeat debounce a **held** key
+> produces no further events — so one command was sent, the deadman expired, and
+> **the robot stopped with the key still down** ("navigation stopped
+> responding"). Fixed with `_cmd_heartbeat`, re-sending every **200 ms**
+> (`CMD_HEARTBEAT_MS`, 2.5x margin under the deadman) while any key is held.
+> Verified it does not reintroduce BUG-060's sawtooth: 6 consecutive identical
+> sends over 1.0 s, max gap 0.209 s, no zero interleaved.
+>
+> The gimbal had the opposite defect — `_gim_stamp` was written and **never
+> read**, so the last commanded speed repeated at 20 Hz forever and a lost
+> `KeyRelease` left it turning with nothing to stop it. `MANUAL_GIMBAL_TIMEOUT`
+> added on the Pi, symmetric with the chassis. **Not yet run on hardware.**
+>
+> Together these predict both halves of the 2026-08-10 incident (gimbal pitching
+> down *and* navigation unresponsive). Predict, not prove — reproducing it
+> deliberately is still the next hardware step.
+
+
+> **Layout: two columns, and the window finally fits the screen (2026-08-10).**
+> Everything was stacked in one column, making the window **1406 px tall — 326 px
+> more than the 1920x1080 primary screen**, so the log panel fell off the bottom;
+> and `resizable(False, False)` meant there was no way to cope with it. Removing
+> the live map freed the right column, so the logs (the tallest block) moved
+> there: **1510 x 1043**, which fits. The window is also **resizable** now —
+> locking a fixed layout is defensible, locking one that can open taller than the
+> screen is not. Measured before/after with `winfo_reqwidth/reqheight`, not
+> eyeballed.
+
 ---
 
-### Live map (right-hand panel)
+### Live map — REMOVED 2026-08-10
 
-The `_LiveMapCanvas` panel shown to the right of all the controls. 520×420 px canvas (26 cells × 20 px), grid background, obstacle blocks from the JSON.
+The embedded `_LiveMapCanvas` panel (lab floor plan, obstacle blocks, robot and
+beacon position over `mapv1.json`) and the **ÉDITEUR MAP** button that opened
+`map_editor.py` were **removed at the user's request**. 178 lines gone from the
+launcher; it now has one column instead of two.
 
-| Element | Description |
-|---|---|
-| Blue square (■▲) | Real-time robot position + heading (updated via `[POS]` + `[ATTI]`) |
-| Yellow dot | Most recent detected beacon position (updated via `[BEACONPOS]`). **Auto-disappears** if there's been no detection for 1.5s (`BEACON_FRESH_S`) — serves as a visual indicator that detection is active without having to read the T3 logs. |
-| Gray blocks | Obstacles loaded from `mapv1.json` at startup |
-| **Load map** button | Open another JSON file from disk |
+Archived, not deleted — `archive/mapv1-2026-08-10/` holds `mapv1.json` (which
+was empty: no blocks, no beacons), `map_editor.py`, and the extracted
+`_LiveMapCanvas` class, so the feature can be reconstructed if it is ever
+wanted again.
 
-**Auto-load:** `mapv1.json` (project root) auto-loaded 500ms after the launcher starts.
+**The BEACON MINIMAP was deliberately KEPT.** It shares the word "map" and
+nothing else: it shows where the beacon sits *within the camera frame* (green
+when centred within ±3°), which is a live detection aid, not a map of the lab,
+and it has no connection to `mapv1.json`. See its own section below.
 
-**Axis convention (same as map_editor):**
-- EP x (forward/north) → up on the canvas
-- EP y (right/east) → right on the canvas
 
 ---
 
@@ -70,7 +131,7 @@ The **LOCATE** button in the control row (gold-yellow when active). Publishes `"
 
 **Behavior in LOCATE mode:**
 - The gimbal sweep continues (same as AUTO/SEARCH).
-- As soon as the beacon is visible: the robot stops (`stop_gimbal` + `stop_chassis`), position published to the live map.
+- As soon as the beacon is visible: the robot stops (`stop_gimbal` + `stop_chassis`).
 - No ALIGN/APPROACH transition — the robot stays in place.
 - If the beacon disappears: the sweep resumes.
 
@@ -103,7 +164,7 @@ The **LOCK** button in the control row, with an input field next to it (period i
 Below the dashboard's camera panel.
 
 - **Indicator** (a circle + text, in English): `BEACON: DETECTED` (green) / `BEACON: LOST` (red). Fed by the `[BEACON] status=...` log that `rm_cam_beacon.py` publishes at 5Hz.
-- **BEACON MINIMAP** (a small 100×100 canvas): a dot represents the beacon's position *within the camera frame* (green if centered within ±3°, orange otherwise) — distinct from the existing robot/grid live map, which shows position within the lab.
+- **BEACON MINIMAP** (a small 100×100 canvas): a dot represents the beacon's position *within the camera frame* (green if centered within ±3°, orange otherwise). Not to be confused with the lab-floor live map, which was removed 2026-08-10.
 - Reset on entering/leaving MANUAL and on Kill (same hygiene as the LOCK button).
 - **REMEMBER BEACON/SEARCH BEACON buttons removed 2026-07-23 (night)**: had been confirmed working on hardware earlier that evening, then judged unsatisfactory by the user without further detail — a full removal was requested, no code trace remains. Replaced by the **RECENTER CAM** button (see the dedicated section below).
 
@@ -147,7 +208,9 @@ Two blocks appear below the launch buttons. Keys light up gold when active (keyb
 
 **Activation:** click `MODE: AUTO` → switches to `MODE: MANUAL` (orange). ZQSD/numpad active both from the launcher **and** from the map editor window (bindings propagated to both windows). Guard: keys don't trigger a command if focus is on a text input widget. Back to AUTO: click again, chassis + gimbal stop immediately.
 
-**Keyboard focus:** T1 and T3 open external `gnome-terminal` windows that steal the system's keyboard focus. If ZQSD stops responding after launching T1/T3, just **hover the mouse over the launcher or map editor window** — focus is reclaimed automatically (`<Enter>` → `focus_set()`, fixed 2026-07-01).
+**Keyboard focus:** if ZQSD stops responding, **hover the mouse over the launcher window** — focus is reclaimed automatically (`<Enter>` → `focus_set()`, added 2026-07-01).
+
+> **Corrected 2026-08-10.** This section used to say T1 and T3 open external `gnome-terminal` windows that steal focus. **They do not, and have not since 2026-07-20**, when every terminal became integrated (`_cmd_integrated`, one log tab each) — the code has said so for a month while this line still described the old behaviour. The map-editor window, the other thing named here, was removed the same day this was corrected. The hover binding is kept anyway: it costs nothing and still covers focus taken by *another application*, which no fix of ours can prevent. Worth recording because this stale line was, until it was checked, the leading candidate explanation for the unexplained GUI-freeze incident — and it turned out to describe a mechanism that no longer exists.
 
 ---
 
@@ -406,5 +469,25 @@ bash shortcuts/sync_repo.sh --apply  # copy live -> repo, then report
 `overleaf/` and the repo's `README.md` exist only in the repo and are never touched.
 
 **Expected** — `RESULT: repo matches the working files.` once in sync. Dry run is the default on purpose: a blind copy could clobber a repo-only edit, so always read the report before passing `--apply`.
+
+---
+
+## `capture_checkerboard.py`
+
+**What** — subscribes to `/camera/color/image_raw` and saves a live preview frame to disk on keypress, for the MATLAB Camera Calibration Toolbox procedure (`technical.tex`, Chapter "Camera Calibration").
+
+**Why** — created 2026-08-11 after reviewing the LEO/LIMO documents Hector sent: they use the exact same MATLAB checkerboard method, and this project's own manual already documented the procedure (25 mm checkerboard, MATLAB's Camera Calibration app) without ever having a way to actually save frames from the live camera stream — the values currently loaded (`camera_info.yaml`) were a pragmatic stand-in, never the output of this procedure. No existing script in this project wrote a camera frame to disk.
+
+**Usage**
+```bash
+python3 shortcuts/capture_checkerboard.py [output_dir]   # default: data/checkerboard/
+```
+Live preview window. `s` saves the current frame as `checkerboard_NNN.png`; `q` quits. Aim for at least 15 frames, checkerboard tilted more than 45° from the optical axis in each, varied position/orientation across the field of view, occupying roughly 20–25% of the frame — per the manual's own already-written recommendation.
+
+**Expected** — a folder of PNG frames ready to upload into MATLAB's Camera Calibration app (Apps tab), enable tangential distortion + three radial distortion coefficients, run, and transcribe the exported `fx`/`fy`/`cx`/`cy`/distortion into `testcarolus.launch`.
+
+**Needs the robot powered on**, camera streaming, and a printed 25 mm checkerboard.
+
+**BUG-102, fixed 2026-08-11 (first real run crashed):** this lab PC has a numpy 2.2.6 install shadowing the system numpy `cv2` needs, and a system `cv_bridge` linked against a different OpenCV build than `cv2` itself (same defect class as BUG-101, same day) — both are corrected automatically by a self-re-exec guard at the top of the script; the plain command above is unaffected and needs no extra flags.
 
 ---

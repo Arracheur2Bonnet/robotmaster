@@ -9,123 +9,15 @@ import json
 import math
 import queue
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import ttk
 import threading
 import subprocess
 import time
 
-from map_editor import MapEditor
 
-MAPV1 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mapv1.json")
 
 
 # ── Carte live embarquée ──────────────────────────────────────────────────────
-
-class _LiveMapCanvas(tk.Frame):
-    """Small read-only 2D map canvas, embedded in the launcher."""
-    CELL = 20          # px par case
-    CELL_M = 0.40      # mètre par case
-
-    def __init__(self, parent):
-        super().__init__(parent, bg=BG2)
-        self._cols = 26
-        self._rows = 21
-        cw = self._cols * self.CELL
-        ch = self._rows * self.CELL
-        self._canvas = tk.Canvas(self, width=cw, height=ch, bg="#101418",
-                                 highlightthickness=1, highlightbackground="#2a2a2a")
-        self._canvas.pack()
-        self._robot_ids   = []
-        self._beacon_ids  = []
-        self._robot_px    = (cw // 2, ch // 2)   # canvas px du robot (par défaut centre)
-        self._draw_grid()
-
-    # ── dessin grille + obstacles ─────────────────────────────────────────────
-
-    def _draw_grid(self):
-        cw = self._cols * self.CELL
-        ch = self._rows * self.CELL
-        for c in range(self._cols + 1):
-            self._canvas.create_line(c * self.CELL, 0, c * self.CELL, ch,
-                                     fill="#1e2328", tags="grid")
-        for r in range(self._rows + 1):
-            self._canvas.create_line(0, r * self.CELL, cw, r * self.CELL,
-                                     fill="#1e2328", tags="grid")
-
-    def load_map(self, path):
-        try:
-            with open(path) as f:
-                data = json.load(f)
-        except Exception:
-            return False
-        cols = data.get("cols", self._cols)
-        rows = data.get("rows", self._rows)
-        if cols != self._cols or rows != self._rows:
-            self._cols = cols
-            self._rows = rows
-            cw, ch = cols * self.CELL, rows * self.CELL
-            self._canvas.config(width=cw, height=ch)
-            self._canvas.delete("grid")
-            self._draw_grid()
-        self._robot_px = (self._cols * self.CELL // 2, self._rows * self.CELL // 2)
-        self._canvas.delete("block")
-        for b in data.get("blocks", []):
-            r, c = b.get("row", -1), b.get("col", -1)
-            if not (0 <= r < rows and 0 <= c < cols):
-                continue
-            x1, y1 = c * self.CELL, r * self.CELL
-            x2, y2 = x1 + self.CELL, y1 + self.CELL
-            fill = {"full": "#505560", "half": "#3c4048", "quarter": "#303438"}.get(
-                b.get("type", "full"), "#505560")
-            self._canvas.create_rectangle(x1, y1, x2, y2, fill=fill, outline="", tags="block")
-        self._canvas.tag_raise("overlay")
-        return True
-
-    # ── mises à jour live ─────────────────────────────────────────────────────
-
-    def _world_to_px(self, wx, wy):
-        ox, oy = self._robot_px
-        sc = self.CELL / self.CELL_M
-        return ox + wy * sc, oy - wx * sc   # y+=est, x+=nord
-
-    def update_robot(self, wx, wy, yaw_deg):
-        for cid in self._robot_ids:
-            self._canvas.delete(cid)
-        self._robot_ids = []
-        px, py = self._world_to_px(wx, wy)
-        s = max(5, self.CELL // 2 - 1)
-        rad = math.radians(yaw_deg)
-        self._robot_ids.append(self._canvas.create_rectangle(
-            px - s, py - s, px + s, py + s,
-            fill="#2255ee", outline="#4477ff", tags="overlay"))
-        ax = px + (s + 5) * math.sin(rad)
-        ay = py - (s + 5) * math.cos(rad)
-        self._robot_ids.append(self._canvas.create_line(
-            px, py, ax, ay, fill="white", width=2, arrow="last", tags="overlay"))
-
-    def update_beacon(self, wx, wy):
-        for cid in self._beacon_ids:
-            self._canvas.delete(cid)
-        self._beacon_ids = []
-        px, py = self._world_to_px(wx, wy)
-        r = max(5, self.CELL // 3)
-        self._beacon_ids.append(self._canvas.create_oval(
-            px - r, py - r, px + r, py + r,
-            fill="#ff8800", outline="#ffcc44", tags="overlay"))
-
-    def add_auto_beacon(self, wx, wy, facing_deg=0):
-        self.update_beacon(wx, wy)
-
-    def hide_beacon(self):
-        for cid in self._beacon_ids:
-            self._canvas.delete(cid)
-        self._beacon_ids = []
-
-    def reset_overlay(self):
-        for cid in self._robot_ids + self._beacon_ids:
-            self._canvas.delete(cid)
-        self._robot_ids  = []
-        self._beacon_ids = []
 
 PI       = "ubuntu@192.168.0.103"
 PI_HOST  = "192.168.0.103"
@@ -296,11 +188,19 @@ class App(tk.Tk):
         # i.e. at the worst possible moment.
         self._log_fh = None
         self._session_log_path = None
+        # Last mtime of the preview PNG actually decoded (2026-08-10). None
+        # forces the next tick to decode whatever is there -- set back to None
+        # anywhere the canvas is cleared, or the preview would stay blank until
+        # the helper happens to rewrite the file.
+        self._cam_png_mtime = None
         self._open_session_log()
 
         self.title("Carolus Launcher")
         self.configure(bg=BG)
-        self.resizable(False, False)
+        # Resizable since 2026-08-10. It was locked, which is defensible for a
+        # fixed layout -- but not when the window can be taller than the screen
+        # it opens on: the operator then has no way to reach the bottom of it.
+        self.resizable(True, True)
         self.procs      = [None, None, None, None, None, None]   # Popen T1..T6
         self.cam_proc   = None                 # Popen helper video (stdin=PIPE)
         self.cam_img    = None                 # reference PhotoImage (anti-GC)
@@ -315,9 +215,6 @@ class App(tk.Tk):
         self._log_queue  = queue.Queue()       # lignes T2 integre -> main thread
         self._chassis_btns = {}                # label widgets touches ZQSD
         self._gimbal_btns  = {}                # label widgets numpad 8/4/5/6/2
-        # Editeur de map (Toplevel séparé) + carte live embarquée
-        self._map_editor     = None    # instance MapEditor si ouverte
-        self._live_map       = None    # _LiveMapCanvas (construit dans _build)
         self._locate_active  = False   # mode LOCALISER actif
         # GUI camera preview: OFF by default (2026-07-23) -- both for smoother
         # piloting (a less loaded Tkinter mainloop) and to free network bandwidth:
@@ -339,9 +236,7 @@ class App(tk.Tk):
         # Sonde Pi : premier tir a 2s (laisse la fenetre s'afficher d'abord),
         # then every PI_PROBE_PERIOD_MS. See _pi_state_probe.
         self.after(2000, self._pi_state_tick)
-        # Auto-chargement de la carte par défaut
-        if os.path.exists(MAPV1):
-            self._live_map.load_map(MAPV1)
+        self.after(self.CMD_HEARTBEAT_MS, self._cmd_heartbeat)
         threading.Thread(target=self._conn_monitor, daemon=True).start()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         # Fullscreen (2026-07-23): F11 toggles, Escape exits.
@@ -352,13 +247,18 @@ class App(tk.Tk):
     # ── construction UI ──────────────────────────────────────────────────────
 
     def _build(self):
-        # ── split horizontal : left = contrôles, right = carte live ──────────
+        # ── Two columns: left = controls, right = logs (2026-08-10).
+        #
+        # Everything used to be stacked in one column, which made the window
+        # 1406 px tall -- 326 px MORE than the 1920x1080 primary screen, so the
+        # log panel simply fell off the bottom, and `resizable(False, False)`
+        # left no way to cope with it. Removing the live map freed the right
+        # column; the logs are the tallest block, so they go there. Height comes
+        # down to roughly what a 1080p screen can actually show.
         left_col = tk.Frame(self, bg=BG)
         left_col.pack(side="left", fill="y")
-        right_col = tk.Frame(self, bg=BG2, padx=8, pady=8)
-        right_col.pack(side="left", fill="y")
-        self._build_live_map(right_col)
-
+        right_col = tk.Frame(self, bg=BG)
+        right_col.pack(side="left", fill="both", expand=True)
         # --- header robotique ---
         header = tk.Frame(left_col, bg=BG2)
         header.pack(fill="x")
@@ -444,9 +344,6 @@ class App(tk.Tk):
                                   activebackground=ACCENT, activeforeground=BG, font=FONT,
                                   command=self._toggle_camera_preview)
         self._cam_btn.pack(side="left", fill="x", expand=True, padx=(4, 4))
-        tk.Button(ctrl, text="ÉDITEUR MAP", bg=BG3, fg=ACCENT, relief="flat",
-                  activebackground=ACCENT, activeforeground=BG, font=FONT,
-                  command=self._open_map_editor).pack(side="left", fill="x", expand=True, padx=(4, 0))
 
         # --- blocs de pilotage visuel ---
         self._build_ctrl_blocks(left_col)
@@ -585,7 +482,7 @@ class App(tk.Tk):
         self._dock_status_lbl.pack(anchor="w", pady=(4, 0))
 
         # --- logs : un onglet par terminal (T1-T5), selectionnables + bouton copier ---
-        logh = tk.Frame(left_col, bg=BG)
+        logh = tk.Frame(right_col, bg=BG)
         logh.pack(fill="x", padx=12, pady=(6, 0))
         tk.Label(logh, text="Logs :", bg=BG, fg=FG_DIM, font=FONT).pack(side="left")
         tk.Button(logh, text="Copier les logs (onglet actif)", bg=BG3, fg=FG, relief="flat",
@@ -601,7 +498,7 @@ class App(tk.Tk):
                   background=[("selected", ACCENT)],
                   foreground=[("selected", BG)])
 
-        self.log_nb = ttk.Notebook(left_col, style="Carolus.TNotebook")
+        self.log_nb = ttk.Notebook(right_col, style="Carolus.TNotebook")
         self.log_nb.pack(padx=12, pady=(2, 12), fill="both", expand=True)
 
         self.log_boxes = []
@@ -697,46 +594,6 @@ class App(tk.Tk):
 
         tk.Label(wr, text="Maintenir enfonce", bg=BG2, fg=FG_DIM,
                  font=FONT).pack(anchor="w", pady=(4, 0))
-
-    # ── éditeur de map ───────────────────────────────────────────────────────
-
-    def _open_map_editor(self):
-        if self._map_editor is not None:
-            try:
-                self._map_editor.lift()
-                self._map_editor.focus()
-                return
-            except tk.TclError:
-                self._map_editor = None
-        self._map_editor = MapEditor(self)
-        self._map_editor.protocol("WM_DELETE_WINDOW", self._close_map_editor)
-        self._bind_keys_to(self._map_editor)   # ZQSD/numpad actifs sans recliquer sur launcher
-
-    def _close_map_editor(self):
-        if self._map_editor:
-            self._map_editor.destroy()
-        self._map_editor = None
-
-    # ── carte live embarquée ──────────────────────────────────────────────────
-
-    def _build_live_map(self, parent):
-        tk.Label(parent, text="MAP LIVE", bg=BG2, fg=ACCENT, font=FONT).pack(anchor="w", pady=(0, 4))
-        self._live_map = _LiveMapCanvas(parent)
-        self._live_map.pack()
-        btn_row = tk.Frame(parent, bg=BG2)
-        btn_row.pack(fill="x", pady=(6, 0))
-        tk.Button(btn_row, text="Charger map...", bg=BG3, fg=FG, relief="flat",
-                  activebackground=ACCENT, activeforeground=BG, font=FONT,
-                  command=self._load_live_map).pack(side="left", fill="x", expand=True)
-
-    def _load_live_map(self):
-        path = filedialog.askopenfilename(
-            parent=self,
-            filetypes=[("Map JSON", "*.json"), ("Tous", "*.*")],
-            initialdir=os.path.expanduser("~/Desktop"),
-            title="Charger une carte")
-        if path:
-            self._live_map.load_map(path)
 
     def _toggle_locate(self):
         self._locate_active = not self._locate_active
@@ -856,6 +713,7 @@ class App(tk.Tk):
             self.cam_canvas.delete("all")
             self._cam_txt = self.cam_canvas.create_text(160, 90, text="apercu desactive", fill=FG_DIM)
             self.cam_img = None
+            self._cam_png_mtime = None   # force a decode when the preview comes back
             self.after(0, self._log, "> Apercu camera OFF (fluidite + bande passante)")
 
     # ── tilt roues (mode MANUEL uniquement) ──────────────────────────────────
@@ -1145,13 +1003,8 @@ class App(tk.Tk):
         self.cam_canvas.delete("all")
         self.cam_canvas.create_text(160, 90, text="en attente...", fill=FG_DIM)
         self.cam_img = None
+        self._cam_png_mtime = None
         self._last_robot_pos = (0.0, 0.0)
-        if self._map_editor:
-            try:
-                self._map_editor.reset_overlay()
-            except Exception:
-                pass
-        self._live_map.reset_overlay()
         try:
             os.remove(CAM_PNG)
         except OSError:
@@ -1212,16 +1065,44 @@ class App(tk.Tk):
         except Exception:
             pass
 
+    # BUG-098 (2026-08-10): the drain ceiling was 50 lines per 50 ms tick, i.e.
+    # 1000 lines/s. Measured on logs/session-2026-08-10-15-54-11.log (467050
+    # lines / 919 s): the real arrival rate is a MEDIAN of 614 and a PEAK of 915
+    # lines/s, 92% of that ceiling. `_log_queue` is unbounded, so at peak any
+    # delayed tick makes it back up and never recover -- the operator then reads
+    # a log and a dashboard that lag reality by seconds while the robot moves,
+    # which is indistinguishable from the GUI having stopped responding.
+    #
+    # Raised to 400/tick (8000 lines/s, ~9x headroom over the measured peak).
+    # The cap is kept rather than draining the queue whole: it bounds the worst
+    # case a single tick can cost after a long backlog. When the backlog is real
+    # it is now SAID so, once every 5 s, instead of being absorbed silently --
+    # the previous behaviour hid exactly the condition worth knowing about.
+    LOG_DRAIN_PER_TICK = 400
+
+    # Manual-command heartbeat (BUG-099, 2026-08-10). Must stay comfortably
+    # under the Pi's MANUAL_CMDVEL_TIMEOUT (0.5 s) -- 200 ms gives 2.5x margin,
+    # so two consecutive lost heartbeats still do not trip the deadman.
+    CMD_HEARTBEAT_MS = 200
+
     def _flush_log_queue(self):
         batch = []
         try:
-            while len(batch) < 50:
+            while len(batch) < self.LOG_DRAIN_PER_TICK:
                 batch.append(self._log_queue.get_nowait())
         except queue.Empty:
             pass
         for tag, line in batch:
             if line:
                 self._on_log_line(tag, line)
+        if len(batch) == self.LOG_DRAIN_PER_TICK:
+            backlog = self._log_queue.qsize()
+            if backlog > self.LOG_DRAIN_PER_TICK:
+                now = time.time()
+                if now - getattr(self, "_last_backlog_warn", 0.0) > 5.0:
+                    self._last_backlog_warn = now
+                    self._log(f"> !! log backlog {backlog} lines — the GUI is "
+                              f"behind the robot", None)
         self.after(50, self._flush_log_queue)
 
     def _on_log_line(self, tag, line):
@@ -1273,12 +1154,6 @@ class App(tk.Tk):
             if m:
                 x, y = float(m.group(1)), float(m.group(2))
                 self._last_robot_pos = (x, y)
-                if self._map_editor:
-                    try:
-                        self._map_editor.update_robot(x, y, self._last_robot_yaw)
-                    except Exception:
-                        pass
-                self._live_map.update_robot(x, y, self._last_robot_yaw)
         if "[VEL]" in line:
             m = RE_VEL.search(line)
             if m:
@@ -1327,13 +1202,6 @@ class App(tk.Tk):
                 wx = rx - rel_z * math.cos(yaw_r) - rel_x * math.sin(yaw_r)
                 wy = ry - rel_z * math.sin(yaw_r) + rel_x * math.cos(yaw_r)
                 face_deg = math.degrees(math.atan2(rx - wx, ry - wy))
-                if self._map_editor:
-                    try:
-                        self._map_editor.update_beacon(wx, wy)
-                        self._map_editor.add_auto_beacon(wx, wy, face_deg)
-                    except Exception:
-                        pass
-                self._live_map.add_auto_beacon(wx, wy, face_deg)
                 self._last_beacon_ts = time.time()
         if "[DOCKSTATUS]" in line:
             self._t5_dock_ready = True   # premiere ligne vue -> T5 a fini son __init__
@@ -1342,10 +1210,14 @@ class App(tk.Tk):
                 self._on_dock_status(m.group(1), m.group(2) == "True")
 
     def _check_beacon_freshness(self):
-        """Hide the beacon marker on the live map if no recent detection
-        (avoids leaving a yellow dot displayed when the robot no longer sees the beacon)."""
+        """Expire the last-detection timestamp after BEACON_FRESH_S.
+
+        Until 2026-08-10 this also hid a marker on the embedded live map; that
+        feature was removed (see shortcuts/README.md). The timer stays because
+        `_last_beacon_ts` remains the freshness source for the beacon
+        indicator, which has its own reset path.
+        """
         if self._last_beacon_ts and (time.time() - self._last_beacon_ts > BEACON_FRESH_S):
-            self._live_map.hide_beacon()
             self._last_beacon_ts = 0.0
         self.after(300, self._check_beacon_freshness)
 
@@ -1361,11 +1233,21 @@ class App(tk.Tk):
             return
         try:
             if os.path.exists(CAM_PNG):
-                img = tk.PhotoImage(file=CAM_PNG)
-                self.cam_canvas.delete("all")
-                self.cam_canvas.create_image(160, 90, image=img, anchor="center")
-                self.cam_img = img
-                self._cam_txt = None
+                # Decode only when the file actually changed (2026-08-10).
+                # `tk.PhotoImage(file=...)` is a full PNG decode on the main
+                # thread, measured at 6.19 ms -- 12.4% of it at this 50 ms
+                # period. The helper writes at its own 20 Hz (THROTTLE_S=0.05)
+                # and the two are not synchronised, so a plain re-read decodes
+                # the same bytes again whenever the phases drift. An mtime
+                # comparison skips those: nothing new to show, nothing to pay.
+                mtime = os.path.getmtime(CAM_PNG)
+                if mtime != self._cam_png_mtime:
+                    self._cam_png_mtime = mtime
+                    img = tk.PhotoImage(file=CAM_PNG)
+                    self.cam_canvas.delete("all")
+                    self.cam_canvas.create_image(160, 90, image=img, anchor="center")
+                    self.cam_img = img
+                    self._cam_txt = None
         except Exception:
             pass
         # Rafraichissement apercu GUI (2026-07-22 : 500->50 ms, soit 2->20 Hz).
@@ -1671,9 +1553,14 @@ class App(tk.Tk):
 
     def _bind_keys_to(self, window):
         """Bind chassis/gimbal handlers to any Tk window (root or Toplevel)."""
-        # Reclaim keyboard focus on hover: necessary because T1/T3 open external
-        # gnome-terminal windows that steal WM focus, and focus_set() is otherwise
-        # called only once (when switching to MANUAL mode).
+        # Reclaim keyboard focus on hover. NOTE (2026-08-10): this was originally
+        # here because T1/T3 opened external gnome-terminal windows that stole WM
+        # focus -- those were removed on 2026-07-20 when every terminal became
+        # integrated, so that specific thief is gone. The binding is kept because
+        # focus_set() is otherwise called only once (when switching to MANUAL
+        # mode), and any other window taking focus -- another application, the
+        # window manager -- would otherwise leave the keys dead with no way back
+        # short of clicking.
         window.bind("<Enter>", lambda e, w=window: w.focus_set())
         # BUG (2026-07-21): if focus leaves the window while a key is held (a click
         # elsewhere, the live map, a dialogue...), the matching KeyRelease is never
@@ -1727,10 +1614,7 @@ class App(tk.Tk):
             focused = None   # focus sur une fenetre etrangere -> considere hors appli
         if focused is not None:
             top = focused.winfo_toplevel()
-            bound_windows = [self]
-            if self._map_editor is not None:
-                bound_windows.append(self._map_editor)
-            if top in bound_windows:
+            if top is self:
                 return   # focus encore sur une fenetre qui gere le clavier -> rien a faire
         # Annule tout relachement differe (debounce X11) en attente : evite qu'un
         # _apply_key_release/_apply_numpad_release perime ne se declenche apres
@@ -1789,6 +1673,31 @@ class App(tk.Tk):
         else:
             self._send_to_helper("STOP")
         self._update_chassis_visual()
+
+    def _cmd_heartbeat(self):
+        """Re-send the held-key command periodically (BUG-099, 2026-08-10).
+
+        The Pi stops the chassis if no `/carolus/cmd_vel` arrives within
+        `MANUAL_CMDVEL_TIMEOUT` (0.5 s, rm_cam_beacon.py:198) -- a correct
+        safety deadman. But the launcher only ever sent on a key EVENT, and
+        since BUG-060's auto-repeat debounce (2026-07-23) a held key produces
+        no further events at all: the X11 re-press is swallowed to cancel the
+        deferred release. So holding Z sent one command, the deadman expired
+        0.5 s later, and the robot stopped and stayed stopped WITH THE KEY
+        STILL DOWN. From the operator's seat that reads as "the navigation
+        commands stopped responding".
+
+        This is the missing half of the deadman: the Pi is right to require a
+        heartbeat, the launcher simply never sent one. 200 ms gives 2.5x margin
+        against the 0.5 s timeout. It re-sends the SAME value rather than
+        alternating with zeros, so it cannot reintroduce BUG-060's sawtooth.
+        """
+        if self.gui_mode == "MANUAL":
+            if self._keys_down:
+                self._send_velocity()
+            if self._gim_down:
+                self._send_gimbal()
+        self.after(self.CMD_HEARTBEAT_MS, self._cmd_heartbeat)
 
     def _send_velocity(self):
         vx = 0.0

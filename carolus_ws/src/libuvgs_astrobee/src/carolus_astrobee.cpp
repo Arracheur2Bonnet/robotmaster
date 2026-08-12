@@ -1153,6 +1153,26 @@ private:
             bestPose.solver_iterations, bestPose.solver_final_cost);
     }
 
+    // 2026-08-10 — log the residual on EVERY solve, not only on the failures.
+    //
+    // `solver_final_cost` was already computed (ceresP4P.cpp:70) and thrown away
+    // unless the solve failed to converge, which discards the useful case: a
+    // solve that converges cleanly to a WRONG answer. Round 08's arbitration
+    // identified this residual as the only instrument available, without new
+    // hardware, that separates two explanations of the same symptom — a rigid
+    // lever arm (residual stays flat as the gimbal moves; the geometry is
+    // consistent, our frame model is not) from a viewing-angle-dependent blob
+    // centroid bias (residual grows with viewing angle; the measurements
+    // themselves are being corrupted). The 2026-08-10 pixel-geometry check
+    // could not tell those apart, because it re-used the same blob centroids.
+    //
+    // Throttled to 2 s: this is a trend to plot against gimbal angle across a
+    // calibration sweep, not a per-frame value anyone reads live — and the
+    // launcher's log path has a measured ceiling worth respecting (BUG-098).
+    ROS_INFO_THROTTLE(2.0, "[P4P] final_cost=%.6g iterations=%d converged=%d",
+                      bestPose.solver_final_cost, bestPose.solver_iterations,
+                      static_cast<int>(bestPose.solver_converged));
+
     if (bestPose.R.allFinite() && bestPose.t.allFinite()) {
         CameraPose filteredPose = getFilteredPose(bestPose, timestamp);
         if (fifo){
