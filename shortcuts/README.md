@@ -226,7 +226,7 @@ Two blocks appear below the launch buttons. Keys light up gold when active (keyb
 
 **Logs:** a selectable area, `Ctrl+A` to select all, `Ctrl+C` to copy, a **"Copy logs"** button. No freezing thanks to the async queue (50ms batches / max 50 lines, throughput 1000 lines/s). High-frequency telemetry (`[ESC]`, `[ATTI]`, `[POS]`, `[BAT]`, `[VEL]`, `[TOF]`) filtered out of the Logs area — shown only in the dashboard. `[BEACONPOS]` stays visible in the logs (useful for diagnosing the beacon's position).
 
-**Session log on disk (added 2026-07-31).** Every line written to any tab is also appended to `shortcuts/logs/session-YYYY-MM-DD-HH-MM-SS.log`, one file per launcher start, each line prefixed with the time and the originating tab (`T1`..`T5`, or `--` for a global event broadcast to all tabs). Before this, logs lived only in the tkinter widgets: closing the launcher lost them, and each tab is truncated to 300 lines anyway. The concrete cost showed up on 2026-07-31 — the question *"is LOCK still ticking during a docking run?"* (point 4 of `research-log/03-recherche-ia/points-a-creuser/`) was unanswerable even though a run that would have answered it had already happened; the logs simply weren't kept. Grep by tab to answer that class of question directly:
+**Session log on disk (added 2026-07-31).** Every line written to any tab is also appended to `shortcuts/logs/session-YYYY-MM-DD-HH-MM-SS.log`, one file per launcher start, each line prefixed with the time and the originating tab (`T1`..`T5`, or `--` for a global event broadcast to all tabs). Before this, logs lived only in the tkinter widgets: closing the launcher lost them, and each tab is truncated to 300 lines anyway. The concrete cost showed up on 2026-07-31 — the question *"is LOCK still ticking during a docking run?"* was unanswerable even though a run that would have answered it had already happened; the logs simply weren't kept. Grep by tab to answer that class of question directly:
 
 ```bash
 grep '\[T2\].*\[LOCK\]' shortcuts/logs/session-*.log     # was LOCK active during the run?
@@ -241,7 +241,7 @@ Best-effort by construction: a write error never brings the GUI down. But it is 
 
 **Quoi** — calcule, pour un decalage `d` entre centre de rotation du chassis et centre optique de la camera, le changement apparent de gisement d'une cible fixe apres une rotation sur place.
 
-**Pourquoi** — le 2026-07-30, un run ALIGN a montre le gisement de la balise passer de +6.3 a +18.2 deg (environ +12) sur ~97 deg de rotation chassis, alors que `yaw_ground` restait plat (-142.3 -> -142.4) : la camera n'a donc PAS tourne dans le repere monde, et le changement ne peut pas venir d'une rotation camera. Deux causes candidates (point 2 de `research-log/03-recherche-ia/points-a-creuser/`) : geometrie du bras de levier, ou glissement lateral Mecanum reel. Ce script chiffre la premiere pour savoir s'il reste quelque chose a expliquer.
+**Pourquoi** — le 2026-07-30, un run ALIGN a montre le gisement de la balise passer de +6.3 a +18.2 deg (environ +12) sur ~97 deg de rotation chassis, alors que `yaw_ground` restait plat (-142.3 -> -142.4) : la camera n'a donc PAS tourne dans le repere monde, et le changement ne peut pas venir d'une rotation camera. Deux causes candidates : geometrie du bras de levier, ou glissement lateral Mecanum reel. Ce script chiffre la premiere pour savoir s'il reste quelque chose a expliquer.
 
 **Usage**
 ```bash
@@ -429,7 +429,7 @@ python3 shortcuts/cam_view_helper.py /tmp/carolus_cam.png
 
 **Why** — the 2026-08-04 Pi benchmark measured ~24 frames/s *processed*, counted with **no beacon in view**: no P4P solve ran per frame and the outlier filter was never exercised. The number the supervisor will actually quote — `/pose` under load — is still unmeasured. This script collects it in one command so a short hardware slot is spent on the robot rather than on typing commands.
 
-It also captures, opportunistically: whether the BUG-087 non-convergence warning ever fires in a real run (surfaced 2026-08-03, never yet observed live), whether `[LOCK]` ticks during the run (point 4 of `research-log/03-recherche-ia/points-a-creuser/`), blob-detection health, and CPU load.
+It also captures, opportunistically: whether the BUG-087 non-convergence warning ever fires in a real run (surfaced 2026-08-03, never yet observed live), whether `[LOCK]` ticks during the run, blob-detection health, and CPU load.
 
 **Usage**
 ```bash
@@ -448,27 +448,9 @@ bash shortcuts/measure_pi_pose.sh --stop   # stop everything, leave the Pi clean
 
 ---
 
-## sync_repo.sh
+## sync_repo.sh — retired 2026-08-12
 
-**What** — reconciles `carolus_repo/` (the published git repo) with the live working files, reporting drift by checksum.
-
-**Why** — `carolus_repo/` is not a checkout of the working tree; it is a hand-assembled subset pulled from three separate places (`carolus_ws/src/`, `carolus_ws/cmake_shims/`, and `shortcuts/` at the project root). Nothing reconciled them, so the published repo drifted silently — on 2026-08-04 it was still carrying the *old* `leak_scan.sh`, blind to PDF/DOCX, which would have reported "nothing found" to anyone who ran it.
-
-**Usage**
-```bash
-bash shortcuts/sync_repo.sh          # DRY RUN: report drift, change nothing
-bash shortcuts/sync_repo.sh --apply  # copy live -> repo, then report
-```
-
-| Source | Destination |
-|---|---|
-| `carolus_ws/src/` | `carolus_repo/src/` (minus `robot_localization`, minus the root `CMakeLists.txt` symlink) |
-| `carolus_ws/cmake_shims/` | `carolus_repo/cmake_shims/` |
-| `shortcuts/` | `carolus_repo/shortcuts/` |
-
-`overleaf/` and the repo's `README.md` exist only in the repo and are never touched.
-
-**Expected** — `RESULT: repo matches the working files.` once in sync. Dry run is the default on purpose: a blind copy could clobber a repo-only edit, so always read the report before passing `--apply`.
+Reconciled `carolus_repo/` (a hand-assembled mirror of `carolus_ws/src/`, `cmake_shims/` and `shortcuts/`) with the live working files, since nothing else kept them in sync and the published repo drifted silently more than once. Removed once `carolus_repo/` itself was dissolved into a single tree rooted at the project root — there is no longer a second copy to reconcile, so there is nothing left for this script to do.
 
 ---
 

@@ -1,7 +1,6 @@
-# EKF leger (F3, research-log/04-roadmap.md) : fusion /odom (SDK RoboMaster,
+# EKF leger : fusion /odom (SDK RoboMaster,
 # dérive) + /carolus/absolute_pose (recalage absolu via balise connue). Pas
-# d'IMU dans ce V1 -- le SDK RoboMaster n'expose pas de flux IMU brut fiable
-# (cf. research-log/10-analyse-papiers-hector-mins-ekf.md).
+# d'IMU dans ce V1 -- le SDK RoboMaster n'expose pas de flux IMU brut fiable.
 #
 # world_frame = odom (pas map) : /carolus/absolute_pose EST deja exprime dans
 # odom (cf. beacon_absolute_pose.py -- le node calcule directement T_odom_cam),
@@ -49,7 +48,7 @@ pose0_relative: false
 pose0_queue_size: 5
 # Rejet grossier des lectures aberrantes (cf. BUG-062, le meme risque de saut
 # P4P ponctuel existe ici) -- seuil large volontairement tant que la
-# covariance reelle n'est pas caracterisee (research-log/12-protocole-...).
+# covariance reelle n'est pas caracterisee sur ce robot.
 pose0_rejection_threshold: 5.0
 pose0_nodelay: false
 

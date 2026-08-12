@@ -25,12 +25,12 @@ n'etait pas centree (LOCK actif, sweep SEARCH), le yaw injecte dans l'EKF etait
 faux de yaw_rel. Desormais la TF reelle est lookee et composee explicitement,
 plus d'hypothese d'identite.
 
-Limitations V1 restantes (a documenter/revisiter, cf. journal) :
+Limitations V1 restantes (a documenter/revisiter) :
 - Une seule balise, position/orientation fixees par parametres ROS (pas de
-  carte multi-balises -- prerequis F6 non rempli, cf. gimbal_bearing.py).
+  carte multi-balises, cf. gimbal_bearing.py).
 - Covariance provisoire fixe (diagonale, parametrable) -- la caracterisation
-  empirique par distance/angle (research-log/12-protocole-covariance-carolus.md)
-  n'a pas encore ete faite (protocole terrain, materiel physique requis).
+  empirique par distance/angle n'a pas encore ete faite (protocole terrain,
+  materiel physique requis).
 """
 
 import math
@@ -67,7 +67,7 @@ class BeaconAbsolutePose:
         )
 
         # Covariance provisoire fixe (diagonale) -- placeholder documente
-        # jusqu'a la caracterisation terrain (research-log/12-protocole-...).
+        # jusqu'a la caracterisation terrain.
         pos_var = rospy.get_param("~position_variance", 0.05 ** 2)   # (m^2)
         rot_var = rospy.get_param("~orientation_variance", math.radians(5.0) ** 2)  # (rad^2)
         self.covariance = [0.0] * 36

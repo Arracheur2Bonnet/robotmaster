@@ -3,7 +3,7 @@
 """
 Pipeline de pointage nacelle a priori (carte + odometrie) vers une balise connue.
 
-Concept (F6, `research-log/04-roadmap.md`, 2026-07-23) : etage GROSSIER d'un
+Concept : etage GROSSIER d'un
 pointage nacelle en deux temps, complementaire du LOCK BALISE deja code dans
 `rm_cam_beacon.py` (etage FIN, vision seule) :
 
@@ -128,4 +128,5 @@ if __name__ == "__main__":
     assert max_steady_err < 5.0, f"le servo ne suit pas la cible en regime etabli (err max {max_steady_err:.1f} deg)"
     print(f"\nOK -- transitoire initial ignore ({N_SETTLE} ticks), "
           f"erreur de poursuite en regime etabli : max {max_steady_err:.2f} deg")
-    print("Voir research-log/04-roadmap.md, section F6, pour le plan de branchement.")
+    print("Module autonome, pas encore cable dans rm_cam_beacon.py (voir le "
+          "docstring en tete de fichier pour le plan a deux etages).")

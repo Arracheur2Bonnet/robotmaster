@@ -1,8 +1,18 @@
 <launch>
-    <!-- Lance l'EKF leger (F3, research-log/04-roadmap.md) EN COMPLEMENT du
+    <!-- EXPERIMENTAL, not hardware-validated: lance l'EKF leger EN COMPLEMENT du
          pipeline existant (testcarolus.launch + rm_cam_beacon.py). Fichier
          separe, volontairement : testcarolus.launch reste le launch valide,
-         ne pas le modifier pour experimenter l'EKF. -->
+         ne pas le modifier pour experimenter l'EKF.
+
+         PREREQUIS NON VENDU ICI : le package ROS "robot_localization" (paquet
+         pkg="..." ci-dessous). Deux facons de l'obtenir :
+           - avec sudo :  sudo apt install ros-noetic-robot-localization
+                           sudo apt install libgeographic-dev   (si le paquet le demande)
+           - sans sudo :  cloner cra-ros-pkg/robot_localization (branche noetic-devel)
+                           dans carolus_ws/src/, puis retirer la dependance a
+                           GeographicLib dans son CMakeLists.txt/package.xml
+                           (navsat_transform n'est pas utilise ici, seul
+                           ekf_localization_node l'est) et rebuild avec catkin. -->
 
     <!-- base_link->camera_link (REP-105, requis par robot_localization / demande
          Hector) est desormais une TF DYNAMIQUE publiee par rm_cam_beacon.py
@@ -36,7 +46,7 @@
              cause que BUG-049 (carolus_astrobee) : le binaire lie a liblog4cxx.so.12/
              libtinyxml2.so.9 (jammy) alors que librosconsole.so/libmessage_filters.so
              de ROS Noetic attendent .so.10/.so.6. LD_PRELOAD force les versions
-             ROS-compatibles en premier. Voir 06-versions.md et journal.md 2026-07-23. -->
+             ROS-compatibles en premier. -->
         <env name="LD_PRELOAD"
              value="/usr/lib/x86_64-linux-gnu/liblog4cxx.so.10:/usr/lib/x86_64-linux-gnu/libtinyxml2.so.6" />
         <rosparam command="load" file="$(find carolus_node)/config/ekf_lite.yaml" />

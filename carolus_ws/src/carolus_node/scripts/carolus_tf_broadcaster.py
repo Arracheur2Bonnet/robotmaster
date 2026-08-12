@@ -13,7 +13,8 @@ import math
 #   R = [[ 0, 0,-1],
 #        [ 1, 0, 0],
 #        [ 0,-1, 0]]
-# (verifie : det(R)=1, R.R^T=I -- cf. research-log/07-perplexity/10-fix-quaternion-remapping-carolus-tf.md)
+# (verifie : det(R)=1, R.R^T=I -- derivation complete dans overleaf/technical.tex,
+# chapitre "Converting a Carolus Pose into the ROS Frame")
 _R_BASIS_XYZW = tft.quaternion_from_matrix(np.array([
     [0, 0, -1, 0],
     [1, 0,  0, 0],

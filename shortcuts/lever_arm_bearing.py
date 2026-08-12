@@ -13,7 +13,7 @@ chassis rotation, while the gimbal's ground-referenced heading stayed flat
 (-142.3 -> -142.4 deg). Flat yaw_ground means the camera did NOT rotate in
 the world frame, so the bearing change cannot come from camera rotation.
 
-Point 2 of `research-log/21-points-a-creuser/` lists two candidate causes:
+Two candidate causes:
   H2 - geometry: the optical centre sits off the chassis rotation centre, so
        rotating in place sweeps the camera along an arc. That is a real
        translation of the observation point with ZERO wheel slip.

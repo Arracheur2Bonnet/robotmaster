@@ -141,14 +141,10 @@ this RNDIS-based pipeline).
 
 ## Report
 
-`overleaf/` holds two LaTeX documents:
-
-- **`technical.pdf` / `technical.tex`** — the self-contained technical manual
-  (power-on through building and launching Carolus). This is the one to read
-  to set the system up.
-- **`main.tex`** — the progress report for the project supervisor.
-
-See `overleaf/README.md` for the difference and for how to compile them.
+`overleaf/` holds **`technical.pdf` / `technical.tex`** — the self-contained
+technical manual (power-on through building and launching Carolus). This is
+the one to read to set the system up; compile `technical.tex` on Overleaf or
+locally with `pdflatex` (two passes).
 
 ---
 

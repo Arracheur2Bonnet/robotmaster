@@ -18,7 +18,12 @@
 !/LICENSE
 !/NOTICE
 !/.gitignore
-!/.env.example
+
+# .env.example is NOT published: it documents this project's internal
+# Tavily/Perplexity research workflow (research-log/09-tavily/...), which
+# itself is not published -- the file would be an orphaned pointer to a
+# reader who has no research-log/. Kept on disk locally, just not tracked.
+.env.example
 
 # 3. Inside those, exclude what must not travel.
 #    (Migrated from sync_repo.sh's --exclude flags, which is retired by
@@ -49,9 +54,15 @@ __pycache__/
 # Secrets -- defence in depth; none are expected in the published set
 .env
 .env.*
-!.env.example
 *.key
 *.pem
+
+# overleaf/ ships only the self-sufficient technical manual. main.tex (the
+# supervisor progress report, still a skeleton) and README.md (editorial
+# notes about that draft) both point at research-log/, which is not
+# published -- both would be dead references to a reader.
+overleaf/main.tex
+overleaf/README.md
 
 # LaTeX intermediates: keep .tex sources and the built .pdf, drop the rest
 *.aux
