@@ -834,14 +834,23 @@ ROS toolchain.
 \section{Getting this project's code onto the Pi}
 \label{sec:pi-code}
 
-The Pi needs this project's own workspace --- specifically
-\texttt{carolus\_ws/src/robomaster\_cam/}, which holds
+The Pi needs this project's own workspace --- specifically the clone's
+\texttt{carolus\_ws/src/robomaster\_cam/} subdirectory, which holds
 \texttt{rm\_cam\_beacon.py} (Chapter~\ref{ch:camera}) and its companion
 scripts. Clone the project's repository directly onto the Pi:
 
 \begin{lstlisting}[style=shell]
-git clone git@github.com:Arracheur2Bonnet/robotmaster.git carolus_ws
+git clone git@github.com:Arracheur2Bonnet/robotmaster.git
 \end{lstlisting}
+
+This creates a \texttt{robotmaster/} directory whose \texttt{carolus\_ws/}
+subdirectory is the actual catkin workspace ---
+\texttt{robotmaster/carolus\_ws/src/robomaster\_cam/} is the path this
+manual means whenever it says \texttt{carolus\_ws/src/robomaster\_cam/}.
+Renaming \texttt{robotmaster/} to anything else, including
+\texttt{carolus\_ws}, is fine; just keep referring to its
+\texttt{carolus\_ws/} subdirectory as \texttt{carolus\_ws/}, not the clone
+root itself.
 
 This uses an SSH key registered against \emph{your own} GitHub account
 (Chapter~\ref{ch:carolus-node} covers generating and registering one). The
@@ -853,7 +862,7 @@ cannot be traced back to an individual. If SSH is not set up, an HTTPS clone
 works with no credentials at all:
 
 \begin{lstlisting}[style=shell]
-git clone https://github.com/Arracheur2Bonnet/robotmaster.git carolus_ws
+git clone https://github.com/Arracheur2Bonnet/robotmaster.git
 \end{lstlisting}
 
 No build step is needed on the Pi side for \texttt{robomaster\_cam} ---
@@ -1631,22 +1640,28 @@ accuracy being confirmed on this robot's real sensor data end to end.
 
 Clone the project's repository onto whichever machine will build Carolus
 --- \textbf{normally the Raspberry Pi} (Section~\ref{sec:where-carolus-runs}),
-over SSH from the lab PC (Chapter~\ref{ch:raspberrypi}). Cloning into a
-directory named \texttt{carolus\_ws} gives a standard catkin workspace
-layout, with the ROS packages under \texttt{src/}:
-\texttt{src/carolus\_node/} (the launch files and configuration),
-\texttt{src/libuvgs\_astrobee/} (Carolus's own C++ source, already patched
-for this robot), \texttt{src/ff\_msgs/} (a message-definition dependency),
-\texttt{src/robomaster\_cam/} (the Pi-side bridge, Chapter~\ref{ch:camera}),
-plus \texttt{cmake\_shims/} (Ubuntu 22.04 build fixes, see below) and
-\texttt{shortcuts/} (this project's operator tooling, not covered in this
-manual) at the top level:
+over SSH from the lab PC (Chapter~\ref{ch:raspberrypi}). The clone's own
+top level holds this manual (\texttt{overleaf/}) and the operator tooling
+(\texttt{shortcuts/}, not covered in this manual) alongside a
+\texttt{carolus\_ws/} directory, which is the actual catkin workspace ---
+a standard layout, with the ROS packages under \texttt{carolus\_ws/src/}:
+\texttt{carolus\_ws/src/carolus\_node/} (the launch files and
+configuration), \texttt{carolus\_ws/src/libuvgs\_astrobee/} (Carolus's own
+C++ source, already patched for this robot),
+\texttt{carolus\_ws/src/ff\_msgs/} (a message-definition dependency),
+\texttt{carolus\_ws/src/robomaster\_cam/} (the Pi-side bridge,
+Chapter~\ref{ch:camera}), plus \texttt{carolus\_ws/cmake\_shims/} (Ubuntu
+22.04 build fixes, see below):
 
 \begin{lstlisting}[style=shell]
-git clone git@github.com:Arracheur2Bonnet/robotmaster.git carolus_ws
+git clone git@github.com:Arracheur2Bonnet/robotmaster.git
 # or, over HTTPS -- the repository is public, no credentials needed:
-# git clone https://github.com/Arracheur2Bonnet/robotmaster.git carolus_ws
+# git clone https://github.com/Arracheur2Bonnet/robotmaster.git
 \end{lstlisting}
+
+This creates a \texttt{robotmaster/} directory; \texttt{cd} into it before
+running any command below that assumes \texttt{carolus\_ws/} is the current
+directory's subdirectory, or rename it to whatever you prefer.
 
 Repository web address:
 \url{https://github.com/Arracheur2Bonnet/robotmaster}
@@ -1864,12 +1879,12 @@ Carolus's parameters are split in two, so the node can run on other robots
 without editing any code:
 
 \begin{itemize}
-  \item \texttt{src/carolus\_node/config/robomaster\_s1.yaml} --- everything
-  specific to \emph{this} robot and \emph{this} beacon: camera intrinsics,
-  distortion, beacon geometry, blob-detection tuning.
-  \item \texttt{src/carolus\_node/launch/carolus.launch} --- the generic
-  launch file. It contains no hardware values at all; it loads a profile and
-  wires up topics.
+  \item \texttt{carolus\_ws/src/carolus\_node/config/robomaster\_s1.yaml}
+  --- everything specific to \emph{this} robot and \emph{this} beacon: camera
+  intrinsics, distortion, beacon geometry, blob-detection tuning.
+  \item \texttt{carolus\_ws/src/carolus\_node/launch/carolus.launch} --- the
+  generic launch file. It contains no hardware values at all; it loads a
+  profile and wires up topics.
 \end{itemize}
 
 \texttt{testcarolus.launch} is the RoboMaster S1 entry point: it selects the
