@@ -16,6 +16,12 @@
 
   <build_depend>libopencv-dev</build_depend>
   <build_depend>eigen</build_depend>
+  <!-- 2026-08-13 (BUG-112): CMakeLists.txt:20 calls find_package(Ceres
+       REQUIRED) but it was never declared here, so rosdep never installed it
+       and the build died at CMake configure with "Could not find
+       FindCeres.cmake". The rosdep key is the literal apt name
+       `libceres-dev`; plain `ceres` is NOT a registered rosdep key, checked. -->
+  <build_depend>libceres-dev</build_depend>
   <build_depend>image_transport</build_depend>
   
   
@@ -31,6 +37,7 @@
   
   <exec_depend>libopencv-dev</exec_depend>
   <exec_depend>eigen</exec_depend>
+  <exec_depend>libceres-dev</exec_depend>
   <exec_depend>image_transport</exec_depend>
 
 

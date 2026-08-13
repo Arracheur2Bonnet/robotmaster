@@ -355,6 +355,43 @@ python3 shortcuts/doc_check.py --find NAME     # LaTeX-aware search for one iden
 
 ---
 
+## `dep_check.py`
+
+**What** — checks that this workspace can build on a machine that is **not this one**. Compares every active `find_package()` in each `CMakeLists.txt` against what the matching `package.xml` declares, validates each manifest is well-formed XML, and with `--resolve` confirms every declared key actually resolves via `rosdep` for a target OS.
+
+**Why** — created 2026-08-13, after the supervisor's build failed on two consecutive days on two different missing dependencies (`image_transport`, then Ceres) while following the technical guide on his own Pi. The common cause was one thing: **`rosdep install` reads only `package.xml`**, so a library named solely in a `find_package()` call is invisible to it — it reports success, installs nothing, and the build dies at CMake configure on any machine that did not already happen to have the library. That is undetectable here by construction: our machines have had every dependency installed for months as a side effect of unrelated work, so the build succeeds locally for reasons unrelated to the build being correctly specified. Three separate name spaces are involved and getting them confused is its own failure mode — the CMake name (`Ceres`), the informal name (`ceres`, **not** a registered rosdep key), and the actual rosdep key (`libceres-dev`).
+
+**Usage**
+```bash
+python3 shortcuts/dep_check.py                      # audit, target ubuntu:focal (the Pi)
+python3 shortcuts/dep_check.py --resolve            # also resolve every key via rosdep
+python3 shortcuts/dep_check.py --os ubuntu:jammy --resolve
+```
+
+**Expected** — one line per package (`OK` / `DRIFT` / `MALFORMED XML` / `skipped`), then, with `--resolve`, either `all N keys resolve` or a list of unresolvable keys. Exit 0 clean, 1 on any problem, so it is usable as a pre-push or CI gate.
+
+**Verified to actually fail**, four ways, restoring byte-identical each time: removing both Ceres declarations reproduced the supervisor's exact bug and the tool named it precisely; a literal `--` inside an XML comment (illegal in XML, and a mistake genuinely made while fixing this) was caught as a malformed manifest; declaring the bogus key `ceres` was caught as unresolvable; and a sloppy first sabotage that removed only `build_depend` while leaving `exec_depend` correctly reported clean, which exposed the *test* as flawed rather than the tool. Requires `rosdep update --include-eol-distros` to have been run — Noetic is end-of-life and a plain `rosdep update` silently skips it, after which nothing resolves; the script detects that specific state and says so instead of blaming your manifests.
+
+---
+
+## `cleanroom_build.sh`
+
+**What** — builds the project the way a stranger would: a disposable `ubuntu:20.04` Docker container with nothing pre-installed, ROS Noetic installed exactly as the guide instructs, then this working tree's `carolus_ws/src` through `rosdep install` → `catkin_make --pkg ff_msgs` → `catkin_make`.
+
+**Why** — same 2026-08-13 cause as `dep_check.py`, but this is the ground truth rather than a static audit: it does not reason about the spec, it performs the reader's actual install and reports what really happens. It uses the working tree rather than a git clone deliberately, so a fix is validated **before** being pushed rather than after the supervisor finds it. `ros-base` is installed deliberately (not `desktop-full`) because that is what the guide recommends for the Pi and precisely the minimal choice that omitted the perception stack.
+
+**Usage**
+```bash
+bash shortcuts/cleanroom_build.sh              # full run (slow, ~15-25 min)
+bash shortcuts/cleanroom_build.sh --deps-only  # stop after rosdep install
+```
+
+**Expected** — staged `### [n/5]` progress, ending in `PASS -- a stranger following the guide can build this` or `FAIL (rc=N)` with the full log path under `/tmp/cleanroom-*.log`.
+
+**It earned its place on its first run**, failing at a step nobody suspected: `rosdep resolve roscpp` returns "no rosdep rule" whenever `ROS_DISTRO` is unset, so rosdep silently cannot map any ROS package name at all. The guide masks this by appending the source line to `~/.bashrc`, which works interactively and not in a script. **Scope limit, stated rather than implied**: the container is x86_64, so this validates dependency declarations and the documented command sequence, *not* ARM-specific compilation — which is fine, because declarations are the failure mode actually being shipped, but it is not a Pi. `robot_localization` is excluded as vendored third-party, and the script prints that exclusion rather than hiding it.
+
+---
+
 ## `leak_scan.sh`
 
 **What:** a pattern-based scan (hardcoded passwords/API keys/tokens/private-key headers) over `carolus_ws/`, `shortcuts/`, `github/`, `research-log/`.

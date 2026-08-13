@@ -1796,33 +1796,56 @@ a document.
 \label{sec:rosdep-workspace-deps}
 
 \textbf{\texttt{ros-noetic-ros-base} (Section~\ref{sec:install-ros}) does
-not include the perception stack this project's own packages need.}
+not include everything this project's own packages need}, and neither the
+perception stack nor the solver libraries come with it. Between them,
 \texttt{robomaster\_cam}, \texttt{carolus\_node} and
-\texttt{libuvgs\_astrobee} all declare a build dependency on
-\texttt{image\_transport} (and \texttt{cv\_bridge},
-\texttt{image\_geometry}), none of which ship with \texttt{ros-base} ---
-those belong to \texttt{ros-noetic-perception} or must be installed
-individually. Building the workspace without them fails at CMake's
-configure step with an error naming the first missing package (commonly
+\texttt{libuvgs\_astrobee} require \texttt{image\_transport},
+\texttt{cv\_bridge} and \texttt{image\_geometry} (which belong to
+\texttt{ros-noetic-perception}), plus \textbf{Ceres} and \textbf{Eigen3},
+which are ordinary system libraries rather than ROS packages at all.
+
+Building without them fails at CMake's configure step, naming only the
+\emph{first} thing it cannot find --- so fixing one error simply reveals
+the next. Two real examples, both reported from a fresh Raspberry Pi:
 \texttt{Could not find image\_transport (missing:
-image\_transport\_DIR)}), and because \texttt{catkin\_make} configures the
-\emph{entire} \texttt{src/} tree in one pass, this can surface even when
-only building an unrelated package like \texttt{ff\_msgs}, which itself
-needs none of them. \textbf{Fix: let \texttt{rosdep} resolve every
-package's real dependencies at once}, rather than installing them one
-CMake error at a time --- run this once, from the workspace root (the
-clone from the section above, updated if it already existed), before
-either build path below:
+image\_transport\_DIR)}, then, once that was resolved,
+\texttt{Could not find a package configuration file provided by "Ceres"}.
+Note also that because \texttt{catkin\_make} configures the \emph{entire}
+\texttt{src/} tree in one pass, either error appears even when building an
+unrelated package such as \texttt{ff\_msgs}, which needs none of them.
+
+\textbf{Fix: let \texttt{rosdep} resolve every package's real dependencies
+in one go}, rather than installing them one CMake error at a time. Run
+this once from the workspace root (the clone from the section above,
+updated with \texttt{git pull} if it already existed), before either build
+path below:
 \begin{lstlisting}[style=shell]
 cd ~/carolus_ws
 rosdep install --from-paths src --ignore-src -r -y
 \end{lstlisting}
-If \texttt{rosdep} itself is unavailable or misbehaves, the equivalent
-direct install is:
+On a blank Ubuntu 20.04 machine that installs
+\texttt{ros-noetic-cmake-modules}, \texttt{libeigen3-dev},
+\texttt{libyaml-cpp-dev}, \texttt{python3-catkin-pkg},
+\texttt{libopencv-dev} and \texttt{libceres-dev} --- verified by building
+this workspace from nothing in a clean container
+(\texttt{shortcuts/cleanroom\_build.sh}). If \texttt{rosdep} is
+unavailable or misbehaves, the equivalent direct install is:
 \begin{lstlisting}[style=shell]
 sudo apt install ros-noetic-image-transport ros-noetic-cv-bridge \
-    ros-noetic-image-geometry
+    ros-noetic-image-geometry libceres-dev libeigen3-dev
 \end{lstlisting}
+
+\begin{warningbox}
+\textbf{If you hit a missing dependency this section does not mention,
+that is a defect in this manual --- please report it.} Two such gaps were
+found this way, and the underlying cause was that a library was named in a
+package's \texttt{CMakeLists.txt} but never declared in its
+\texttt{package.xml}. \texttt{rosdep} reads only \texttt{package.xml}, so
+it installed nothing and the build failed on any machine that did not
+already happen to have the library. The repository now carries
+\texttt{shortcuts/dep\_check.py}, which compares the two and fails if they
+drift apart again.
+\end{warningbox}
 
 \section{Building on Ubuntu 20.04 (the Raspberry Pi --- normal case)}
 \label{sec:build2004}
