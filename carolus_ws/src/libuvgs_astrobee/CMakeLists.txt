@@ -58,7 +58,9 @@ install(TARGETS carolus_astrobee
   RUNTIME DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
 
-# Install launch files
-install(DIRECTORY launch/
-  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch
-)
+# No launch/ directory left to install: this package's own launch files
+# (carolus.launch, testcarolus_{follower,leader}.launch, testcarolusparams.launch)
+# predated the 2026-08-03 config split and were superseded by
+# carolus_node/launch/{carolus,testcarolus,ekf_lite}.launch, which is what
+# every current entry point actually uses. Archived 2026-08-12 (zero live
+# references found), not deleted -- see archive/libuvgs_astrobee-legacy-launch-2026-08-12/.

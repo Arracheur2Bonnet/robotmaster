@@ -1258,6 +1258,13 @@ class App(tk.Tk):
 
     def _start_cam_helper(self):
         self._stop_cam_helper()
+        # stderr is PIPED, not discarded (2026-08-12, BUG-103). It used to be
+        # subprocess.DEVNULL, and that is precisely why a five-day outage went
+        # unnoticed: the helper died on `import cv2` every single launch, its
+        # traceback went to /dev/null, and this method logged "lance" anyway.
+        # Since the helper is also the stdin relay for every camera and gimbal
+        # command, its silent death disabled all of them while the GUI kept
+        # reporting success. Anything it writes to stderr now lands in T2.
         self.cam_proc = subprocess.Popen(
             ["bash", "-c",
              "source /opt/ros/noetic/setup.bash && "
@@ -1266,9 +1273,39 @@ class App(tk.Tk):
              "export ROS_IP=192.168.0.100 && "
              f"python3 -u {HELPER} {CAM_PNG}"],
             stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             text=True, bufsize=1)
+        self._helper_dead_reported = False
+        threading.Thread(target=self._drain_helper_stderr,
+                         args=(self.cam_proc,), daemon=True).start()
         self.after(0, self._log, "> Helper video lance (stdin ouvert)", 1)
+        # Liveness check, deferred (2026-08-12, BUG-103): an import-time crash
+        # takes about a second to happen, so polling immediately would always
+        # look healthy. This is the check that would have caught BUG-103 on the
+        # very first launch instead of five days later.
+        self.after(3000, self._check_helper_alive)
+
+    def _drain_helper_stderr(self, proc):
+        """Forward the helper's stderr into T2's log tab (2026-08-12, BUG-103).
+        Runs on its own daemon thread: a blocking readline on the GUI thread
+        would freeze the whole launcher."""
+        try:
+            for line in iter(proc.stderr.readline, ""):
+                line = line.rstrip()
+                if line:
+                    self.after(0, self._log, f"> [HELPER] {line}", 1)
+        except Exception:
+            pass
+
+    def _check_helper_alive(self):
+        """Report a helper that died shortly after launch (2026-08-12, BUG-103).
+        Without this the GUI looks fully operational while every camera and
+        gimbal button is a no-op."""
+        if self.cam_proc is not None and self.cam_proc.poll() is not None:
+            self.after(0, self._log,
+                       "> !! HELPER VIDEO MORT -- apercu camera ET commandes "
+                       "camera/gimbal (numpad, LOCK, RECENTER) INOPERANTS. "
+                       "Voir les lignes [HELPER] ci-dessus.", 1)
         # Synchronise l'etat CAM ON/OFF du GUI vers le nouveau process helper (qui
         # demarre desabonne par defaut) -- couvre le cas ou l'utilisateur avait
         # active l'apercu avant un Kill/relance de T2.
@@ -1762,12 +1799,31 @@ class App(tk.Tk):
     # ── envoi stdin vers cam_view_helper ─────────────────────────────────────
 
     def _send_to_helper(self, cmd):
-        if self.cam_proc is not None and self.cam_proc.stdin is not None:
-            try:
-                self.cam_proc.stdin.write(cmd + "\n")
-                self.cam_proc.stdin.flush()
-            except Exception:
-                pass
+        # Every camera and gimbal control in this GUI goes through here: GIMBAL
+        # (numpad), LOCK, LOCKPERIOD, RECENTER, MODE, VX/WZ, WHEELS, CAM ON/OFF.
+        # Before 2026-08-12 (BUG-103) a dead or absent helper meant each of them
+        # was dropped in silence -- the guard below returned, the bare `except`
+        # swallowed the rest, and the caller still logged its own success line.
+        # It now says so, once per helper process, instead of pretending.
+        alive = (self.cam_proc is not None
+                 and self.cam_proc.stdin is not None
+                 and self.cam_proc.poll() is None)
+        if not alive:
+            if not getattr(self, "_helper_dead_reported", False):
+                self._helper_dead_reported = True
+                self.after(0, self._log,
+                           f"> !! commande '{cmd}' NON ENVOYEE : helper video absent "
+                           "ou mort. Toutes les commandes camera/gimbal sont "
+                           "inoperantes jusqu'au relancement de T2.", 1)
+            return
+        try:
+            self.cam_proc.stdin.write(cmd + "\n")
+            self.cam_proc.stdin.flush()
+        except Exception as e:
+            if not getattr(self, "_helper_dead_reported", False):
+                self._helper_dead_reported = True
+                self.after(0, self._log,
+                           f"> !! commande '{cmd}' NON ENVOYEE ({e}).", 1)
 
     def _force_auto_mode(self):
         self.gui_mode = "AUTO"

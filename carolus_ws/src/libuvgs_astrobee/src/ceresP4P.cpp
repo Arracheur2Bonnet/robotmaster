@@ -24,6 +24,36 @@ void CobrasFumantes::computeAndValidatePosesWithRefinement(
     ceres::Problem problem;
 
     // SETUP INITIAL GUESS
+    //
+    // 2026-08-13 -- this line is BYTE-IDENTICAL to the one in the LIMO
+    // integration of this same inherited node, and their write-up documents a
+    // real, reproducible artefact caused by the last coefficient (0.7, the
+    // initial guess for the rotation about Z).
+    //
+    // What they observed: driving a square in front of the beacon produced
+    // CURVED tracks where the lateral translations should have been straight.
+    // They first blamed fisheye distortion and ruled it out -- the curve is
+    // identical with fisheye correction enabled.
+    //
+    // Why it happens: Ceres minimises reprojection error by gradient descent
+    // from this fixed starting vector, and stops at whatever minimum it
+    // reaches. A poor initial guess can settle in a LOCAL minimum rather than
+    // the global one, and the resulting pose is then wrong in a smooth,
+    // plausible-looking way rather than obviously broken.
+    //
+    // Their tuning rule, quoted rather than adopted: DECREASE the coefficient
+    // (they suggest trying 0.2) and re-check that Carolus stays reliable;
+    // increasing it makes the curvature worse. It must NOT be set to 0.0 --
+    // the solve fails outright -- and if it is too low Carolus stops finding
+    // the beacon at all.
+    //
+    // NOT CHANGED HERE, deliberately: this value has never been swept on the
+    // RoboMaster, and the curved-track artefact has never been looked for in
+    // our own data. Changing a solver initial guess on inherited advice,
+    // without a before/after measurement on this robot, would be exactly the
+    // kind of unverified edit this project's rules exist to prevent. It is
+    // recorded here so the knob is known, and is a candidate explanation for
+    // BUG-088 (pose jump from a fixed initial guess with no warm start).
     double camera_params[6] = {0.000, 0.000, -0.001, 0.0, 0.0, 0.7};  // Changed size to 6, as we are using only 6 parameters
 
     double focalX_length = cameraMatrix_.at<double>(0, 0);  // FX

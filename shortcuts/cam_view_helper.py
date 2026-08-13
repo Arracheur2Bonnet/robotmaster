@@ -30,6 +30,45 @@ scaled 1280x720 -> 320x180), not a qualitative direction estimate.
 
 import os
 import sys
+
+# 2026-08-12 -- BUG-103, self-correcting environment guard. IDENTICAL in cause
+# and fix to BUG-102 (capture_checkerboard.py, 2026-08-11); this file was simply
+# never audited for it at the time, and the failure here is far more damaging
+# because it is INVISIBLE:
+#
+# 1. A 2026-08-07 pip install (pandas/scikit-learn/scipy/tavily) put numpy 2.2.6
+#    in ~/.local/lib/python3.10/site-packages, which SHADOWS the system numpy
+#    1.21.5 that apt's python3-opencv (cv2) was compiled against. `import cv2`
+#    below dies instantly with "AttributeError: _ARRAY_API not found".
+# 2. Even past that, apt's cv2 (OpenCV 4.5.4) and ROS Noetic's system cv_bridge
+#    (OpenCV 4.2) corrupt the heap at exit if both load in one process.
+#
+# Why this went unnoticed for five days: carolus_launcher.py starts this helper
+# with stderr=subprocess.DEVNULL, so the traceback went nowhere, and the
+# launcher logged "> Helper video lance" regardless. Since this helper is ALSO
+# the stdin relay for every camera/gimbal command (GIMBAL, LOCK, RECENTER,
+# MODE), its death silently disabled all of them -- the launcher kept logging
+# each button press as if it had been delivered. Symptom seen on 2026-08-12:
+# no camera preview, gimbal frozen and unable to be recentred onto the beacon,
+# Carolus then finding ~1250 contours per frame and publishing no pose at all.
+#
+# Both fixes need a fresh interpreter (site-packages and env vars are read at
+# startup), hence the one-shot re-exec.
+if os.environ.get("_CAM_VIEW_HELPER_REEXEC") != "1":
+    _ros_pkgs = "/opt/ros/noetic/lib/python3/dist-packages"
+    _local_cv_bridge = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "mins_sandbox", "catkin_ws", "devel", "lib", "python3", "dist-packages",
+    )
+    _local_cv_bridge = os.path.normpath(_local_cv_bridge)
+    env = dict(os.environ)
+    env["PYTHONNOUSERSITE"] = "1"
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in [_local_cv_bridge, _ros_pkgs, env.get("PYTHONPATH", "")] if p
+    )
+    env["_CAM_VIEW_HELPER_REEXEC"] = "1"
+    os.execve(sys.executable, [sys.executable] + sys.argv, env)
+
 import math
 import queue
 import threading

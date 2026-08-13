@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
+DESACTIVE depuis le 2026-08-10 : le bouton et le cablage qui ouvraient cette
+fenetre depuis carolus_launcher.py ont ete retires en meme temps que la
+fonctionnalite carte live (mapv1.json). Ce fichier n'est plus lance par rien,
+mais reste dans le code (pas archive) : map_collision.py, toujours actif dans
+rm_cam_beacon.py, sait lire le format JSON que cet editeur produit -- si la
+fonctionnalite carte est un jour relancee, c'est ce fichier qu'il faut
+re-cabler dans carolus_launcher.py, pas reecrire.
+
 MapEditor — éditeur de map 2D pour Carolus / RoboMaster S1.
-Fenêtre séparée (Toplevel) ouverte depuis carolus_launcher.py.
+Fenêtre séparée (Toplevel), auparavant ouverte depuis carolus_launcher.py.
 
 Blocs :
   full    → case complète (48×48 px = 40 cm)
@@ -980,3 +988,9 @@ class MapEditor(tk.Toplevel):
         ox, oy = self._robot_origin_px
         self._draw_robot_overlay(ox, oy)
         self._canvas.itemconfig(self._beacon_id, state="hidden")
+
+
+if __name__ == "__main__":
+    print("map_editor.py est desactive : plus lance depuis carolus_launcher.py")
+    print("depuis le 2026-08-10 (fonctionnalite carte live retiree). Voir le")
+    print("docstring en tete de fichier. Le code reste present mais ne tourne pas.")

@@ -335,6 +335,26 @@ Both used to require a dedicated session, and neither had ever been collected. T
 
 ---
 
+## `doc_check.py`
+
+**What** — checks `overleaf/technical.tex` against the code it documents: every fully-qualified path the manual names is confirmed to still exist on disk, and every changed/named file is checked for whether the manual mentions it (and where, so the review is fast).
+
+**Why** — created 2026-08-12, the same day a documentation-sync check was done by hand with a plain `grep` and came back "nothing to review" for four components the manual actually documents. The reason: LaTeX escapes underscores, so `grep cam_view_helper` can never match `cam\_view\_helper.py` in the source. That false "nothing found" nearly stood as the answer, and it is exactly the failure mode this project already has a rule about elsewhere — a check that reports "nothing" whether the target is truly absent or the search is broken is not a check. This script's own search normalises LaTeX escaping away first, and — because a search that quietly breaks is the whole problem — it self-tests that normalisation against a known-escaped identifier before reporting anything, and refuses to output otherwise (exit code 2). The self-test is verified to actually fail when it should: deliberately disabling the escaping logic and re-running it produces the abort, not a false pass (a first version of this self-test used a canary that also appeared unescaped inside a code listing, so even the broken search still found it and the self-test itself was silently useless — caught by directly testing the failure path rather than assuming it worked).
+
+**Usage**
+```bash
+python3 shortcuts/doc_check.py                 # audit + review your uncommitted changes
+python3 shortcuts/doc_check.py --all           # audit + review every published file
+python3 shortcuts/doc_check.py FILE [FILE...]  # review specific files
+python3 shortcuts/doc_check.py --find NAME     # LaTeX-aware search for one identifier, with line numbers
+```
+
+**Expected** — `self-test OK` first (if this is missing or the run aborts with exit 2, do not trust anything below it), then a stale-reference list (empty is the good outcome) and a per-file list of manual line numbers to open and check by hand. It flags *that* a line mentions a changed file, not whether that line is still correct — "mentioned" is not "correct", and the tool says so in its own output.
+
+**Deliberately narrow, and why**: an earlier version also flagged bare filenames (`patch.sh`, `target.yaml`, `dji.json`) as stale, which was wrong every time it fired — those are real, correct references to files in the S1 rooting toolkit and Kalibr, tools this manual describes without vendoring. A bare filename cannot tell "our file was deleted" from "their file we never had", so only fully-qualified `carolus_ws/`/`shortcuts/`/`overleaf/` paths are checked for existence. Naming-template strings (`session-YYYY-MM-DD-HH-MM-SS.log`, anything with a `*` glob) are excluded from that check for the same reason — they describe a pattern the code generates, not a file that should exist right now.
+
+---
+
 ## `leak_scan.sh`
 
 **What:** a pattern-based scan (hardcoded passwords/API keys/tokens/private-key headers) over `carolus_ws/`, `shortcuts/`, `github/`, `research-log/`.
@@ -383,13 +403,15 @@ python3 shortcuts/cam_view_helper.py /tmp/carolus_cam.png
 
 ---
 
-## `map_editor.py`
+## `map_editor.py` — disabled since 2026-08-10
 
-**What:** a 2D map editor (a separate Toplevel window) — a 26×21-cell grid (10.4m×8.4m, 1 cell = 40 cm ≈ the S1's footprint), full/half/quarter blocks, a zone tool (drag fill), oriented half-block beacons, a grid-snapped robot overlay.
+**Not reachable from the GUI any more**: its launcher button and wiring were removed the same day as the live-map feature (`mapv1.json`, empty and unused, see the entry above). Kept in the code rather than archived, per an explicit decision 2026-08-12 — `map_collision.py`, still active inside `rm_cam_beacon.py`, reads exactly the JSON format this editor produces, so re-enabling the map feature later means re-wiring this file into `carolus_launcher.py`, not rewriting it. Running it directly (`python3 shortcuts/map_editor.py`) now prints a message explaining this instead of silently doing nothing — it has no standalone entry point of its own, being a `tk.Toplevel` meant to be opened from another Tk root.
 
-**Why:** lets you map the lab's real obstacles (chairs, desks) before a session, position the beacon, and visualize the robot's position live. The exported map JSON is loaded by `map_collision.py` on the Pi for obstacle avoidance.
+**What it did:** a 2D map editor (a separate Toplevel window) — a 26×21-cell grid (10.4m×8.4m, 1 cell = 40 cm ≈ the S1's footprint), full/half/quarter blocks, a zone tool (drag fill), oriented half-block beacons, a grid-snapped robot overlay.
 
-**Usage:** opened from the "MAP EDITOR" button in `carolus_launcher.py` (no direct launch).
+**Why it existed:** to map the lab's real obstacles (chairs, desks) before a session, position the beacon, and visualize the robot's position live. The exported map JSON was loaded by `map_collision.py` on the Pi for obstacle avoidance.
+
+**Usage (historical):** opened from the "MAP EDITOR" button in `carolus_launcher.py`, before that button was removed.
 
 | Tool | Left click | Right click |
 |---|---|---|

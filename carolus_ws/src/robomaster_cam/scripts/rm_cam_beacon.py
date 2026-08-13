@@ -372,6 +372,7 @@ class EPCameraBeaconFollower:
         self._man_wz        = 0.0
         self._man_stamp     = 0.0   # timestamp derniere commande MANUEL recue
         self._idle_braked   = False # BUG-093: has the one-shot idle brake been sent?
+        self._gim_idle_braked = False # BUG-106: same, for the gimbal (see the control loop)
         self._man_lock      = threading.Lock()
         # Gimbal manuel
         self._gim_pitch = 0.0
@@ -1346,16 +1347,34 @@ class EPCameraBeaconFollower:
                     # deadman expires, brake ONCE and then send nothing at all,
                     # which is the state B4 measured at exactly zero drift.
                     if not B4_NO_DRIVE:
+                        # 2026-08-12 -- this block used to end in `except Exception: pass`,
+                        # the same silent-failure anti-pattern that made BUG-103 invisible
+                        # for five days (and BUG-087 before it). An SDK refusal here looks
+                        # exactly like a robot that ignores you: telemetry keeps flowing,
+                        # /odom keeps publishing, and nothing anywhere says the command
+                        # was rejected. The gimbal path immediately below already logged
+                        # its errors; the chassis path did not. It does now.
+                        #
+                        # The [MANUAL-DRIVE] line is the positive counterpart, and exists
+                        # to separate three otherwise-identical symptoms when "the robot
+                        # does not move": the call is not reached at all (line absent ->
+                        # wrong mode, or wheels_active stuck true), the call is made and
+                        # throws (error line), or the call is made and returns cleanly
+                        # while the robot stays put (line present, no error -> the SDK
+                        # accepted and dropped it, look at the connection, not the code).
                         try:
                             if cmd_fresh:
                                 self._idle_braked = False
+                                rospy.loginfo_throttle(
+                                    1.0, f"[MANUAL-DRIVE] drive_speed vx={vx:.3f} wz={wz:.1f}")
                                 self.chassis.drive_speed(x=vx, y=0.0, z=wz, timeout=1)
                             elif not self._idle_braked:
                                 self.chassis.drive_speed(x=0.0, y=0.0, z=0.0, timeout=1)
                                 self._idle_braked = True
                             # else: deliberately send NOTHING -- see above
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            rospy.logwarn_throttle(
+                                1.0, f"[MANUAL-DRIVE] chassis.drive_speed REFUSEE: {e}")
 
                 # Gimbal (MANUEL) : arbitrage en 3 priorites (2026-07-23 nuit) :
                 #   1. Async action in flight (RECENTER) -> emit nothing, let it finish
@@ -1375,10 +1394,52 @@ class EPCameraBeaconFollower:
                         gim_yaw   = self._gim_yaw
                         gim_stamp = self._gim_stamp
                     # BUG-100: same deadman the chassis already had.
-                    if time.time() - gim_stamp > MANUAL_GIMBAL_TIMEOUT:
+                    gim_fresh = (time.time() - gim_stamp) <= MANUAL_GIMBAL_TIMEOUT
+                    if not gim_fresh:
                         gim_pitch, gim_yaw = 0.0, 0.0
+
+                    # BUG-106 FIX (2026-08-12) — brake once, then go silent.
+                    #
+                    # This is BUG-093's fix, applied to the gimbal. BUG-093
+                    # established that re-sending drive_speed(0,0,0) to the
+                    # CHASSIS at 20 Hz is itself what rotates the robot, and
+                    # was fixed here by braking once and then sending nothing.
+                    # The identical pattern was left in place on the gimbal,
+                    # and it turns out to drive the same symptom by a
+                    # different route.
+                    #
+                    # Measured 2026-08-12, with the chassis loop already
+                    # silent (`[MANUAL-DRIVE]` absent from the whole run) and
+                    # nothing publishing on /carolus/cmd_vel:
+                    #   d_chassis_yaw = +1.07 deg over 10 s   (from /odom)
+                    #   d_gimbal_rel  = -1.10 deg over 10 s   (sub_angle)
+                    #   sum           = -0.03 deg
+                    # The sum being zero is the whole proof: the gimbal holds
+                    # its heading while the CHASSIS turns underneath it by
+                    # exactly the opposite amount. +0.107 deg/s is ~64 deg in
+                    # ten minutes, which is the drift reported from the field.
+                    #
+                    # Mechanism: a continuous stream of zero-velocity commands
+                    # keeps the gimbal yaw motor actively servoing. Its
+                    # reaction torque has to go somewhere, and Mecanum wheels
+                    # resist yaw very poorly, so the chassis is what moves.
+                    # Ceasing to send lets the axis settle instead of holding.
+                    #
+                    # As on the chassis, one explicit zero is still sent first
+                    # rather than simply stopping: the SDK invalidates a
+                    # velocity command after ~0.1-0.5 s, and letting it lapse
+                    # leaves the last non-zero setpoint running until then.
                     try:
-                        self.gimbal.drive_speed(pitch_speed=gim_pitch, yaw_speed=gim_yaw)
+                        if gim_fresh:
+                            self._gim_idle_braked = False
+                            self.gimbal.drive_speed(pitch_speed=gim_pitch,
+                                                    yaw_speed=gim_yaw)
+                        elif not self._gim_idle_braked:
+                            self.gimbal.drive_speed(pitch_speed=0.0, yaw_speed=0.0)
+                            self._gim_idle_braked = True
+                            rospy.loginfo("[GIMBAL] idle -> braked once, now silent "
+                                          "(BUG-106)")
+                        # else: deliberately send NOTHING -- see above
                     except Exception as e:
                         rospy.logwarn_throttle(2.0, f"[GIMBAL] drive_speed error: {e}")
 
