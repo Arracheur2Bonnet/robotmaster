@@ -803,6 +803,7 @@ enforced elsewhere in this manual, and later versions have since been used
 successfully on the lab PC (Chapter~\ref{ch:carolus-node}) without issue.
 
 \section{Installing ROS Noetic}
+\label{sec:install-ros}
 
 \begin{lstlisting}[style=shell]
 sudo sh -c 'echo "deb http://packages.ros.org/ros/ubuntu \
@@ -823,13 +824,50 @@ source ~/.bashrc
 sudo apt install python3-rosdep python3-rosinstall \
     python3-rosinstall-generator python3-wstool build-essential
 sudo rosdep init
-rosdep update
+rosdep update --include-eol-distros
 \end{lstlisting}
+
+\textbf{The \texttt{--include-eol-distros} flag is not optional.} ROS
+Noetic reached end-of-life in 2025, and a plain \texttt{rosdep update}
+silently skips it (\texttt{Skip end-of-life distro "noetic"}, easy to miss
+in the scroll of output) --- after which \texttt{rosdep} has no
+package-name mapping for \emph{any} ROS package on this distro, including
+ones as basic as \texttt{roscpp}, and every \texttt{rosdep resolve}/
+\texttt{rosdep install} against this workspace fails with
+\texttt{no rosdep rule for '...'}. Confirmed directly: the same
+\texttt{rosdep update} without the flag, then with it, on this lab PC.
 
 On this project's Pi, the lighter \texttt{ros-noetic-ros-base} is what
 actually runs day to day --- the Pi only needs to run
 \texttt{rm\_cam\_beacon.py} (Chapter~\ref{ch:camera}), not a full desktop
 ROS toolchain.
+
+\textbf{\texttt{ros-noetic-ros-base} does not include the perception stack
+this project's own packages need.} \texttt{robomaster\_cam},
+\texttt{carolus\_node} and \texttt{libuvgs\_astrobee} all declare a build
+dependency on \texttt{image\_transport} (and \texttt{cv\_bridge},
+\texttt{image\_geometry}), none of which ship with \texttt{ros-base} ---
+those belong to \texttt{ros-noetic-perception} or must be installed
+individually. Building the workspace without them fails at CMake's
+configure step with an error naming the first missing package (commonly
+\texttt{Could not find image\_transport (missing:
+image\_transport\_DIR)}), and because \texttt{catkin\_make} configures the
+\emph{entire} \texttt{src/} tree in one pass, this can surface even when
+only building an unrelated package like \texttt{ff\_msgs}, which itself
+needs none of them. \textbf{Fix: let \texttt{rosdep} resolve every
+package's real dependencies at once}, rather than installing them one
+CMake error at a time --- run this once, from the workspace root, after
+\texttt{rosdep update} above and before either build path below:
+\begin{lstlisting}[style=shell]
+cd ~/carolus_ws
+rosdep install --from-paths src --ignore-src -r -y
+\end{lstlisting}
+If \texttt{rosdep} itself is unavailable or misbehaves, the equivalent
+direct install is:
+\begin{lstlisting}[style=shell]
+sudo apt install ros-noetic-image-transport ros-noetic-cv-bridge \
+    ros-noetic-image-geometry
+\end{lstlisting}
 
 \section{Getting this project's code onto the Pi}
 \label{sec:pi-code}
@@ -1232,8 +1270,12 @@ calibration, based on a direct comparison against Kalibr on a comparable
 camera (Section~\ref{sec:kalibr-alt}).
 
 \begin{enumerate}
-  \item Print a checkerboard target with known square size (25\,mm squares
-  is a proven working size for this class of camera).
+  \item Obtain a checkerboard target of known square size. \textbf{On this
+  project there is nothing to print: the checkerboard is on the back of the
+  beacon} (Section~\ref{sec:beacon-operating-rules}) --- turn the beacon
+  around and use that. If you are working with a different beacon, print one;
+  25\,mm squares is a proven working size for this class of camera, and is
+  what both prior Carolus integrations used.
   \item Capture a set of images of the board with the robot's camera
   (Chapter~\ref{ch:camera}) using \texttt{shortcuts/capture\_checkerboard.py}
   (run on the lab PC; it subscribes to \texttt{/camera/color/image\_raw} over
@@ -1623,18 +1665,54 @@ cd mins_sandbox/catkin_ws
 source devel/setup.bash
 catkin build
 \end{lstlisting}
+\item \textbf{An unambiguous \texttt{log4cxx} link.} This machine carries
+  two major versions of \texttt{liblog4cxx} side by side ---
+  \texttt{liblog4cxx10v5} (0.10.x, what ROS Noetic's own prebuilt
+  \texttt{librosconsole\_log4cxx.so} expects) and the system's native
+  \texttt{liblog4cxx-dev}/\texttt{liblog4cxx12} (0.12.x). The unversioned
+  \texttt{/usr/lib/x86\_64-linux-gnu/liblog4cxx.so} symlink resolves to the
+  0.12 build, and \texttt{mins}'s own \texttt{cmake/ROS1.cmake} re-links
+  every entry of \texttt{catkin\_LIBRARIES} by default --- including that
+  symlink --- giving \texttt{mins\_lib.so} a direct dependency on 0.12
+  alongside ROS's own 0.10, both loaded in the same process. Two
+  incompatible major versions of the same C++ library coexisting this way
+  segfaults during static initialisation the first time anything touches
+  \texttt{ros::console}, i.e. immediately on node start. \textbf{Fix: in
+  \texttt{mins/mins/cmake/ROS1.cmake}}, extend the existing
+  ``drop missing \texttt{catkin\_LIBRARIES} entries'' filter with a name
+  match that also drops any entry matching \texttt{liblog4cxx\textbackslash{}.so\$}
+  (the ambiguous symlink specifically, not the versioned files) before the
+  filtered list is appended to \texttt{thirdparty\_libraries}. MINS's own
+  source calls no \texttt{log4cxx} symbol directly, so the correct 0.10
+  build still reaches the process --- supplied transitively, exactly once,
+  through \texttt{roscpp}.
 \end{enumerate}
 
 \textbf{What ``verified'' means here, precisely.} All eight packages build
-without error. The specific code path this fixes --- converting a
-\texttt{sensor\_msgs/Image} with \texttt{cv\_bridge} and running the same
+without error. The \texttt{cv\_bridge} image-conversion boundary specifically
+--- converting a \texttt{sensor\_msgs/Image} and running the same
 corner-detection and optical-flow calls MINS's own tracker makes on it ---
 was re-run three times against real recorded camera frames (twice directly,
 once under a debugger) after the \texttt{cv\_bridge} rebuild, with no crash.
-\textbf{This is not the same as a validated pose estimate.} The rectangular-motion
-experiment that exercises the full estimator against a measured ground truth
-has not been run yet; nothing in this section should be read as MINS's
-accuracy being confirmed on this robot's real sensor data end to end.
+With the \texttt{log4cxx} fix above also in place, MINS's own bundled
+simulation (\texttt{roslaunch mins simulation.launch}, no robot or bag
+needed) runs its estimator end to end and writes a genuine trajectory file
+plus IMU comparison files to \texttt{outputs/tmp/} --- the first time this
+build has produced estimator output on this machine, not merely compiled.
+\textbf{One caveat carried over from that same run:} the \texttt{simulation}
+process still segfaults during its own shutdown, after the estimator has
+already finished and written its output --- a separate, still-open ABI
+conflict (a ROS-distributed \texttt{image\_transport} plugin,
+\texttt{compressed\_image\_transport}, links an older OpenCV/GDAL/PROJ chain
+than the rest of this build and is loaded via \texttt{pluginlib} at
+run time, invisibly to \texttt{ldd}). \texttt{roslaunch} will report the
+node as having died; the output files under \texttt{outputs/tmp/} are
+unaffected and worth checking directly rather than trusting the exit status.
+\textbf{This is still not the same as a validated pose estimate on this
+robot.} The rectangular-motion experiment that exercises the full estimator
+against a measured ground truth, on this robot's own sensor data, has not
+been run yet; nothing in this section should be read as MINS's accuracy
+being confirmed end to end outside its own bundled simulation dataset.
 
 \section{Getting this project's code onto the machine that will build it}
 
@@ -1727,11 +1805,17 @@ a document.
 \label{sec:build2004}
 
 This is the normal path: the Raspberry Pi runs Ubuntu 20.04, ROS Noetic's
-officially supported target, so the build is standard and needs no
-workarounds. (A lab PC also on 20.04 builds identically.)
+officially supported target, so the build itself needs no compiler/ABI
+workarounds the way Section~\ref{sec:build2204} does. (A lab PC also on
+20.04 builds identically.) \textbf{It does still need the \texttt{rosdep
+install} step from Section~\ref{sec:install-ros} above} run first, if not
+already done --- skipping it fails here with \texttt{Could not find
+image\_transport (missing: image\_transport\_DIR)} or a similarly-named
+missing package.
 
 \begin{lstlisting}[style=shell]
 cd ~/carolus_ws
+rosdep install --from-paths src --ignore-src -r -y   # if not already run
 catkin_make --pkg ff_msgs   # build this dependency first, avoids ordering issues
 catkin_make
 source devel/setup.bash
@@ -2062,18 +2146,30 @@ The parameters most likely to need tuning for a new beacon or lighting
 condition:
 
 \begin{center}
-\begin{tabular}{ll}
+\begin{tabular}{p{0.26\textwidth}p{0.66\textwidth}}
 \toprule
-Parameter & Meaning \\
+Parameter & What it does \\
 \midrule
-\texttt{min\_circularity} & Rejects non-round contours; closer to 1 is stricter. \\
-\texttt{saturation\_threshold} & Rejects low-saturation pixels (in HSV) before hue filtering. \\
-\texttt{min\_area}, \texttt{max\_area} & Rejects contours outside this pixel-area range. \\
-\texttt{max\_distance\_lim} & Rejects candidate 4-blob groups whose pairwise distances exceed this. \\
-\texttt{lb\_hue}, \texttt{ub\_hue} & Hue range the beacon's LEDs must fall within, in \textbf{OpenCV's 0--180 scale}, not 0--360. \\
+\texttt{num\_threads} & How many CPU cores the node may use. Raising it can cut latency; on a 4-core Pi, 2 is already half the machine. \\
+\texttt{queue\_size} & How many incoming images ROS buffers before dropping the oldest. If detection is slower than the camera publishes, a larger queue stops frames being dropped --- at the cost of processing older ones. \\
+\texttt{min\_circularity} & How round a blob must be, scored 0--1. Closer to 1 is stricter. \\
+\texttt{saturation\_threshold} & Minimum HSV saturation (0--255) a pixel must have to be considered at all, applied before hue filtering. \\
+\texttt{min\_area}, \texttt{max\_area} & Valid blob size range in pixels. Anything outside is rejected. \\
+\texttt{max\_distance\_lim} & Maximum pixel distance beyond which candidate blobs are discarded. \\
+\texttt{lb\_hue}, \texttt{ub\_hue} & Accepted hue range in HSV, in \textbf{OpenCV's 0--180 scale}, not 0--360. Any blob whose colour falls outside is rejected. \\
+\texttt{kernel\_size\_gaussian} & Gaussian blur kernel size --- reduces sensor noise and smooths the image before thresholding. \\
+\texttt{kernel\_size\_morph} & Morphological kernel size --- cleans the binary mask, removing speckle and filling small holes inside a blob. \\
+\texttt{image\_threshold} & Brightness cut (0--255) isolating bright emissive regions before colour filtering. Beacon LEDs are bright, so this removes most of the scene cheaply. \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+\textbf{Provenance:} the per-parameter descriptions above are
+\textbf{inherited}, from the Leo Rover integration's own write-up of the same
+Carolus node. They describe what each parameter does, which is
+platform-independent; the \emph{values} in that document are for a different
+camera and beacon and are not reproduced here. This project's own values are
+listed in Section~\ref{sec:launching}.
 
 \textbf{The hue scale is worth stating explicitly, because getting it wrong
 silently kills all detection.} OpenCV stores hue on 0--180 (half the usual
@@ -2098,6 +2194,53 @@ trusting any pose Carolus reports. This does not affect \texttt{known\_points}
 below, which is a geometric measurement, not a brightness one --- but a
 beacon that has been physically disassembled or rebuilt needs that
 re-measured too.
+\end{warningbox}
+
+\subsection{Operating rules for the beacon}
+\label{sec:beacon-operating-rules}
+
+Detection tuning is only reproducible if the beacon is operated the same way
+each time. The rules below cost nothing to follow and invalidate a whole
+session when broken.
+
+\textbf{Everything here is \textbf{inherited}} from the two prior Carolus
+integrations (Leo Rover and LIMO), which ran the same node on different
+robots, cameras and beacons. Their \emph{practices} transfer; their
+\emph{numbers} do not, and are marked where quoted. Nothing in this
+subsection has been re-measured on the RoboMaster.
+
+\begin{itemize}
+  \item \textbf{Always use the same beacon at the same LED intensity.}
+  Changing either means the detection parameters must be re-tuned from
+  scratch --- the prior integration states this as a hard warning, not a
+  caution: with a different intensity ``Carolus will no longer work''.
+
+  \item \textbf{Keep the beacon charged.} \textbf{Inherited figure}, from the
+  LIMO integration and not verified here: do not run below \textbf{10.5\,V}.
+  Readings change as the battery drains, so a session that starts calibrated
+  can drift out of calibration purely through discharge.
+
+  \item \textbf{Brightness is a trade-off, in two directions at once.} Too
+  intense costs battery life; too dim and detection fails. The prior work
+  also gives a tuning order worth reproducing: \textbf{set the LED intensity
+  for good readings at the \emph{shortest} working distance, then set the
+  blob area for good readings at the \emph{longest}}. The two ends of the
+  range pull against each other, so tuning them in that order avoids chasing
+  one at the expense of the other.
+
+  \item \textbf{If the beacon is not detected at all}, the first parameter to
+  try is \texttt{max\_area} --- reduce it, then adjust the rest around it.
+
+  \item \textbf{Do not tune in the dark.} A darkened room makes detection
+  easier and produces parameters that then fail under the lighting the robot
+  will actually work in. Tune in the light level you intend to operate in.
+\end{itemize}
+
+\begin{warningbox}
+\textbf{The calibration checkerboard is printed on the back of the beacon
+itself.} There is no separate target to print for the camera calibration in
+Chapter~\ref{ch:calibration} --- turn the beacon around. This is a property
+of this project's specific beacon, confirmed 2026-08-11.
 \end{warningbox}
 
 \texttt{known\_points} is the beacon's four LED positions in metres, in
@@ -2348,8 +2491,10 @@ Tab & What it starts & Unlocks when \\
  & SSH: \texttt{eth1 up} + \texttt{roscore} on the Pi
  & port 11311 is open (60\,s timeout) \\
 \addlinespace
-\textbf{T2} Camera [Pi]
- & SSH: \texttt{rm\_cam\_beacon.py} + \texttt{cam\_view\_helper.py}
+\textbf{T2} Camera [Pi + PC]
+ & SSH: \texttt{rm\_cam\_beacon.py} on the Pi. Then, \emph{locally on the
+   lab PC}, \texttt{cam\_view\_helper.py} --- not over SSH
+   (Section~\ref{sec:helper-dead})
  & \texttt{/camera/color/image\_raw} is publishing (60\,s timeout) \\
 \addlinespace
 \textbf{T3} Carolus [Pi]
@@ -2565,6 +2710,153 @@ node look identical from most checks.
   \texttt{ping -c4 192.168.42.2}. It does not survive a Pi reboot
   (Chapter~\ref{ch:network}).
 \end{enumerate}
+
+\section{No camera preview, and the camera/gimbal buttons do nothing}
+\label{sec:helper-dead}
+
+\textbf{These two symptoms always appear together, and they have one cause.}
+\texttt{cam\_view\_helper.py} does two jobs at once: it writes the preview
+thumbnail the launcher displays, and it is the relay through which
+\emph{every} camera and gimbal command reaches ROS --- the numpad, LOCK,
+RECENTER, mode switching, manual driving. If it is not running, all of them
+are dropped.
+
+\textbf{It runs on the lab PC, not the Pi}, as a local subprocess of the
+launcher (the launcher writes to its standard input, so the two must share a
+machine). Check it there:
+
+\begin{lstlisting}[style=shell]
+pgrep -af "[c]am_view_helper"
+\end{lstlisting}
+
+\textbf{Nothing returned means every camera and gimbal control is inert.}
+Restart T2. If it dies again, its own error now appears in the T2 log tab
+prefixed \texttt{[HELPER]}, and the launcher prints an explicit warning a
+few seconds after launch --- read those lines rather than guessing.
+
+\begin{warningbox}
+\textbf{A dead helper used to be invisible, which is worse than a crash.}
+The launcher reported each button press as delivered whether or not it
+arrived. If you are working from an older copy of this software and see the
+GUI acknowledge commands that plainly have no effect, this is the first
+thing to check --- the acknowledgement means the button was pressed, not
+that the robot heard it.
+\end{warningbox}
+
+\section{The robot slowly rotates on its own}
+\label{sec:uncommanded-yaw}
+
+A stationary robot that yaws a few degrees at a time, accumulating to tens of
+degrees over several minutes, with nothing commanding it. This invalidates
+any static measurement --- a calibration or a pose comparison taken while the
+robot is quietly turning is worthless --- so it is worth ruling out before
+trusting a session's numbers.
+
+\textbf{Check the surface first, before reading any code.} Investigated at
+length on 2026-08-12: the software was exonerated on five separate counts,
+and the one variable that tracked the symptom was what the robot was standing
+on. Mecanum wheels roll sideways by design; their angled rollers offer very
+little resistance to a slow yaw, so a smooth surface that is even slightly
+off-level lets the robot creep. \textbf{Measured 2026-08-12}: on a table the drift ran at
+roughly $0.1$\,\textdegree/s; moved to the floor, with the same code and the
+same nodes running, the worst absolute drift over a full \textbf{ten
+minutes} was $0.01$\textdegree{} --- twenty samples, chassis IMU and the
+gimbal's mechanical joint encoder in agreement throughout.
+
+\textbf{Take static measurements with the robot on the floor.} If a table is
+unavoidable, re-check the drift there rather than assuming it carries over.
+
+\textbf{If it drifts on the floor too}, then it is worth looking further --- but
+these were each tested and found \emph{not} to be the cause, so they can be
+skipped:
+
+\begin{itemize}
+  \item The manual chassis command loop. It brakes once when idle and then
+  sends nothing; confirm with the \texttt{[MANUAL-DRIVE]} log line, which is
+  absent when no command is being sent.
+  \item \texttt{gimbal\_lead} robot mode (``chassis follows gimbal''). The node
+  forces \texttt{free} at startup and reads the mode back --- see the
+  \texttt{[MODE]} line.
+  \item Reaction torque from the gimbal. Ten sharp $35$\textdegree{} slews moved
+  the chassis by $0.02$\textdegree{} in total.
+  \item The gimbal being off-centre. Deliberately offsetting it by
+  $32.5$\textdegree{} produced no chassis rotation over a minute.
+\end{itemize}
+
+\begin{warningbox}
+\textbf{Do not diagnose this from the chassis IMU alone.} It is not reliable
+on this robot (Section~\ref{sec:chassis-inhibited} documents it reading
+$-72.8$\textdegree{} of roll on a robot standing level). Cross-check with the
+gimbal joint encoder (\texttt{/carolus/gimbal\_yaw\_rel}), which is a
+mechanical measurement of the chassis-to-gimbal angle: if the chassis turns
+while the gimbal holds its heading, the two must move by equal and opposite
+amounts. A camera-based check works too, but only in a lit room --- in the
+dark the frame carries no texture and the correlation returns noise, which
+reads as hundreds of pixels of phantom motion.
+\end{warningbox}
+
+\section{The chassis ignores every command while everything else works}
+\label{sec:chassis-inhibited}
+
+A distinct and much more confusing symptom than the one above: telemetry
+keeps streaming, \texttt{/odom} keeps publishing, the camera works, the
+\emph{gimbal} obeys --- and the wheels do nothing. No error is raised
+anywhere: \texttt{chassis.drive\_speed()} is called, returns normally, and
+the robot simply does not move.
+
+\textbf{Check the robot's own attitude and status flags first.} They are
+printed by \texttt{rm\_cam\_beacon.py} (Chapter~\ref{ch:camera}) on every
+loop:
+
+\begin{lstlisting}[style=code]
+[STATUS] pickup=0 slip=0 roll=1 slope=1 impact=0
+[ATTI]   yaw=-141.4 pitch=-10.3 roll=-72.8
+\end{lstlisting}
+
+\textbf{Measured on this robot, 2026-08-12.} \texttt{roll=1} in
+\texttt{[STATUS]} is the chassis' \emph{roll-over} flag, and the
+\texttt{[ATTI]} line shows why it is set: the chassis attitude reference
+reads $-72.8$\textdegree{} of roll. An S1 that believes it has rolled over
+inhibits chassis motion as a safety behaviour, and it does so \emph{without
+reporting anything} through the SDK --- which is why the call succeeds and
+nothing happens.
+
+\textbf{Confirm it is the reference, not the robot.} Look at the camera
+image: the S1's gimbal has no roll axis, so a chassis genuinely lying at
+70\textdegree{} produces visibly canted frames. A level horizon with
+\texttt{roll} reading tens of degrees means the attitude reference is
+wrong, not the robot.
+
+\begin{warningbox}
+\textbf{The power-cycle clears the inhibition, but not the underlying bias
+--- and the two are easy to confuse.} \textbf{Measured 2026-08-12}, after a
+power-cycle restored normal chassis motion: \texttt{[STATUS]} reported
+\texttt{roll=0} (the roll-over latch had cleared, so the wheels responded
+again) while \texttt{[ATTI]} still read \texttt{pitch=-16.6 roll=9.1} on a
+robot standing flat --- and read \emph{exactly} those values on every sample
+for minutes, unchanging. A constant offset is not a drifting sensor: it
+points at a calibration or mounting bias, not a failing gyro. Practical
+consequence: \textbf{treat \texttt{[ATTI]} pitch and roll, and the
+\texttt{slope} flag, as unreliable on this robot} even when the chassis is
+working. Yaw was stable throughout and is the channel to use for heading.
+\end{warningbox}
+
+\textbf{Remedy.} The S1 establishes its attitude reference at power-on, and
+the SDK exposes no calibration entry point (\textbf{verified}: the
+installed \texttt{robomaster} package offers only \texttt{reset},
+\texttt{sub\_mode} and \texttt{unsub\_mode} on \texttt{chassis}, nothing
+that re-zeroes attitude). Power the robot down, stand it flat and still on
+a level surface, power it back on without moving it, and confirm
+\texttt{[ATTI]} reports a roll near zero and \texttt{[STATUS]} reports
+\texttt{roll=0} before trusting any motion.
+
+\begin{warningbox}
+\textbf{Any chassis measurement taken while this flag is set is void} ---
+not merely noisy. Odometry keeps updating and commands keep being accepted,
+so a logged run looks superficially valid while the wheels never turned.
+Check \texttt{[STATUS]} at the start of a session, not after a result looks
+strange.
+\end{warningbox}
 
 \section{The Pi will not turn on}
 

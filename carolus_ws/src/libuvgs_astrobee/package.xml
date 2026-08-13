@@ -14,8 +14,8 @@
   
   <build_depend>ff_msgs</build_depend>
 
-  <build_depend>opencv</build_depend>
-  <build_depend>Eigen3</build_depend>
+  <build_depend>libopencv-dev</build_depend>
+  <build_depend>eigen</build_depend>
   <build_depend>image_transport</build_depend>
   
   
@@ -29,8 +29,8 @@
   <exec_depend>ff_msgs</exec_depend>
   
   
-  <exec_depend>opencv</exec_depend>
-  <exec_depend>Eigen3</exec_depend>
+  <exec_depend>libopencv-dev</exec_depend>
+  <exec_depend>eigen</exec_depend>
   <exec_depend>image_transport</exec_depend>
 
 
