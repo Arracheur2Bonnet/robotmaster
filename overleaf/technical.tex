@@ -843,31 +843,11 @@ actually runs day to day --- the Pi only needs to run
 ROS toolchain.
 
 \textbf{\texttt{ros-noetic-ros-base} does not include the perception stack
-this project's own packages need.} \texttt{robomaster\_cam},
-\texttt{carolus\_node} and \texttt{libuvgs\_astrobee} all declare a build
-dependency on \texttt{image\_transport} (and \texttt{cv\_bridge},
-\texttt{image\_geometry}), none of which ship with \texttt{ros-base} ---
-those belong to \texttt{ros-noetic-perception} or must be installed
-individually. Building the workspace without them fails at CMake's
-configure step with an error naming the first missing package (commonly
-\texttt{Could not find image\_transport (missing:
-image\_transport\_DIR)}), and because \texttt{catkin\_make} configures the
-\emph{entire} \texttt{src/} tree in one pass, this can surface even when
-only building an unrelated package like \texttt{ff\_msgs}, which itself
-needs none of them. \textbf{Fix: let \texttt{rosdep} resolve every
-package's real dependencies at once}, rather than installing them one
-CMake error at a time --- run this once, from the workspace root, after
-\texttt{rosdep update} above and before either build path below:
-\begin{lstlisting}[style=shell]
-cd ~/carolus_ws
-rosdep install --from-paths src --ignore-src -r -y
-\end{lstlisting}
-If \texttt{rosdep} itself is unavailable or misbehaves, the equivalent
-direct install is:
-\begin{lstlisting}[style=shell]
-sudo apt install ros-noetic-image-transport ros-noetic-cv-bridge \
-    ros-noetic-image-geometry
-\end{lstlisting}
+this project's own packages need} (\texttt{image\_transport},
+\texttt{cv\_bridge}, \texttt{image\_geometry}) --- fixing that needs the
+workspace to already be cloned, so that step is in
+Section~\ref{sec:rosdep-workspace-deps}, right before the build itself
+rather than here.
 
 \section{Getting this project's code onto the Pi}
 \label{sec:pi-code}
@@ -1737,6 +1717,17 @@ git clone git@github.com:Arracheur2Bonnet/robotmaster.git
 # git clone https://github.com/Arracheur2Bonnet/robotmaster.git
 \end{lstlisting}
 
+\textbf{If you already have a clone from an earlier session, update it
+instead of cloning again} --- fixes to this manual's own corrected code
+(such as Section~\ref{sec:rosdep-workspace-deps} below) live in the
+repository's git history, not only in this document, and an old clone
+will keep failing in exactly the way a fix here describes until it is
+pulled:
+\begin{lstlisting}[style=shell]
+cd robotmaster   # or whatever you renamed the clone to
+git pull
+\end{lstlisting}
+
 This creates a \texttt{robotmaster/} directory; \texttt{cd} into it before
 running any command below that assumes \texttt{carolus\_ws/} is the current
 directory's subdirectory, or rename it to whatever you prefer.
@@ -1801,6 +1792,38 @@ authenticate with your GitHub username and a personal access token
 to repository read access, and never shared with anyone else or written into
 a document.
 
+\section{Installing the workspace's remaining dependencies}
+\label{sec:rosdep-workspace-deps}
+
+\textbf{\texttt{ros-noetic-ros-base} (Section~\ref{sec:install-ros}) does
+not include the perception stack this project's own packages need.}
+\texttt{robomaster\_cam}, \texttt{carolus\_node} and
+\texttt{libuvgs\_astrobee} all declare a build dependency on
+\texttt{image\_transport} (and \texttt{cv\_bridge},
+\texttt{image\_geometry}), none of which ship with \texttt{ros-base} ---
+those belong to \texttt{ros-noetic-perception} or must be installed
+individually. Building the workspace without them fails at CMake's
+configure step with an error naming the first missing package (commonly
+\texttt{Could not find image\_transport (missing:
+image\_transport\_DIR)}), and because \texttt{catkin\_make} configures the
+\emph{entire} \texttt{src/} tree in one pass, this can surface even when
+only building an unrelated package like \texttt{ff\_msgs}, which itself
+needs none of them. \textbf{Fix: let \texttt{rosdep} resolve every
+package's real dependencies at once}, rather than installing them one
+CMake error at a time --- run this once, from the workspace root (the
+clone from the section above, updated if it already existed), before
+either build path below:
+\begin{lstlisting}[style=shell]
+cd ~/carolus_ws
+rosdep install --from-paths src --ignore-src -r -y
+\end{lstlisting}
+If \texttt{rosdep} itself is unavailable or misbehaves, the equivalent
+direct install is:
+\begin{lstlisting}[style=shell]
+sudo apt install ros-noetic-image-transport ros-noetic-cv-bridge \
+    ros-noetic-image-geometry
+\end{lstlisting}
+
 \section{Building on Ubuntu 20.04 (the Raspberry Pi --- normal case)}
 \label{sec:build2004}
 
@@ -1808,10 +1831,10 @@ This is the normal path: the Raspberry Pi runs Ubuntu 20.04, ROS Noetic's
 officially supported target, so the build itself needs no compiler/ABI
 workarounds the way Section~\ref{sec:build2204} does. (A lab PC also on
 20.04 builds identically.) \textbf{It does still need the \texttt{rosdep
-install} step from Section~\ref{sec:install-ros} above} run first, if not
-already done --- skipping it fails here with \texttt{Could not find
-image\_transport (missing: image\_transport\_DIR)} or a similarly-named
-missing package.
+install} step from Section~\ref{sec:rosdep-workspace-deps} above} run
+first, if not already done --- skipping it fails here with \texttt{Could
+not find image\_transport (missing: image\_transport\_DIR)} or a
+similarly-named missing package.
 
 \begin{lstlisting}[style=shell]
 cd ~/carolus_ws
