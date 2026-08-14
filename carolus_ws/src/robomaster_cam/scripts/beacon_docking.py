@@ -398,6 +398,11 @@ class BeaconDocking:
 
         # --- etat manœuvre ---
         self._abort = False
+        # Robot mode, as reported by rm_cam_beacon.py on a latched topic.
+        # 'unknown' until it arrives, and 'unknown' is permissive: refusing to
+        # dock because a status topic is missing would be worse than the bug
+        # this guards against.
+        self._robot_mode = "unknown"
         self._busy = False
         self._turn_sign = None     # +1/-1, determine par _probe_turn_sign()
         self._gimbal_sign = None   # +1/-1, determined by _probe_gimbal_sign()
@@ -435,6 +440,7 @@ class BeaconDocking:
         rospy.Subscriber("/carolus/gimbal_yaw_ground", Float32, self._yaw_ground_cb)
         rospy.Subscriber("/odom", Odometry, self._odom_cb)
         rospy.Subscriber("/carolus/dock", String, self._cmd_cb)
+        rospy.Subscriber("/carolus/robot_mode", String, self._robot_mode_cb)
 
         rospy.Timer(rospy.Duration(0.5), self._status_tick)
 
@@ -493,6 +499,16 @@ class BeaconDocking:
         with self._odom_lock:
             self._odom = (p.x, p.y, yaw)
 
+    def _robot_mode_cb(self, msg):
+        mode = msg.data.strip().lower()
+        if mode != self._robot_mode:
+            rospy.loginfo("[DOCK] robot mode: %r", mode)
+            if mode not in ("free", "unknown"):
+                rospy.logwarn("[DOCK] chassis alignment is UNAVAILABLE in %r "
+                              "(gimbal follows chassis -> yaw_rel cannot change). "
+                              "Relaunch the camera node with RM_ROBOT_MODE=free.", mode)
+        self._robot_mode = mode
+
     def _cmd_cb(self, msg):
         cmd = msg.data.strip().upper()
         if cmd == "ABORT":
@@ -502,6 +518,25 @@ class BeaconDocking:
         if self._busy:
             rospy.logwarn(f"[DOCK] {cmd} ignore : manœuvre deja en cours")
             return
+        # 2026-08-14 (BUG-111): refuse chassis alignment outright in chassis_lead.
+        #
+        # Chassis alignment servos on `yaw_rel`, the gimbal-to-chassis angle,
+        # rotating the chassis until it reaches zero. In chassis_lead the gimbal
+        # FOLLOWS the chassis, so that angle is constant by construction and
+        # rotating the chassis cannot change it -- the loop has no observable and
+        # can never converge. The no-progress guard turns that into an abort
+        # rather than an endless spin, but the abort looks like a hardware fault
+        # and would send the next person hunting the wrong bug. Fail loudly and
+        # name the remedy instead. CALIBRATE/CALSTEP2 are exempt: they measure the
+        # sign convention and do not run the alignment loop.
+        if cmd in ("START", "ALIGN_ONLY") and self._robot_mode not in ("free", "unknown"):
+            rospy.logerr("[DOCK] %s REFUSED: robot is in %r, which makes chassis "
+                         "alignment impossible -- in that mode the gimbal follows "
+                         "the chassis, so yaw_rel cannot change and the alignment "
+                         "never converges. Relaunch the camera node with "
+                         "RM_ROBOT_MODE=free, then retry.", cmd, self._robot_mode)
+            return
+
         if cmd == "START":
             threading.Thread(target=self._run, args=(self._dock_sequence,),
                              daemon=True).start()

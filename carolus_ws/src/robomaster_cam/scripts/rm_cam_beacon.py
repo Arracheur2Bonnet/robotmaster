@@ -447,6 +447,15 @@ class EPCameraBeaconFollower:
         # with the robot. That is the correct trade for a stationary measurement
         # (1.4b, calibration) and the wrong one for driving with a locked heading.
         # Set RM_ROBOT_MODE=free to restore the old behaviour.
+        #
+        # *** CHASSIS_LEAD BREAKS DOCKING -- USE free FOR T5. ***
+        # beacon_docking.py aligns the chassis by driving `yaw_rel` to zero
+        # (chassis_align_tick). In CHASSIS_LEAD the gimbal follows the chassis, so
+        # yaw_rel is CONSTANT BY DEFINITION and rotating the chassis cannot change
+        # it -- the control law has no observable to servo on and can never
+        # converge. Its no-progress guard turns that into a visible abort rather
+        # than an endless spin, but docking simply does not work in this mode.
+        # Relaunch the camera node with RM_ROBOT_MODE=free before using T5.
         _mode_env = os.environ.get("RM_ROBOT_MODE", "chassis_lead").strip().lower()
         _mode_map = {"free": robot.FREE,
                      "chassis_lead": robot.CHASSIS_LEAD,
@@ -467,6 +476,11 @@ class EPCameraBeaconFollower:
                               "of drive_speed, which looks like an uncommanded rotation")
         except Exception as e:
             rospy.logwarn(f"[MODE] could not read/write the robot mode: {e}")
+            _mode_after = "unknown"
+        # Remember what the robot ACTUALLY reported, not what we asked for -- this
+        # rooted S1 accepts calls it does not implement (BUG-089), so the read-back
+        # is the only trustworthy value. Published once the publishers exist.
+        self._robot_mode = _mode_after if isinstance(_mode_after, str) else "unknown"
 
         # Wake the gimbal from its sleep state (otherwise torque is cut, motors limp)
         if B4_SUSPEND_GIMBAL:
@@ -507,6 +521,14 @@ class EPCameraBeaconFollower:
         self.pub_odom = rospy.Publisher("/odom", Odometry, queue_size=10)
         self.pub_imu  = rospy.Publisher("/imu", Imu, queue_size=50)
         self.pub_img  = rospy.Publisher("/camera/color/image_raw", Image, queue_size=1)
+        # 2026-08-14 (BUG-111): publish the robot mode, LATCHED, so other nodes can
+        # check it instead of guessing. beacon_docking.py needs this: its chassis
+        # alignment servos on `yaw_rel`, which cannot change in chassis_lead (the
+        # gimbal follows the chassis), so docking silently has no observable to
+        # converge on. Latched because a consumer starting later must still see it.
+        self.pub_robot_mode = rospy.Publisher("/carolus/robot_mode", String,
+                                              queue_size=1, latch=True)
+        self.pub_robot_mode.publish(String(data=getattr(self, "_robot_mode", "unknown")))
         # Dynamic base_link->camera_link TF (BUG-067, 2026-07-23, F3): the gimbal
         # really does move (yaw_rel/pitch_rel are non-zero as soon as the gimbal is off
         # centre) -- a static identity TF (testcarolus.launch) made

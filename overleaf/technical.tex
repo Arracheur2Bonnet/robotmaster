@@ -2787,6 +2787,53 @@ thing to check --- the acknowledgement means the button was pressed, not
 that the robot heard it.
 \end{warningbox}
 
+\section{Choosing the robot mode: the camera wanders off target}
+\label{sec:robot-mode}
+
+\textbf{Symptom.} The robot is stationary, nothing is commanded, and yet the
+camera slowly turns away from whatever it was pointed at --- losing the beacon
+after a few minutes. Left alone the gimbal keeps going, eventually reaching its
+mechanical limit.
+
+\textbf{Cause.} The robot's own attitude estimate drifts (measured
+$+0.0918$\textdegree/s, about $5.5$\textdegree/min). In \texttt{free} mode the
+gimbal holds an \emph{inertial} heading, so it faithfully follows that drifting
+reference and physically turns with it. The chassis is not moving; only the
+gimbal is.
+
+\textbf{Fix.} Run the robot in \texttt{chassis\_lead}, where the gimbal follows
+the chassis instead of an inertial heading. The drifting estimate leaves the
+control loop entirely. This is the default; select it explicitly with the
+\texttt{RM\_ROBOT\_MODE} environment variable when launching the camera node:
+
+\begin{lstlisting}[style=shell]
+RM_ROBOT_MODE=chassis_lead python3 src/robomaster_cam/scripts/rm_cam_beacon.py
+\end{lstlisting}
+
+\textbf{Measured (2026-08-14, 314 samples over 359\,s):} drift falls from
+$+0.0918$\textdegree/s in \texttt{free} to $-0.00007$\textdegree/s in
+\texttt{chassis\_lead}. Over a half-hour measurement that is
+$0.13$\textdegree{} instead of roughly $165$\textdegree.
+
+\begin{warningbox}
+\textbf{Use \texttt{free} for docking, not \texttt{chassis\_lead}.} Docking
+aligns the chassis by rotating it until the gimbal-to-chassis angle
+(\texttt{/carolus/gimbal\_yaw\_rel}) reaches zero. In \texttt{chassis\_lead} the
+gimbal follows the chassis, so that angle \emph{cannot change} when the chassis
+turns --- the alignment has nothing left to measure and never completes. Launch
+the camera node with \texttt{RM\_ROBOT\_MODE=free} before docking.
+
+The same trade-off applies whenever the camera must stay locked on a target
+while the robot drives: \texttt{chassis\_lead} makes the camera swing with the
+robot. Prefer \texttt{chassis\_lead} for stationary measurements and
+\texttt{free} for driving.
+\end{warningbox}
+
+\textbf{This is a workaround, not a repair.} The attitude estimate itself is
+still wrong, so \texttt{[ATTI]} pitch, roll and yaw remain unusable as an
+absolute reference in either mode --- budget roughly $5.5$\textdegree/min of
+yaw error on anything that reads them.
+
 \section{The robot slowly rotates on its own}
 \label{sec:uncommanded-yaw}
 
@@ -2818,9 +2865,10 @@ skipped:
   \item The manual chassis command loop. It brakes once when idle and then
   sends nothing; confirm with the \texttt{[MANUAL-DRIVE]} log line, which is
   absent when no command is being sent.
-  \item \texttt{gimbal\_lead} robot mode (``chassis follows gimbal''). The node
-  forces \texttt{free} at startup and reads the mode back --- see the
-  \texttt{[MODE]} line.
+  \item \texttt{gimbal\_lead} robot mode (``chassis follows gimbal''), in which
+  the chassis ignores the yaw component of a drive command. The node sets the
+  mode at startup and reads it back --- see the \texttt{[MODE]} line, which
+  reports what the robot actually returned rather than what was requested.
   \item Reaction torque from the gimbal. Ten sharp $35$\textdegree{} slews moved
   the chassis by $0.02$\textdegree{} in total.
   \item The gimbal being off-centre. Deliberately offsetting it by
