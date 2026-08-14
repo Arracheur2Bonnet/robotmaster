@@ -422,17 +422,49 @@ class EPCameraBeaconFollower:
         # day: sub_imu returned True while no data ever arrived). So we READ the actual
         # mode instead of assuming it, force it explicitly, and read it back to verify
         # the request was honoured.
+        # 2026-08-14 (BUG-113): the mode is now selectable, defaulting to
+        # CHASSIS_LEAD rather than FREE.
+        #
+        # WHY. BUG-104 established that this robot's attitude estimate integrates a
+        # constant misaligned gyro bias with no gravity correction, rotating about a
+        # fixed axis tilted ~11 deg from the body vertical at +0.0918 deg/s
+        # (R^2=0.9997). In FREE mode "the gimbal and the chassis move without
+        # affecting each other" (DJI's own wording), i.e. the gimbal holds an
+        # INERTIAL heading -- against that drifting reference. So it physically
+        # slews at the same rate: measured -34 deg -> -229 deg unattended, closing
+        # on the ~250 deg mechanical limit, and the beacon left the frame after
+        # roughly four minutes every time.
+        #
+        # In CHASSIS_LEAD "the gimbal follows the chassis to rotate along the yaw
+        # axis" -- the yaw setpoint becomes chassis-referenced, so the drifting
+        # attitude estimate is no longer in the loop at all. The camera test of
+        # 2026-08-13 proved the chassis does not physically rotate (0.4 px measured
+        # against 227 px expected, 567x), so a chassis-referenced gimbal has nothing
+        # left to chase.
+        #
+        # TRADE-OFF, stated because it is real: in CHASSIS_LEAD the gimbal no longer
+        # stabilises against genuine chassis rotation, so while DRIVING it will swing
+        # with the robot. That is the correct trade for a stationary measurement
+        # (1.4b, calibration) and the wrong one for driving with a locked heading.
+        # Set RM_ROBOT_MODE=free to restore the old behaviour.
+        _mode_env = os.environ.get("RM_ROBOT_MODE", "chassis_lead").strip().lower()
+        _mode_map = {"free": robot.FREE,
+                     "chassis_lead": robot.CHASSIS_LEAD,
+                     "gimbal_lead": robot.GIMBAL_LEAD}
+        _mode_want = _mode_map.get(_mode_env, robot.CHASSIS_LEAD)
         try:
             _mode_before = self.ep.get_robot_mode()
             rospy.loginfo(f"[MODE] mode read at connection: {_mode_before!r}")
-            _set_ok = self.ep.set_robot_mode(mode=robot.FREE)
+            _set_ok = self.ep.set_robot_mode(mode=_mode_want)
             _mode_after = self.ep.get_robot_mode()
-            rospy.loginfo(f"[MODE] set_robot_mode(FREE) returned {_set_ok!r} "
+            rospy.loginfo(f"[MODE] set_robot_mode({_mode_want!r}) returned {_set_ok!r} "
                           f"-> mode read back: {_mode_after!r}")
-            if _mode_after != robot.FREE:
-                rospy.logwarn(f"[MODE] THE ROBOT IS NOT IN FREE MODE ({_mode_after!r}) -- "
-                              f"in gimbal_lead the chassis IGNORES the z component of "
-                              f"drive_speed, which would explain an uncommanded rotation")
+            if _mode_after != _mode_want:
+                rospy.logwarn(f"[MODE] requested {_mode_want!r} but the robot reports "
+                              f"{_mode_after!r} -- the request was NOT honoured")
+            elif _mode_want == robot.GIMBAL_LEAD:
+                rospy.logwarn("[MODE] gimbal_lead: the chassis IGNORES the z component "
+                              "of drive_speed, which looks like an uncommanded rotation")
         except Exception as e:
             rospy.logwarn(f"[MODE] could not read/write the robot mode: {e}")
 
