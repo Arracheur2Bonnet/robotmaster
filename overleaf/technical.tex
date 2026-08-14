@@ -1837,14 +1837,12 @@ sudo apt install ros-noetic-image-transport ros-noetic-cv-bridge \
 
 \begin{warningbox}
 \textbf{If you hit a missing dependency this section does not mention,
-that is a defect in this manual --- please report it.} Two such gaps were
-found this way, and the underlying cause was that a library was named in a
-package's \texttt{CMakeLists.txt} but never declared in its
-\texttt{package.xml}. \texttt{rosdep} reads only \texttt{package.xml}, so
-it installed nothing and the build failed on any machine that did not
-already happen to have the library. The repository now carries
-\texttt{shortcuts/dep\_check.py}, which compares the two and fails if they
-drift apart again.
+that is a defect in this manual --- please report it rather than working
+around it.} Send the exact CMake error line. Two such gaps have been found
+and closed this way, and the fix belongs in the project rather than in
+your local setup: once the dependency is declared properly, the
+\texttt{rosdep install} above installs it for everyone, instead of each
+reader rediscovering it one error at a time.
 \end{warningbox}
 
 \section{Building on Ubuntu 20.04 (the Raspberry Pi --- normal case)}
