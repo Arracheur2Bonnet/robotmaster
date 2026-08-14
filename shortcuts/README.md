@@ -355,6 +355,28 @@ python3 shortcuts/doc_check.py --find NAME     # LaTeX-aware search for one iden
 
 ---
 
+## `tear_check.py`
+
+**What** — measures whether the camera produces **torn frames while the chassis is driving** (BUG-105). Samples frames in three conditions — idle, rotating in place, driving forward/back — and scores each for a tear seam. Derives its own threshold from the idle baseline measured in the same run, so it adapts to the actual lighting instead of inheriting a number from a differently-lit session.
+
+**Why** — 2026-08-12 tested idle and gimbal motion and found nothing, but never tested **chassis** motion, which is exactly the condition the 2.3 rectangular-motion rosbag runs under. There a torn frame is not a shrugged-off bad reading: it is ~1000 spurious contours inside a continuous trajectory MINS will process as real.
+
+**Usage**
+```bash
+# on the Pi, with roscore + rm_cam_beacon.py running and the robot ON THE FLOOR
+python3 /tmp/tear_check.py
+```
+
+**Safety** — the robot drives itself unattended, so motion is **oscillatory**: the sign flips every few seconds, keeping net displacement near zero (max ~18 cm forward excursion, rotation in place). `rm_cam_beacon.py`'s own 0.5 s deadman brakes the chassis if the script dies.
+
+**Result 2026-08-13** — **0/60 torn rotating, 0/60 driving, 0/60 idle**, detector validated 6/6 against synthetic seams. `[MANUAL-DRIVE]` fired 13 times, confirming the chassis genuinely moved rather than the test silently doing nothing.
+
+**Two traps this tool exists to warn about, both hit while building it:**
+- **A brightness detector is not a tear detector.** The first version counted bright-value contours, reproducing the 2026-08-12 signature (~1000 contours). That signature was measured with the lab lights **off**; with them on it fires on 100% of frames in *every* condition including idle. It was measuring illumination.
+- **Validate the negative, and validate it correctly.** A "0 torn frames" result means nothing until the detector is shown to catch a real seam. The first self-test spliced two frames of a static scene grabbed 1 s apart — near-identical, so the splice had no seam and the detector correctly saw nothing, which *looked* like detector failure. Splice genuinely different content instead (roll one frame horizontally, or slew the gimbal between grabs).
+
+---
+
 ## `dep_check.py`
 
 **What** — checks that this workspace can build on a machine that is **not this one**. Compares every active `find_package()` in each `CMakeLists.txt` against what the matching `package.xml` declares, validates each manifest is well-formed XML, and with `--resolve` confirms every declared key actually resolves via `rosdep` for a target OS.
