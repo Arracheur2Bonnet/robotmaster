@@ -1,0 +1,31 @@
+<launch>
+    <!-- ====================================================================
+         Carolus — rviz visualization, added 2026-08-14.
+
+         Genuinely different from the launcher's own CAM PREVIEW / BLOB VIEW
+         panels: those show flat 2D images (carolus_launcher.py, shortcuts/).
+         This shows the actual 3D pose Carolus computes — the
+         camera_link -> beacon_observed TF frame (published by T4,
+         carolus_tf_broadcaster.py) — in a real 3D scene, alongside the same
+         two image topics for reference.
+
+         Needs T2 (camera), T3 (carolus_astrobee, publishes /postprocessed/image
+         and /pose), and T4 (carolus_tf_broadcaster.py, publishes the TF) already
+         running — this launches only rviz itself.
+
+         Run on the lab PC:
+             roslaunch carolus_node carolus_rviz.launch
+
+         Known limitation: no camera_info topic is published by rm_cam_beacon.py,
+         so rviz's "Camera" display type (which overlays TF onto the live image,
+         and needs an image+camera_info pair) cannot be used here — only the
+         plain "Image" display type, and a separate 3D "TF" display. The 3D
+         beacon frame and the camera image are both visible, just not fused
+         into one overlaid view.
+         ==================================================================== -->
+
+    <node name="carolus_rviz" pkg="rviz" type="rviz"
+          args="-d $(find carolus_node)/rviz/carolus.rviz"
+          output="screen" />
+
+</launch>

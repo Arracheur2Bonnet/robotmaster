@@ -2636,6 +2636,14 @@ Control & What it does \\
   it costs network bandwidth and GUI smoothness, so turn it on only when you
   need to see the image. \\
 \addlinespace
+\texttt{BLOB VIEW} & Toggles a second panel showing \texttt{/postprocessed/image}
+  --- Carolus's own black-and-white thresholded view, with a coloured circle on
+  each blob it kept after filtering (Section~\ref{ch:carolus-node}'s detection
+  parameters). \textbf{Off by default}, same reasoning as CAM PREVIEW. Added
+  2026-08-14, this is the modern equivalent of viewing the same topic through
+  rviz --- useful for confirming only the beacon's 4 LEDs are being picked up,
+  not a reflection or another light source. \\
+\addlinespace
 \texttt{LOCATE} & Localises the beacon without advancing. Activates
   automatically 500\,ms after T2 confirms the camera is ready. \\
 \addlinespace
@@ -2647,11 +2655,22 @@ Control & What it does \\
 \end{tabular}
 \end{center}
 
-\textbf{The dashboard} shows the current state (SEARCH / APPROACH / STOP /
-LOCATE / MANUAL), the beacon distance, the robot's battery, and the Pi's
-own temperature, load and RAM (refreshed every 20\,s). The Pi's temperature
-turns amber at 65\,\textdegree C and red at 75\,\textdegree C, ahead of the
-Pi 4B's 80\,\textdegree C thermal throttle.
+\textbf{The dashboard} is split into two panels, \textbf{Robot Status}
+(state --- SEARCH / APPROACH / STOP / LOCATE / MANUAL --- beacon distance,
+battery, attitude, chassis speed, wheel RPM) directly above
+\textbf{Raspberry Pi Status} (the Pi's own temperature, load and RAM,
+refreshed every 20\,s, separated out 2026-08-14 since it describes the Pi
+carrying the perception pipeline, not the robot itself). The Pi's
+temperature turns amber at 65\,\textdegree C and red at 75\,\textdegree C,
+ahead of the Pi 4B's 80\,\textdegree C thermal throttle.
+
+\textbf{The camera and blob-detection panels resize with the window},
+added 2026-08-14: both grow together, in whole multiples of their base
+480$\times$270, up to 3$\times$, as the launcher window is enlarged ---
+enlarging the window is therefore the way to get a bigger view, there is no
+separate zoom control. The underlying image transferred from the Pi stays
+480$\times$270 regardless; only the on-screen display size changes, so this
+costs no extra network bandwidth.
 
 \textbf{The beacon indicator} reads \texttt{BEACON: DETECTED} (green) or
 \texttt{BEACON: LOST} (red), and a small minimap shows where the beacon sits

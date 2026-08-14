@@ -50,6 +50,17 @@ SSH_OPTS = ["-i", SSH_KEY, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyCheck
 
 HELPER  = os.path.join(HERE, "cam_view_helper.py")   # HERE defini plus haut
 CAM_PNG = "/tmp/carolus_cam.png"
+# Blob-detection view (2026-08-14): /postprocessed/image (Carolus's own
+# black-and-white thresholded image with a coloured circle on each detected LED),
+# same modern equivalent of the inherited PDF's rviz panel, second GUI thumbnail.
+BLOBS_PNG = "/tmp/carolus_blobs.png"
+
+# Base thumbnail size decoded from the PNG helper (must match cam_view_helper.py's
+# SIZE). The displayed size can grow beyond this via an integer zoom -- see
+# App._preview_zoom -- but this is what is actually decoded/transferred, and what
+# every reset/placeholder falls back to at zoom=1.
+PREVIEW_BASE_W, PREVIEW_BASE_H = 480, 270
+PREVIEW_MAX_ZOOM = 3
 
 # ── statuts ───────────────────────────────────────────────────────────────────
 S_IDLE    = "[ ]"
@@ -193,6 +204,8 @@ class App(tk.Tk):
         # anywhere the canvas is cleared, or the preview would stay blank until
         # the helper happens to rewrite the file.
         self._cam_png_mtime = None
+        # Same principle for the blob-detection thumbnail (2026-08-14).
+        self._blobs_png_mtime = None
         self._open_session_log()
 
         self.title("Carolus Launcher")
@@ -204,6 +217,17 @@ class App(tk.Tk):
         self.procs      = [None, None, None, None, None, None]   # Popen T1..T6
         self.cam_proc   = None                 # Popen helper video (stdin=PIPE)
         self.cam_img    = None                 # reference PhotoImage (anti-GC)
+        self.blobs_img  = None                 # reference PhotoImage blobs (anti-GC)
+        # Responsive preview size (2026-08-14): the underlying PNG thumbnail stays a
+        # fixed 480x270 (PREVIEW_BASE_W/H below) -- that resolution, and the network
+        # traffic and decode cost that come with it, are unaffected by window size.
+        # Only the DISPLAYED size grows, via an integer PhotoImage.zoom() on the
+        # already-decoded image -- a local, cheap, Tk-only operation on the lab PC,
+        # nothing that touches the Pi or the camera pipeline. Capped at 3x
+        # (1440x810/panel) so a maximised window on a large screen cannot balloon
+        # memory/CPU unboundedly. See _on_root_resize / _apply_preview_zoom.
+        self._preview_zoom = 1
+        self._resize_after_id = None
         self.last_state = None
         self.gui_mode   = "AUTO"               # "AUTO" ou "MANUAL"
         self._keys_down = set()
@@ -223,6 +247,11 @@ class App(tk.Tk):
         # subscriber on that topic means less duplicated traffic on the Pi <-> lab
         # PC link.
         self._camera_enabled = False
+        # Blob-detection preview (2026-08-14): same off-by-default reasoning as
+        # _camera_enabled -- one fewer subscriber on /postprocessed/image unless
+        # someone actually wants to see it (tuning HSV/threshold values, or just
+        # checking the LEDs are seen, per Hector's request).
+        self._blobs_enabled = False
         self._gimbal_lock_active = False   # lock balise actif (centrage periodique, mode MANUEL uniquement)
         self._last_robot_pos = (0.0, 0.0)   # dernière pos sub_position (m)
         self._last_robot_yaw = 0.0          # dernière orientation robot (deg, sub_attitude)
@@ -230,7 +259,9 @@ class App(tk.Tk):
         self._t5_dock_ready = False         # 1er [DOCKSTATUS] vu -> abonnements T5 etablis
         self._build()
         self._bind_keys()
+        self.bind("<Configure>", self._on_root_resize)
         self._refresh_cam()
+        self._refresh_blobs()
         self.after(100, self._flush_log_queue)
         self.after(300, self._check_beacon_freshness)
         # Sonde Pi : premier tir a 2s (laisse la fenetre s'afficher d'abord),
@@ -268,11 +299,11 @@ class App(tk.Tk):
                  anchor="w", font=FONT).pack(fill="x", padx=12)
         conn = tk.Frame(header, bg=BG2)
         conn.pack(fill="x", padx=12, pady=(2, 8))
-        tk.Label(conn, text="Connexion Pi :", bg=BG2, fg=FG_DIM, font=FONT).pack(side="left")
+        tk.Label(conn, text="Pi connection:", bg=BG2, fg=FG_DIM, font=FONT).pack(side="left")
         self.conn_dot = tk.Canvas(conn, width=14, height=14, bg=BG2, highlightthickness=0)
         self._conn_oval = self.conn_dot.create_oval(2, 2, 12, 12, fill=COL_IDLE, outline="")
         self.conn_dot.pack(side="left", padx=6)
-        self.conn_lbl = tk.Label(conn, text="verification...", bg=BG2, fg=FG_DIM, font=FONT)
+        self.conn_lbl = tk.Label(conn, text="checking...", bg=BG2, fg=FG_DIM, font=FONT)
         self.conn_lbl.pack(side="left")
 
         tk.Frame(left_col, height=2, bg=ACCENT).pack(fill="x")
@@ -317,15 +348,15 @@ class App(tk.Tk):
         tk.Button(ctrl, text="KILL ALL", bg=COL_KO, fg=FG, relief="flat",
                   activebackground="#ff3333", activeforeground=FG, font=FONT,
                   command=lambda: self._on_kill(-1)).pack(side="left", fill="x", expand=True, padx=(0, 4))
-        self.mode_btn = tk.Button(ctrl, text="MODE : AUTO", bg=COL_STOP, fg=FG, relief="flat",
+        self.mode_btn = tk.Button(ctrl, text="MODE: AUTO", bg=COL_STOP, fg=FG, relief="flat",
                                   activebackground=ACCENT, activeforeground=BG, font=FONT,
                                   command=self._toggle_mode)
         self.mode_btn.pack(side="left", fill="x", expand=True, padx=(4, 4))
-        self._locate_btn = tk.Button(ctrl, text="LOCALISER", bg=BG3, fg=FG_DIM, relief="flat",
+        self._locate_btn = tk.Button(ctrl, text="LOCATE", bg=BG3, fg=FG_DIM, relief="flat",
                                      activebackground=COL_ALIGN, activeforeground=FG, font=FONT,
                                      command=self._toggle_locate)
         self._locate_btn.pack(side="left", fill="x", expand=True, padx=(4, 4))
-        self._lock_btn = tk.Button(ctrl, text="LOCK : OFF", bg=BG3, fg=FG_DIM, relief="flat",
+        self._lock_btn = tk.Button(ctrl, text="LOCK: OFF", bg=BG3, fg=FG_DIM, relief="flat",
                                    activebackground=COL_ALIGN, activeforeground=FG, font=FONT,
                                    command=self._toggle_gimbal_lock)
         self._lock_btn.pack(side="left", fill="x", expand=True, padx=(4, 4))
@@ -340,10 +371,19 @@ class App(tk.Tk):
         self._lock_period_entry.bind("<Return>", self._on_lock_period_changed)
         self._lock_period_entry.pack(side="left", padx=(0, 4))
         tk.Label(ctrl, text="s", bg=BG, fg=FG_DIM, font=FONT).pack(side="left", padx=(0, 4))
-        self._cam_btn = tk.Button(ctrl, text="APERCU CAM : OFF", bg=BG3, fg=FG_DIM, relief="flat",
+        self._cam_btn = tk.Button(ctrl, text="CAM PREVIEW: OFF", bg=BG3, fg=FG_DIM, relief="flat",
                                   activebackground=ACCENT, activeforeground=BG, font=FONT,
                                   command=self._toggle_camera_preview)
         self._cam_btn.pack(side="left", fill="x", expand=True, padx=(4, 4))
+        # Blob-detection view (2026-08-14): /postprocessed/image, Carolus's own
+        # black-and-white + coloured-blob-markers image. Fixed width, not expand=True
+        # like the row's other buttons -- this row is already dense (5 buttons + an
+        # entry field), and this one is used far less often (tuning sessions, not
+        # every launch).
+        self._blobs_btn = tk.Button(ctrl, text="BLOB VIEW: OFF", bg=BG3, fg=FG_DIM, relief="flat",
+                                    activebackground=ACCENT, activeforeground=BG, font=FONT,
+                                    command=self._toggle_blob_preview)
+        self._blobs_btn.pack(side="left", padx=(4, 4))
 
         # --- blocs de pilotage visuel ---
         self._build_ctrl_blocks(left_col)
@@ -352,20 +392,28 @@ class App(tk.Tk):
         dash = tk.Frame(left_col, bg=BG)
         dash.pack(fill="x", padx=12, pady=4)
 
-        left = tk.Frame(dash, bg=BG2)
-        left.grid(row=0, column=0, sticky="nw", padx=(0, 8), ipadx=8, ipady=6)
-        tk.Label(left, text="ETAT ROBOT", bg=BG2, fg=ACCENT, anchor="w", font=FONT).pack(anchor="w")
-        srow = tk.Frame(left, bg=BG2)
+        # Outer container for both status panels, stacked vertically -- reworked
+        # 2026-08-14 to give Robot Status and Raspberry Pi Status each their own
+        # clearly delimited panel instead of one undifferentiated block (the Pi
+        # section already existed, added 2026-08-04, but lived silently nested at
+        # the bottom of the robot panel with no visual boundary of its own).
+        left = tk.Frame(dash, bg=BG)
+        left.grid(row=0, column=0, sticky="nw", padx=(0, 8))
+
+        robot_frame = tk.Frame(left, bg=BG2)
+        robot_frame.pack(fill="x", ipadx=8, ipady=6)
+        tk.Label(robot_frame, text="ROBOT STATUS", bg=BG2, fg=ACCENT, anchor="w", font=FONT).pack(anchor="w")
+        srow = tk.Frame(robot_frame, bg=BG2)
         srow.pack(anchor="w", pady=2)
         self.state_dot = tk.Canvas(srow, width=18, height=18, bg=BG2, highlightthickness=0)
         self._dot = self.state_dot.create_oval(2, 2, 16, 16, fill=COL_IDLE, outline="")
         self.state_dot.pack(side="left")
         self.state_lbl = tk.Label(srow, text="---", bg=BG2, fg=FG, font=FONT)
         self.state_lbl.pack(side="left", padx=6)
-        self.depth_lbl = tk.Label(left, text="", bg=BG2, fg=FG, font=FONT_MONO)
+        self.depth_lbl = tk.Label(robot_frame, text="", bg=BG2, fg=FG, font=FONT_MONO)
         self.depth_lbl.pack(anchor="w")
-        tk.Label(left, text="Batterie", bg=BG2, fg=FG_DIM, anchor="w", font=FONT).pack(anchor="w", pady=(8, 0))
-        brow = tk.Frame(left, bg=BG2)
+        tk.Label(robot_frame, text="Battery", bg=BG2, fg=FG_DIM, anchor="w", font=FONT).pack(anchor="w", pady=(8, 0))
+        brow = tk.Frame(robot_frame, bg=BG2)
         brow.pack(anchor="w", pady=2)
         self.batt_canvas = tk.Canvas(brow, width=120, height=16, bg=BG3, highlightthickness=0)
         self._batt_rect = self.batt_canvas.create_rectangle(0, 0, 0, 16, fill=COL_STOP, outline="")
@@ -373,33 +421,33 @@ class App(tk.Tk):
         self.batt_lbl = tk.Label(brow, text="N/A", width=6, bg=BG2, fg=FG, font=FONT)
         self.batt_lbl.pack(side="left", padx=6)
 
-        tk.Label(left, text="Batterie — détail", bg=BG2, fg=FG_DIM, anchor="w", font=FONT).pack(anchor="w", pady=(8, 0))
-        self.bat_detail_lbl = tk.Label(left, text="temp: N/A   courant: N/A   adc: N/A",
+        tk.Label(robot_frame, text="Battery detail", bg=BG2, fg=FG_DIM, anchor="w", font=FONT).pack(anchor="w", pady=(8, 0))
+        self.bat_detail_lbl = tk.Label(robot_frame, text="temp: N/A   current: N/A   adc: N/A",
                                        bg=BG2, fg=FG, font=FONT_MONO, anchor="w")
         self.bat_detail_lbl.pack(anchor="w")
 
-        tk.Label(left, text="Attitude", bg=BG2, fg=FG_DIM, anchor="w", font=FONT).pack(anchor="w", pady=(8, 0))
-        self.atti_lbl = tk.Label(left, text="pitch: N/A   roll: N/A", bg=BG2, fg=FG, font=FONT_MONO, anchor="w")
+        tk.Label(robot_frame, text="Attitude", bg=BG2, fg=FG_DIM, anchor="w", font=FONT).pack(anchor="w", pady=(8, 0))
+        self.atti_lbl = tk.Label(robot_frame, text="pitch: N/A   roll: N/A", bg=BG2, fg=FG, font=FONT_MONO, anchor="w")
         self.atti_lbl.pack(anchor="w")
 
-        tk.Label(left, text="Vitesse châssis", bg=BG2, fg=FG_DIM, anchor="w", font=FONT).pack(anchor="w", pady=(6, 0))
-        self.vel_lbl = tk.Label(left, text="vx: N/A   vy: N/A",
+        tk.Label(robot_frame, text="Chassis speed", bg=BG2, fg=FG_DIM, anchor="w", font=FONT).pack(anchor="w", pady=(6, 0))
+        self.vel_lbl = tk.Label(robot_frame, text="vx: N/A   vy: N/A",
                                 bg=BG2, fg=FG, font=FONT_MONO, anchor="w")
         self.vel_lbl.pack(anchor="w")
 
-        tk.Label(left, text="Roues (RPM)", bg=BG2, fg=FG_DIM, anchor="w", font=FONT).pack(anchor="w", pady=(6, 0))
-        self.esc_lbl = tk.Label(left, text="W1:--- W2:--- W3:--- W4:---", bg=BG2, fg=FG, font=FONT_MONO, anchor="w")
+        tk.Label(robot_frame, text="Wheels (RPM)", bg=BG2, fg=FG_DIM, anchor="w", font=FONT).pack(anchor="w", pady=(6, 0))
+        self.esc_lbl = tk.Label(robot_frame, text="W1:--- W2:--- W3:--- W4:---", bg=BG2, fg=FG, font=FONT_MONO, anchor="w")
         self.esc_lbl.pack(anchor="w")
 
-        tk.Label(left, text="Statut", bg=BG2, fg=FG_DIM, anchor="w", font=FONT).pack(anchor="w", pady=(6, 0))
-        self.status_lbl = tk.Label(left, text="OK", bg=BG2, fg=ACCENT, font=FONT_MONO, anchor="w")
+        tk.Label(robot_frame, text="Status", bg=BG2, fg=FG_DIM, anchor="w", font=FONT).pack(anchor="w", pady=(6, 0))
+        self.status_lbl = tk.Label(robot_frame, text="OK", bg=BG2, fg=ACCENT, font=FONT_MONO, anchor="w")
         self.status_lbl.pack(anchor="w")
 
-        tk.Label(left, text="TOF frontal / Obstacle", bg=BG2, fg=FG_DIM, anchor="w", font=FONT).pack(anchor="w", pady=(6, 0))
-        self.tof_lbl = tk.Label(left, text="N/A", bg=BG2, fg=FG, font=FONT_MONO, anchor="w")
+        tk.Label(robot_frame, text="Front TOF / Obstacle", bg=BG2, fg=FG_DIM, anchor="w", font=FONT).pack(anchor="w", pady=(6, 0))
+        self.tof_lbl = tk.Label(robot_frame, text="N/A", bg=BG2, fg=FG, font=FONT_MONO, anchor="w")
         self.tof_lbl.pack(anchor="w")
 
-        # --- Raspberry Pi status (2026-08-04) --------------------------------
+        # --- Raspberry Pi status (2026-08-04), own panel since 2026-08-14 -----
         # The Pi's temperature/load/RAM, not the robot's: on this project the Pi
         # now carries the WHOLE perception pipeline (camera + Carolus, and MINS
         # eventually), so it is what saturates first. The 2026-08-04 MINS test
@@ -407,17 +455,30 @@ class App(tk.Tk):
         # invisible from the robot, and decisive when diagnosing a slowdown. Read
         # over SSH rather than through ROS, so it stays true even when the ROS
         # stack is stopped or has crashed.
-        tk.Label(left, text="Raspberry Pi", bg=BG2, fg=FG_DIM, anchor="w", font=FONT).pack(anchor="w", pady=(6, 0))
-        self.pi_lbl = tk.Label(left, text="temp --  load --  ram --",
+        pi_frame = tk.Frame(left, bg=BG2)
+        pi_frame.pack(fill="x", ipadx=8, ipady=6, pady=(6, 0))
+        tk.Label(pi_frame, text="RASPBERRY PI STATUS", bg=BG2, fg=ACCENT, anchor="w", font=FONT).pack(anchor="w")
+        self.pi_lbl = tk.Label(pi_frame, text="temp --  load --  ram --",
                                bg=BG2, fg=FG_DIM, font=FONT_MONO, anchor="w")
-        self.pi_lbl.pack(anchor="w")
+        self.pi_lbl.pack(anchor="w", pady=(2, 0))
 
         right = tk.Frame(dash, bg=BG2)
         right.grid(row=0, column=1, sticky="ne", ipadx=4, ipady=4)
-        tk.Label(right, text="CAMERA (apercu ~20 Hz)", bg=BG2, fg=ACCENT, anchor="w", font=FONT).pack(anchor="w")
-        self.cam_canvas = tk.Canvas(right, width=320, height=180, bg="black", highlightthickness=0)
+        tk.Label(right, text="CAMERA (preview ~20 Hz)", bg=BG2, fg=ACCENT, anchor="w", font=FONT).pack(anchor="w")
+        self.cam_canvas = tk.Canvas(right, width=PREVIEW_BASE_W, height=PREVIEW_BASE_H, bg="black", highlightthickness=0)
         self.cam_canvas.pack()
-        self._cam_txt = self.cam_canvas.create_text(160, 90, text="en attente...", fill=FG_DIM)
+        self._cam_txt = self.cam_canvas.create_text(*self._preview_center(), text="waiting...", fill=FG_DIM)
+
+        # --- Carolus blob-detection view (2026-08-14) ---
+        # Black and white (threshold image) + coloured circle on each detected blob,
+        # exactly the image carolus_astrobee.cpp publishes on /postprocessed/image --
+        # useful to verify the LEDs are actually seen / tune the threshold, without
+        # going through rviz.
+        tk.Label(right, text="BLOB DETECTION (Carolus, B&W)", bg=BG2, fg=ACCENT,
+                anchor="w", font=FONT).pack(anchor="w", pady=(6, 0))
+        self.blobs_canvas = tk.Canvas(right, width=PREVIEW_BASE_W, height=PREVIEW_BASE_H, bg="black", highlightthickness=0)
+        self.blobs_canvas.pack()
+        self._blobs_txt = self.blobs_canvas.create_text(*self._preview_center(), text="disabled", fill=FG_DIM)
 
         # --- Voyant statut balise + minimap (2026-07-23) ---
         beacon_row = tk.Frame(right, bg=BG2)
@@ -428,7 +489,7 @@ class App(tk.Tk):
         self._beacon_status_lbl = tk.Label(beacon_row, text="BEACON: LOST", bg=BG2, fg=COL_KO, font=FONT_MONO)
         self._beacon_status_lbl.pack(side="left", padx=6)
 
-        tk.Label(right, text="MINIMAP BALISE", bg=BG2, fg=ACCENT, anchor="w", font=FONT).pack(anchor="w", pady=(6, 0))
+        tk.Label(right, text="BEACON MINIMAP", bg=BG2, fg=ACCENT, anchor="w", font=FONT).pack(anchor="w", pady=(6, 0))
         self._minimap = tk.Canvas(right, width=100, height=100, bg="black", highlightthickness=0)
         self._minimap.pack()
         self._minimap_cross_h = self._minimap.create_line(0, 50, 100, 50, fill="#444444")
@@ -439,7 +500,7 @@ class App(tk.Tk):
         # RECENTRER CAM (2026-07-23) : remet la nacelle a sa position de base
         # (pitch=0, yaw=0, gimbal.recenter() du SDK) -- orientation de la CAMERA,
         # independant de l'orientation du chassis robot.
-        self._recenter_btn = tk.Button(right, text="RECENTRER CAM", bg=BG3, fg=FG,
+        self._recenter_btn = tk.Button(right, text="RECENTER CAM", bg=BG3, fg=FG,
                                        relief="flat", activebackground=COL_ALIGN, activeforeground=FG,
                                        font=FONT, command=self._on_gimbal_recenter)
         self._recenter_btn.pack(fill="x", pady=(6, 0))
@@ -447,7 +508,7 @@ class App(tk.Tk):
         # --- Docking (2026-07-27): commands on /carolus/dock (relayed by
         # cam_view_helper.py, same mechanism as RECENTER), status read from T5's
         # logs ([DOCKSTATUS], same mechanism as [BEACON]). ---
-        tk.Label(right, text="DOCKING BALISE", bg=BG2, fg=ACCENT, anchor="w", font=FONT).pack(anchor="w", pady=(10, 0))
+        tk.Label(right, text="BEACON DOCKING", bg=BG2, fg=ACCENT, anchor="w", font=FONT).pack(anchor="w", pady=(10, 0))
         # Two independent-click calibration (2026-07-27): no blocking timer between
         # the two measurements -- each step waits for an explicit click, read from the
         # GUI status rather than by watching for a message in a scrolling log.
@@ -484,8 +545,8 @@ class App(tk.Tk):
         # --- logs : un onglet par terminal (T1-T5), selectionnables + bouton copier ---
         logh = tk.Frame(right_col, bg=BG)
         logh.pack(fill="x", padx=12, pady=(6, 0))
-        tk.Label(logh, text="Logs :", bg=BG, fg=FG_DIM, font=FONT).pack(side="left")
-        tk.Button(logh, text="Copier les logs (onglet actif)", bg=BG3, fg=FG, relief="flat",
+        tk.Label(logh, text="Logs:", bg=BG, fg=FG_DIM, font=FONT).pack(side="left")
+        tk.Button(logh, text="Copy logs (active tab)", bg=BG3, fg=FG, relief="flat",
                   activebackground=ACCENT, activeforeground=BG, font=FONT,
                   command=self._copy_logs).pack(side="right")
 
@@ -538,7 +599,7 @@ class App(tk.Tk):
         # ── Bloc 1 : Chassis (ZQSD) ──────────────────────────────────────────
         ch = tk.Frame(blocks, bg=BG2, padx=10, pady=6)
         ch.pack(side="left", fill="both", expand=True, padx=(0, 4))
-        tk.Label(ch, text="CHASSIS  (ZQSD)", bg=BG2, fg=ACCENT,
+        tk.Label(ch, text="CHASSIS (ZQSD)", bg=BG2, fg=ACCENT,
                  anchor="w", font=FONT).pack(anchor="w", pady=(0, 4))
         ch_keys = tk.Frame(ch, bg=BG2)
         ch_keys.pack()
@@ -553,7 +614,7 @@ class App(tk.Tk):
         # ── Bloc 2 : Nacelle (numpad 8/4/5/6/2) ──────────────────────────────
         gm = tk.Frame(blocks, bg=BG2, padx=10, pady=6)
         gm.pack(side="left", fill="both", expand=True, padx=(4, 0))
-        tk.Label(gm, text="NACELLE  (NUM 8/4/5/6/2)", bg=BG2, fg=ACCENT,
+        tk.Label(gm, text="GIMBAL (NUM 8/4/5/6/2)", bg=BG2, fg=ACCENT,
                  anchor="w", font=FONT).pack(anchor="w", pady=(0, 4))
         gm_keys = tk.Frame(gm, bg=BG2)
         gm_keys.pack()
@@ -569,20 +630,20 @@ class App(tk.Tk):
         # ── Bloc 3 : Roues individuelles (tilt / wheelie) ────────────────────
         wr = tk.Frame(blocks, bg=BG2, padx=10, pady=6)
         wr.pack(side="left", fill="both", expand=True, padx=(4, 0))
-        tk.Label(wr, text="ROUES (tilt)", bg=BG2, fg=ACCENT,
+        tk.Label(wr, text="WHEELS (tilt)", bg=BG2, fg=ACCENT,
                  anchor="w", font=FONT).pack(anchor="w", pady=(0, 4))
         wr_keys = tk.Frame(wr, bg=BG2)
         wr_keys.pack()
         # Forward (rear wheels push, the front lifts)
-        b_av = tk.Label(wr_keys, text="AV↑", width=4, height=1,
+        b_av = tk.Label(wr_keys, text="FW↑", width=4, height=1,
                         bg=BG3, fg=FG, font=FONT_MONO, bd=1, relief="raised")
         b_av.grid(row=0, column=0, padx=3, pady=3)
         # Wheel stop
         b_st = tk.Label(wr_keys, text="■", width=4, height=1,
                         bg=BG3, fg=COL_KO, font=FONT_MONO, bd=1, relief="raised")
         b_st.grid(row=0, column=1, padx=3, pady=3)
-        # Arriere (roues avant poussent, arriere se leve)
-        b_ar = tk.Label(wr_keys, text="AR↑", width=4, height=1,
+        # Backward (front wheels push, the rear lifts)
+        b_ar = tk.Label(wr_keys, text="BW↑", width=4, height=1,
                         bg=BG3, fg=FG, font=FONT_MONO, bd=1, relief="raised")
         b_ar.grid(row=0, column=2, padx=3, pady=3)
 
@@ -592,7 +653,7 @@ class App(tk.Tk):
         b_ar.bind("<ButtonPress-1>",   lambda e: self._on_tilt_press("300 300 0 0"))
         b_ar.bind("<ButtonRelease-1>", lambda e: self._on_tilt_release())
 
-        tk.Label(wr, text="Maintenir enfonce", bg=BG2, fg=FG_DIM,
+        tk.Label(wr, text="Press and hold", bg=BG2, fg=FG_DIM,
                  font=FONT).pack(anchor="w", pady=(4, 0))
 
     def _toggle_locate(self):
@@ -612,11 +673,11 @@ class App(tk.Tk):
         # 2026-07-23.
         self._gimbal_lock_active = not self._gimbal_lock_active
         if self._gimbal_lock_active:
-            self._lock_btn.config(text="LOCK : ON", bg=COL_ALIGN, fg=FG)
+            self._lock_btn.config(text="LOCK: ON", bg=COL_ALIGN, fg=FG)
             self._send_to_helper("LOCK ON")
-            self.after(0, self._log, "> Lock balise ON (centrage periodique en mode MANUEL)")
+            self.after(0, self._log, "> Beacon lock ON (periodic re-centring in MANUAL mode)")
         else:
-            self._lock_btn.config(text="LOCK : OFF", bg=BG3, fg=FG_DIM)
+            self._lock_btn.config(text="LOCK: OFF", bg=BG3, fg=FG_DIM)
             self._send_to_helper("LOCK OFF")
             self.after(0, self._log, "> Beacon lock OFF")
 
@@ -704,17 +765,32 @@ class App(tk.Tk):
         # frees network bandwidth on a topic already identified as the bottleneck.
         self._camera_enabled = not self._camera_enabled
         if self._camera_enabled:
-            self._cam_btn.config(text="APERCU CAM : ON", bg=ACCENT, fg=BG)
+            self._cam_btn.config(text="CAM PREVIEW: ON", bg=ACCENT, fg=BG)
             self._send_to_helper("CAM ON")
-            self.after(0, self._log, "> Apercu camera ON")
+            self.after(0, self._log, "> Camera preview ON")
         else:
-            self._cam_btn.config(text="APERCU CAM : OFF", bg=BG3, fg=FG_DIM)
+            self._cam_btn.config(text="CAM PREVIEW: OFF", bg=BG3, fg=FG_DIM)
             self._send_to_helper("CAM OFF")
             self.cam_canvas.delete("all")
-            self._cam_txt = self.cam_canvas.create_text(160, 90, text="apercu desactive", fill=FG_DIM)
+            self._cam_txt = self.cam_canvas.create_text(*self._preview_center(), text="preview disabled", fill=FG_DIM)
             self.cam_img = None
+
+    def _toggle_blob_preview(self):
+        # Same reasoning as _toggle_camera_preview: OFF cuts the helper's
+        # /postprocessed/image subscription, not merely the display.
+        self._blobs_enabled = not self._blobs_enabled
+        if self._blobs_enabled:
+            self._blobs_btn.config(text="BLOB VIEW: ON", bg=ACCENT, fg=BG)
+            self._send_to_helper("BLOBS ON")
+            self.after(0, self._log, "> Blob view ON")
+        else:
+            self._blobs_btn.config(text="BLOB VIEW: OFF", bg=BG3, fg=FG_DIM)
+            self._send_to_helper("BLOBS OFF")
+            self.blobs_canvas.delete("all")
+            self._blobs_txt = self.blobs_canvas.create_text(*self._preview_center(), text="preview disabled", fill=FG_DIM)
+            self.blobs_img = None
             self._cam_png_mtime = None   # force a decode when the preview comes back
-            self.after(0, self._log, "> Apercu camera OFF (fluidite + bande passante)")
+            self.after(0, self._log, "> Camera preview OFF (smoothness + bandwidth)")
 
     # ── tilt roues (mode MANUEL uniquement) ──────────────────────────────────
 
@@ -994,19 +1070,27 @@ class App(tk.Tk):
         self.depth_lbl.config(text="")
         self.batt_canvas.coords(self._batt_rect, 0, 0, 0, 16)
         self.batt_lbl.config(text="N/A")
-        self.bat_detail_lbl.config(text="temp: N/A   courant: N/A   adc: N/A", fg=FG)
+        self.bat_detail_lbl.config(text="temp: N/A   current: N/A   adc: N/A", fg=FG)
         self.atti_lbl.config(text="pitch: N/A   roll: N/A")
         self.vel_lbl.config(text="vx: N/A   vy: N/A")
         self.esc_lbl.config(text="W1:---  W2:---  W3:---  W4:---")
         self.status_lbl.config(text="OK", fg=ACCENT)
         self.tof_lbl.config(text="N/A", fg=FG)
         self.cam_canvas.delete("all")
-        self.cam_canvas.create_text(160, 90, text="en attente...", fill=FG_DIM)
+        self.cam_canvas.create_text(*self._preview_center(), text="waiting...", fill=FG_DIM)
         self.cam_img = None
         self._cam_png_mtime = None
+        self.blobs_canvas.delete("all")
+        self.blobs_canvas.create_text(*self._preview_center(), text="waiting...", fill=FG_DIM)
+        self.blobs_img = None
+        self._blobs_png_mtime = None
         self._last_robot_pos = (0.0, 0.0)
         try:
             os.remove(CAM_PNG)
+        except OSError:
+            pass
+        try:
+            os.remove(BLOBS_PNG)
         except OSError:
             pass
 
@@ -1021,7 +1105,7 @@ class App(tk.Tk):
 
     def _set_conn(self, ok):
         self.conn_dot.itemconfig(self._conn_oval, fill=COL_OK if ok else COL_KO)
-        self.conn_lbl.config(text=f"OK ({PI_HOST})" if ok else f"injoignable ({PI_HOST})",
+        self.conn_lbl.config(text=f"OK ({PI_HOST})" if ok else f"unreachable ({PI_HOST})",
                              fg=ACCENT if ok else COL_KO)
 
     # -- checks with timeout and cancellation ----------------------------------
@@ -1223,6 +1307,58 @@ class App(tk.Tk):
 
     # -- video stream (main-thread loop) ---------------------------------------
 
+    def _preview_size(self):
+        """Current displayed preview size (base thumbnail x current zoom)."""
+        return (PREVIEW_BASE_W * self._preview_zoom, PREVIEW_BASE_H * self._preview_zoom)
+
+    def _preview_center(self):
+        w, h = self._preview_size()
+        return (w // 2, h // 2)
+
+    def _on_root_resize(self, event):
+        # Only react to the root window itself resizing, not every child widget's
+        # own Configure event bubbling through (Tkinter delivers <Configure> to
+        # every bound widget on any size change in its subtree).
+        if event.widget is not self:
+            return
+        if self._resize_after_id is not None:
+            self.after_cancel(self._resize_after_id)
+        # Debounced: a window drag fires many Configure events per second: without
+        # this, every one of them would decide a zoom factor and resize two
+        # canvases, fighting the very drag the user is performing.
+        self._resize_after_id = self.after(150, self._apply_preview_zoom)
+
+    def _apply_preview_zoom(self):
+        self._resize_after_id = None
+        # Budget the camera column roughly 45% of the window's own width (the
+        # status/controls column to its left needs the rest) and give it up to
+        # half the window's height (it shares the right dashboard column with the
+        # beacon minimap and docking controls below it) -- then take the largest
+        # WHOLE multiple of the base 480x270 that still fits both budgets, capped
+        # at PREVIEW_MAX_ZOOM. An integer factor keeps PhotoImage.zoom() exact
+        # (no interpolation) and keeps the memory/CPU cost predictable.
+        avail_w = int(self.winfo_width() * 0.45)
+        avail_h = int(self.winfo_height() * 0.5)
+        zoom_w = max(1, avail_w // PREVIEW_BASE_W)
+        zoom_h = max(1, avail_h // PREVIEW_BASE_H)
+        zoom = max(1, min(zoom_w, zoom_h, PREVIEW_MAX_ZOOM))
+        if zoom == self._preview_zoom:
+            return
+        self._preview_zoom = zoom
+        w, h = self._preview_size()
+        cx, cy = self._preview_center()
+        for canvas, txt_attr, img_attr, placeholder in (
+            (self.cam_canvas, "_cam_txt", "cam_img", "waiting..." if self._camera_enabled else "preview disabled"),
+            (self.blobs_canvas, "_blobs_txt", "blobs_img", "waiting..." if self._blobs_enabled else "preview disabled"),
+        ):
+            canvas.config(width=w, height=h)
+            # Only re-anchor the placeholder text -- a live image is simply
+            # redrawn at the new zoom on its own next tick (_refresh_cam/_blobs),
+            # a few tens of ms away at most, not worth a synchronous re-zoom here.
+            if getattr(self, img_attr) is None:
+                canvas.delete("all")
+                setattr(self, txt_attr, canvas.create_text(cx, cy, text=placeholder, fill=FG_DIM))
+
     def _refresh_cam(self):
         # Nothing to do while the preview is disabled (2026-07-23): the helper no
         # longer writes a PNG (it has unsubscribed from /camera/color/image_raw), and
@@ -1244,8 +1380,10 @@ class App(tk.Tk):
                 if mtime != self._cam_png_mtime:
                     self._cam_png_mtime = mtime
                     img = tk.PhotoImage(file=CAM_PNG)
+                    if self._preview_zoom > 1:
+                        img = img.zoom(self._preview_zoom, self._preview_zoom)
                     self.cam_canvas.delete("all")
-                    self.cam_canvas.create_image(160, 90, image=img, anchor="center")
+                    self.cam_canvas.create_image(*self._preview_center(), image=img, anchor="center")
                     self.cam_img = img
                     self._cam_txt = None
         except Exception:
@@ -1255,6 +1393,27 @@ class App(tk.Tk):
         # affect the Carolus stream. Aligned with the helper's write rate
         # (THROTTLE_S=0.05).
         self.after(50, self._refresh_cam)
+
+    def _refresh_blobs(self):
+        # Mirrors _refresh_cam exactly, for the /postprocessed/image thumbnail.
+        if not self._blobs_enabled:
+            self.after(200, self._refresh_blobs)
+            return
+        try:
+            if os.path.exists(BLOBS_PNG):
+                mtime = os.path.getmtime(BLOBS_PNG)
+                if mtime != self._blobs_png_mtime:
+                    self._blobs_png_mtime = mtime
+                    img = tk.PhotoImage(file=BLOBS_PNG)
+                    if self._preview_zoom > 1:
+                        img = img.zoom(self._preview_zoom, self._preview_zoom)
+                    self.blobs_canvas.delete("all")
+                    self.blobs_canvas.create_image(*self._preview_center(), image=img, anchor="center")
+                    self.blobs_img = img
+                    self._blobs_txt = None
+        except Exception:
+            pass
+        self.after(50, self._refresh_blobs)
 
     def _start_cam_helper(self):
         self._stop_cam_helper()
@@ -1271,14 +1430,14 @@ class App(tk.Tk):
              f"source {WS}/devel/setup.bash && "
              "export ROS_MASTER_URI=http://192.168.0.103:11311 && "
              "export ROS_IP=192.168.0.100 && "
-             f"python3 -u {HELPER} {CAM_PNG}"],
+             f"python3 -u {HELPER} {CAM_PNG} {BLOBS_PNG}"],
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             text=True, bufsize=1)
         self._helper_dead_reported = False
         threading.Thread(target=self._drain_helper_stderr,
                          args=(self.cam_proc,), daemon=True).start()
-        self.after(0, self._log, "> Helper video lance (stdin ouvert)", 1)
+        self.after(0, self._log, "> Video helper launched (stdin open)", 1)
         # Liveness check, deferred (2026-08-12, BUG-103): an import-time crash
         # takes about a second to happen, so polling immediately would always
         # look healthy. This is the check that would have caught BUG-103 on the
@@ -1303,13 +1462,14 @@ class App(tk.Tk):
         gimbal button is a no-op."""
         if self.cam_proc is not None and self.cam_proc.poll() is not None:
             self.after(0, self._log,
-                       "> !! HELPER VIDEO MORT -- apercu camera ET commandes "
-                       "camera/gimbal (numpad, LOCK, RECENTER) INOPERANTS. "
-                       "Voir les lignes [HELPER] ci-dessus.", 1)
+                       "> !! VIDEO HELPER DEAD -- camera preview AND camera/gimbal "
+                       "commands (numpad, LOCK, RECENTER) INOPERATIVE. "
+                       "See the [HELPER] lines above.", 1)
         # Synchronise l'etat CAM ON/OFF du GUI vers le nouveau process helper (qui
         # demarre desabonne par defaut) -- couvre le cas ou l'utilisateur avait
         # active l'apercu avant un Kill/relance de T2.
         self._send_to_helper("CAM ON" if self._camera_enabled else "CAM OFF")
+        self._send_to_helper("BLOBS ON" if self._blobs_enabled else "BLOBS OFF")
 
     def _stop_cam_helper(self):
         if self.cam_proc is not None:
@@ -1398,7 +1558,7 @@ class App(tk.Tk):
     def _run_launch(self, i):
         tag = f"T{i+1}"
         # Every terminal has been integrated since 2026-07-20 (one log tab per terminal)
-        self.after(0, self._log, "> Lancement...", i)
+        self.after(0, self._log, "> Launching...", i)
 
         # Garde-fou anti double-connexion SDK (2026-07-22, BUG-057) : avant de lancer
         # T2, tuer toute instance residuelle de rm_cam_beacon.py sur le Pi. Deux
@@ -1424,17 +1584,17 @@ class App(tk.Tk):
                          args=(self.procs[i], tag), daemon=True).start()
 
         if i == 0:
-            self.after(0, self._log, "> Attente roscore (port 11311)...", i)
+            self.after(0, self._log, "> Waiting for roscore (port 11311)...", i)
             if not self._wait_for_roscore(i):
-                self.after(0, self._log, "> Annule ou timeout — Kill pour reinitialiser", i)
+                self.after(0, self._log, "> Cancelled or timeout -- Kill to reset", i)
                 return
-            self.after(0, self._log, "> OK - roscore pret", i)
+            self.after(0, self._log, "> OK - roscore ready", i)
         elif i == 1:
-            self.after(0, self._log, "> Attente /camera/color/image_raw...", i)
+            self.after(0, self._log, "> Waiting for /camera/color/image_raw...", i)
             if not self._wait_for_camera(i):
-                self.after(0, self._log, "> Annule ou timeout — Kill pour reinitialiser", i)
+                self.after(0, self._log, "> Cancelled or timeout -- Kill to reset", i)
                 return
-            self.after(0, self._log, "> OK - Camera prete", i)
+            self.after(0, self._log, "> OK - Camera ready", i)
             self._start_cam_helper()
             # MANUAL mode by default when T2 starts (2026-07-21, user request) --
             # replaces the old auto-LOCATE (automatic sweep). LOCATE is still available
@@ -1466,7 +1626,7 @@ class App(tk.Tk):
             if not self._t5_dock_ready:
                 self.after(0, self._log, "> Timeout -- T5 is not responding, use Kill to reset", i)
                 return
-            self.after(0, self._log, "> T5 lance - docking pret (attend /pose, /odom, /carolus/gimbal_yaw_rel)", i)
+            self.after(0, self._log, "> T5 launched - docking ready (waiting for /pose, /odom, /carolus/gimbal_yaw_rel)", i)
 
         self._set_status(i, S_OK)
         if i + 1 < len(self.rows):
@@ -1475,7 +1635,7 @@ class App(tk.Tk):
     # ── kill ─────────────────────────────────────────────────────────────────
 
     def _on_kill(self, i):
-        self.after(0, self._log, "> Arret en cours...")
+        self.after(0, self._log, "> Stopping...")
         threading.Thread(target=self._run_kill, args=(i,), daemon=True).start()
 
     def _run_kill(self, i):
@@ -1551,7 +1711,7 @@ class App(tk.Tk):
             # clicked by mistake in AUTO/LOCATE (a no-op there, but it would otherwise
             # have persisted to here).
             self._gimbal_lock_active = False
-            self._lock_btn.config(text="LOCK : OFF", bg=BG3, fg=FG_DIM)
+            self._lock_btn.config(text="LOCK: OFF", bg=BG3, fg=FG_DIM)
             self._reset_beacon_ui()
             self._send_to_helper("MODE MANUAL")
             self._send_to_helper("LOCK OFF")
@@ -1560,28 +1720,28 @@ class App(tk.Tk):
             self.state_dot.itemconfig(self._dot, fill=COL_MANUAL)
             self.state_lbl.config(text="MANUEL")
             self.depth_lbl.config(text="")
-            self.after(0, self._log, "> Mode MANUEL active - ZQSD pour piloter")
+            self.after(0, self._log, "> MANUAL mode active - ZQSD to drive")
         else:
             self.gui_mode = "AUTO"
             self._keys_down.clear()
             self._gim_down.clear()
             self._update_chassis_visual()
             self._update_gimbal_visual()
-            self.mode_btn.config(text="MODE : AUTO", bg=COL_STOP)
+            self.mode_btn.config(text="MODE: AUTO", bg=COL_STOP)
             self._send_to_helper("STOP")
             self._send_to_helper("GIMBAL 0.0 0.0")
             self._send_to_helper("MODE AUTO")
             # Lock balise scope au mode MANUEL — reset a la sortie pour ne pas
             # laisser un etat "actif" trompeur au prochain passage en MANUEL.
             self._gimbal_lock_active = False
-            self._lock_btn.config(text="LOCK : OFF", bg=BG3, fg=FG_DIM)
+            self._lock_btn.config(text="LOCK: OFF", bg=BG3, fg=FG_DIM)
             self._send_to_helper("LOCK OFF")
             self._reset_beacon_ui()
             # dashboard: reset so the next T2 line restores the real state (BUG-014)
             self.last_state = None
             self.state_dot.itemconfig(self._dot, fill=COL_IDLE)
             self.state_lbl.config(text="--- (AUTO)")
-            self.after(0, self._log, "> Mode AUTO active - grace period 5s")
+            self.after(0, self._log, "> AUTO mode active - grace period 5s")
 
     # ── clavier ZQSD ─────────────────────────────────────────────────────────
 
@@ -1800,7 +1960,8 @@ class App(tk.Tk):
 
     def _send_to_helper(self, cmd):
         # Every camera and gimbal control in this GUI goes through here: GIMBAL
-        # (numpad), LOCK, LOCKPERIOD, RECENTER, MODE, VX/WZ, WHEELS, CAM ON/OFF.
+        # (numpad), LOCK, LOCKPERIOD, RECENTER, MODE, VX/WZ, WHEELS, CAM ON/OFF,
+        # BLOBS ON/OFF.
         # Before 2026-08-12 (BUG-103) a dead or absent helper meant each of them
         # was dropped in silence -- the guard below returned, the bare `except`
         # swallowed the rest, and the caller still logged its own success line.
@@ -1812,9 +1973,9 @@ class App(tk.Tk):
             if not getattr(self, "_helper_dead_reported", False):
                 self._helper_dead_reported = True
                 self.after(0, self._log,
-                           f"> !! commande '{cmd}' NON ENVOYEE : helper video absent "
-                           "ou mort. Toutes les commandes camera/gimbal sont "
-                           "inoperantes jusqu'au relancement de T2.", 1)
+                           f"> !! command '{cmd}' NOT SENT: video helper absent "
+                           "or dead. All camera/gimbal commands are inoperative "
+                           "until T2 is relaunched.", 1)
             return
         try:
             self.cam_proc.stdin.write(cmd + "\n")
@@ -1823,7 +1984,7 @@ class App(tk.Tk):
             if not getattr(self, "_helper_dead_reported", False):
                 self._helper_dead_reported = True
                 self.after(0, self._log,
-                           f"> !! commande '{cmd}' NON ENVOYEE ({e}).", 1)
+                           f"> !! command '{cmd}' NOT SENT ({e}).", 1)
 
     def _force_auto_mode(self):
         self.gui_mode = "AUTO"
@@ -1831,9 +1992,9 @@ class App(tk.Tk):
         self._gim_down.clear()
         self._update_chassis_visual()
         self._update_gimbal_visual()
-        self.mode_btn.config(text="MODE : AUTO", bg=COL_STOP)
+        self.mode_btn.config(text="MODE: AUTO", bg=COL_STOP)
         self._gimbal_lock_active = False
-        self._lock_btn.config(text="LOCK : OFF", bg=BG3, fg=FG_DIM)
+        self._lock_btn.config(text="LOCK: OFF", bg=BG3, fg=FG_DIM)
         self._reset_beacon_ui()
 
     def _toggle_fullscreen(self, event=None):
