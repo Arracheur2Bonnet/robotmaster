@@ -46,7 +46,7 @@ saturation_threshold: 80
 # rejecting real blobs at extreme range even though min_area no longer does.
 # Confirm at the actual working distance before trusting this blindly; revert
 # to 8.0 (or find a middle value) if false positives increase at short range.
-min_area: 0.4
+min_area: 8.0
 max_area: 1800.0
 max_distance_lim: 1000.0
 

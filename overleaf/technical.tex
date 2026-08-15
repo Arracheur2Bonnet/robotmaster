@@ -2042,7 +2042,7 @@ known_points: "0.0825 0.0 0.0 -0.0825 0.0 0.0 0.0 0.072 0.0 0.0 0.0 0.0555"
 # --- Blob detection ---
 min_circularity: 0.6
 saturation_threshold: 80
-min_area: 0.4        # was 8.0; lowered for long-range detection, see below
+min_area: 8.0        # see the note below before changing this for range
 max_area: 1800.0
 max_distance_lim: 1000.0
 lb_hue: 90.0        # OpenCV 0-180 scale, NOT 0-360. Blue LEDs here.
@@ -2198,7 +2198,7 @@ Parameter & What it does \\
 \texttt{queue\_size} & How many incoming images ROS buffers before dropping the oldest. If detection is slower than the camera publishes, a larger queue stops frames being dropped --- at the cost of processing older ones. \\
 \texttt{min\_circularity} & How round a blob must be, scored 0--1. Closer to 1 is stricter. \\
 \texttt{saturation\_threshold} & Minimum HSV saturation (0--255) a pixel must have to be considered at all, applied before hue filtering. \\
-\texttt{min\_area}, \texttt{max\_area} & Valid blob size range in pixels. Anything outside is rejected. \textbf{This is the parameter that sets the maximum working distance}, because a blob's area falls off as the inverse square of range: the LEDs measure 85--131\,px$^2$ at 0.78\,m on this robot (\textbf{Measured} 2026-08-14, from the node's own \texttt{Area:} output), which scales to roughly 0.8--1.3\,px$^2$ at 8\,m. \texttt{min\_area} was lowered 8.0\,$\rightarrow$\,0.4 on that basis, since the old threshold would have rejected every blob past about 2.5\,m. \textbf{Not yet confirmed at 8\,m on hardware} --- and note that a blob of about 1\,px$^2$ is near the limit at which \texttt{min\_circularity} can still be computed meaningfully, so that parameter may become the next binding constraint. \\
+\texttt{min\_area}, \texttt{max\_area} & Valid blob size range in pixels. Anything outside is rejected. \textbf{This is the parameter that sets the maximum working distance}, because a blob's area falls off as the inverse square of range: the LEDs measure 85--131\,px$^2$ at 0.78\,m on this robot (\textbf{Measured} 2026-08-14), which scales to roughly 0.8--1.3\,px$^2$ at 8\,m. \textbf{But it cannot simply be lowered.} Set to 0.4 for that range and then measured at 1\,m, it admits a marginal 2.5\,px$^2$ contour into the four-blob selection and the P4P solution becomes ambiguous --- \textbf{65\% of samples landed on the solver's alternate near-planar solution, against 36\% at \texttt{min\_area}=8.0} (\textbf{Measured} 2026-08-14, same beacon angle, only this parameter changed). It is therefore back at 8.0. Reaching 8\,m needs a compromise value or a distance-aware rule, not one global threshold: the two ends of the working range pull in opposite directions, which the Limo integration's own document also warns about. \\
 \texttt{max\_distance\_lim} & Maximum pixel distance beyond which candidate blobs are discarded. \\
 \texttt{lb\_hue}, \texttt{ub\_hue} & Accepted hue range in HSV, in \textbf{OpenCV's 0--180 scale}, not 0--360. Any blob whose colour falls outside is rejected. \\
 \texttt{kernel\_size\_gaussian} & Gaussian blur kernel size --- reduces sensor noise and smooths the image before thresholding. \\

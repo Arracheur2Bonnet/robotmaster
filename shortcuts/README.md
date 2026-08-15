@@ -270,6 +270,52 @@ Avec `--d`, il donne la borne superieure (deplacement entierement perpendiculair
 
 ---
 
+## 1.4b measurement tools (`q14b_capture.py`, `q14b_bracket.py`)
+
+**What:** capture and analyse the quaternion-validation readings (`plan-fin-de-stage.md` item 1.4b).
+
+**Why:** three separate failure modes made this measurement impossible by hand, each found the hard way on 2026-08-14, and each is now handled in code rather than in the operator's head.
+- **Stale TF reads.** A freehand attempt produced four consecutive "samples" that were one cached transform. `q14b_capture.py` de-duplicates on `header.stamp` — a re-read of the same transform is not a measurement.
+- **P4P ambiguity.** On a stationary rig, ~8-12% of samples land on the solver's alternate near-planar solution (roll +41 vs +0.5). A mean over both describes neither, so it uses the median with an interquartile filter and *reports* the outlier fraction. Above 35% it refuses the reading outright.
+- **Chassis drift.** The chassis rotates ~9°/min on its own, so the camera has turned by an unknown amount between two captures. `q14b_bracket.py` implements the standard fix: reference → rotated → reference again, measure the drift from the two references, subtract it from the rotated reading.
+
+**Usage** (on the Pi, ROS sourced):
+```bash
+python3 /tmp/q14b_capture.py REF1 15      # beacon straight, centred
+python3 /tmp/q14b_capture.py ROT  15      # after rotating it in place
+python3 /tmp/q14b_capture.py REF2 15      # after returning it to straight
+# then, on the lab PC, paste the three COPYME lines:
+python3 shortcuts/q14b_bracket.py "REF1 …" "ROT …" "REF2 …"
+```
+
+**Expected:** each capture prints `STABLE … COPYME <label> <roll> <pitch> <yaw> <t>`, or refuses with a reason. The bracket step prints the drift-corrected rotation per axis and names the dominant one.
+
+**The stability bar is 5°, set from what the test needs** — 1.4b reads the *sign* of 30-90° rotations, so 5° leaves a 6:1 margin. An earlier 1° bar came from six `tf_echo` reads that agreed to 0.5°, but those were almost certainly one cached transform; this rig holds 0.1-0.3° on roll/pitch and ~2° on yaw.
+
+---
+
+## `optical_drift_observer.py`
+
+**What:** measures whether the camera is rotating in the world, using only `/camera/color/image_raw`.
+
+**Why:** during a launch bisection the usual instruments are part of what is being tested — `gimbal_yaw_rel` needs T2, and the beacon bearing normally needs T3's `/pose`. This needs neither, so a stage can be measured without the measurement presupposing the stage. Brightness-centroid only, numpy, no cv2/cv_bridge (which drag in the OpenCV ABI collisions behind BUG-101/102/108).
+
+**Usage:** `OBS_THRESH=252 python3 /tmp/optical_drift_observer.py 100 "label"` — threshold needs calibrating per lighting; 252 isolated the 4 saturated LEDs (~118 px) against 321 px at 230.
+
+---
+
+## `pyaudit.py`
+
+**What:** AST audit of the project's Python — unused imports, unreferenced top-level definitions, `except: pass`, bare `except:`, mutable default arguments.
+
+**Why:** pyflakes, ruff, vulture and pylint are **none of them installed here**, and the check that reported them present was itself broken (`python3 -m x --version | head -1 && echo OK` prints OK on empty input). Rather than depend on a tool that may not exist, this walks the AST directly. **It self-tests against a planted defect before reporting** — the same rule `doc_check.py` follows.
+
+**Usage:** `python3 shortcuts/pyaudit.py $(find carolus_ws/src shortcuts -name '*.py' ...)`
+
+**Expected:** per-file findings then totals; `clean` if nothing. Triage matters more than the count — 47 `except: pass` were found on 2026-08-14 and only three were real defects (silent motion-stop failures), the rest being telemetry and teardown where best-effort is correct.
+
+---
+
 ## `save_session.sh`
 
 **What:** snapshots the active source files into `saves/YYYY-MM-DD-HH-MM/`.

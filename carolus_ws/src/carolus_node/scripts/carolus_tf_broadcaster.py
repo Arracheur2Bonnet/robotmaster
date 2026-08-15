@@ -158,13 +158,26 @@ class CarolusTFBroadcaster:
         pos = np.array([x_ros, y_ros, z_ros])
 
         # =====================================================
-        # PUBLISH ONLY IF THE POSE REALLY CHANGED
+        # ALWAYS PUBLISH -- do not gate on "the pose changed"
         # =====================================================
-        if self.last_pos is not None:
-            if (np.linalg.norm(pos - self.last_pos) < 1e-3 and
-                abs(yaw - self.last_yaw) < 1e-3):
-                return
-
+        # This used to return early when the pose moved less than 1e-3, as a
+        # bandwidth optimisation. That is wrong for TF specifically, and it
+        # failed in exactly the situation this project needs most.
+        #
+        # A TF transform is not a latched value: consumers look it up at a
+        # timestamp, and tf2 expires entries from its buffer after ~10 s. A
+        # transform that stops being republished therefore stops EXISTING --
+        # `tf_echo camera_link beacon_observed` reports
+        # "frame does not exist", not "frame is stale".
+        #
+        # So with the robot stationary and the beacon stationary -- the exact
+        # setup the quaternion validation needs, and the exact setup where the
+        # pose legitimately does not change -- the frame silently vanished and
+        # the measurement was impossible. The more stable the rig, the less the
+        # TF existed. Found 2026-08-14 while trying to run that measurement.
+        #
+        # /pose arrives at roughly 6 Hz, which is a perfectly reasonable TF
+        # rate, so publishing every one of them costs nothing worth saving.
         self.last_tf_time = now
         self.last_pos = pos
         self.last_yaw = yaw
