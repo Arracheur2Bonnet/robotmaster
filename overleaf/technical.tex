@@ -3095,48 +3095,50 @@ and that frame is derived from the drifting estimate. Holding a fixed heading
 against a moving reference means the firmware \textbf{physically rotates the
 gimbal}, continuously. The chassis does not move; the camera does.
 
-\textbf{Fix: cut the gimbal's torque. This is now the default.} With torque
-off the gimbal is mechanically still and has nothing to chase. Because
-suspending torque lets the gimbal fall to its rest position (measured: it
-dropped 17\textdegree{} and lost the beacon), the node \emph{recentres first},
-waits for the asynchronous recentre to finish, and only then cuts torque. It
-ends up centred and motionless. Nothing to configure --- it is what
-\texttt{rm\_cam\_beacon.py} does on startup, logged as:
+\textbf{Fix: a chassis-referenced hold, which leaves the gimbal aimable.}
+The drift shows up in the \emph{inertial} frame, but not in
+\texttt{gimbal\_yaw\_rel} --- the gimbal-to-chassis joint angle, an encoder
+reading rather than an integrated estimate, so it cannot drift. The node
+therefore holds \emph{that} constant instead: every 2\,s it compares the
+current \texttt{yaw\_rel} against the angle the operator last asked for and
+issues one small relative move to close the gap. Driving the gimbal by hand
+simply moves the target, so manual aiming is unaffected. Deliberately a slow
+trim rather than a servo (2\,s period, 0.8\textdegree{} deadband,
+60\,\textdegree/s), and it stands aside for \texttt{LOCK}, for an in-flight
+recentre, and while a manual command is live. Nothing to configure ---
+\texttt{RM\_GIMBAL\_HOLD=off} disables it.
 
-\begin{lstlisting}[style=shell]
-[GIMBAL] recentred, then torque CUT (default) -- the gimbal is now
-motionless and will not drift.
-\end{lstlisting}
-
-\textbf{Measured (2026-08-14, stationary, 40--55\,s windows):}
+\textbf{Measured (2026-08-14, stationary, 45--60\,s windows):}
 
 \begin{center}
-\begin{tabular}{lll}
+\begin{tabular}{ll}
 \toprule
- & torque on & torque off (default) \\
+Configuration & \texttt{gimbal\_yaw\_rel} drift \\
 \midrule
-\texttt{gimbal\_yaw\_rel} & $-6.35$\textdegree/min & $+0.24$\textdegree/min \\
-\texttt{gimbal\_yaw\_ground} & $+0.00$ (held) & $+7.81$\textdegree/min \\
+Torque on, no hold (the old behaviour) & $-6.35$\textdegree/min \\
+Torque cut entirely & $+0.00$\textdegree/min, but unaimable \\
+\textbf{Torque on + chassis-referenced hold (default)} & $\mathbf{-0.20}$\textdegree\textbf{/min} \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-A 26-fold reduction: over a half-hour measurement, about 7\textdegree{} of
-gimbal movement instead of 190\textdegree. The right-hand column also shows
-the attitude bias undisguised for the first time --- with the servo no longer
-hiding it inside its own setpoint.
+Roughly a thirty-fold reduction with aiming intact: over a half-hour
+measurement, about 6\textdegree{} of movement instead of 190\textdegree.
+Verified in the same run that the gimbal still responds normally --- commanded
+$+25$\textdegree/s for 1.5\,s it moved $+33.1$\textdegree, and $-25$\textdegree/s
+moved it back $-39.9$\textdegree{} --- before settling to the figure above.
 
 \begin{warningbox}
-\textbf{The cost, stated plainly: with torque off the gimbal cannot be aimed.}
-The numpad gimbal keys and \texttt{LOCK} have no effect. Aim the \emph{robot}
-at the target instead, with the gimbal at its centred rest position. That is
-the right trade for a stationary measurement and the wrong one for tracking a
-moving target --- set \texttt{RM\_GIMBAL\_TORQUE=on} to restore aiming, drift
-included:
-
-\begin{lstlisting}[style=shell]
-RM_GIMBAL_TORQUE=on python3 src/robomaster_cam/scripts/rm_cam_beacon.py
-\end{lstlisting}
+\textbf{Cutting the torque outright also works, and is the better choice for
+one specific case.} \texttt{RM\_GIMBAL\_TORQUE=off} recentres the gimbal and
+then suspends it: absolutely motionless ($+0.00$\textdegree/min, spanning
+0.2\textdegree{} across 381 samples --- the encoder's own quantisation step),
+at the cost of a gimbal that cannot be aimed at all, with the numpad and
+\texttt{LOCK} inert. Worth it when a measurement needs the camera perfectly
+still and nothing else, not for ordinary operation. \textbf{The order matters
+if you use it}: suspending torque alone lets the gimbal fall to its rest
+position --- measured, it dropped 17\textdegree{} and lost the beacon --- so
+the node recentres first and only then cuts.
 \end{warningbox}
 
 \begin{warningbox}

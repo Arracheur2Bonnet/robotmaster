@@ -224,11 +224,41 @@ B4_SUSPEND_GIMBAL = os.environ.get("RM_B4_SUSPEND_GIMBAL", "0") == "1"
 # site for the measurements. "off" recentres then cuts torque: the gimbal stops
 # drifting (6.35 -> 0.30 deg/min) but can no longer be aimed. "on" restores the
 # old aimable-but-drifting behaviour.
-GIMBAL_TORQUE_ON = os.environ.get("RM_GIMBAL_TORQUE", "off").strip().lower() == "on"
+# 2026-08-14, revised the same evening: back to ON by default. Cutting torque
+# did kill the drift (-6.35 -> +0.00 deg/min, measured) but it also made the
+# gimbal unaimable -- numpad and LOCK inert -- which is not a usable robot.
+# GIMBAL_HOLD below cancels the same drift while leaving torque on, so the
+# trade-off is no longer necessary. RM_GIMBAL_TORQUE=off is kept as the
+# fallback for a pure stationary measurement where absolute stillness beats
+# every other consideration.
+GIMBAL_TORQUE_ON = os.environ.get("RM_GIMBAL_TORQUE", "on").strip().lower() == "on"
 # How long to wait for the async recenter to finish before cutting torque.
 # gimbal.recenter() is characterised at ~0.7 s for a large angle at 360 deg/s
 # (test_gimbal_sweep.py); 2.5 s is the same margin GIMBAL_RECENTER_BUSY_S uses.
 GIMBAL_RECENTER_SETTLE_S = 2.5
+
+# ---- CHASSIS-REFERENCED GIMBAL HOLD (2026-08-14, the real drift fix) -------
+# The gimbal's own stabilisation loop holds a heading in the POWER-ON frame,
+# which is derived from the drifting attitude estimate -- so it physically
+# rotates the gimbal forever (measured -6.35 deg/min). Cutting torque stops
+# that but also makes the gimbal unaimable, which is not acceptable in normal
+# operation.
+#
+# This instead keeps torque ON and cancels the drift where it shows up: every
+# HOLD_PERIOD_S, compare the CURRENT gimbal-to-chassis angle (`yaw_rel`, a
+# joint encoder, immune to the attitude bias) against the angle the operator
+# last asked for, and issue one small relative move to close the gap. The
+# operator keeps full manual control -- driving the gimbal simply updates the
+# target.
+#
+# Reuses LOCK's proven pieces rather than inventing new ones: GIM_YAW_SIGN
+# (-1, confirmed by the 2026-06-26 hardware test) and a deadband, so a noisy
+# encoder reading cannot make it chase itself.
+GIMBAL_HOLD_ENABLED   = os.environ.get("RM_GIMBAL_HOLD", "on").strip().lower() == "on"
+GIMBAL_HOLD_PERIOD_S  = 2.0    # how often to check; slow on purpose, this is a trim not a servo
+GIMBAL_HOLD_DEADBAND  = 0.8    # deg. Below this, do nothing -- encoder quantisation is ~0.1-0.2 deg
+GIMBAL_HOLD_MAX_CORR  = 15.0   # deg. A gap larger than this is not drift (someone moved it) -> re-target
+GIMBAL_HOLD_SPEED     = 60.0   # deg/s. Gentle: a drift trim is never urgent
 B4_NO_DRIVE       = os.environ.get("RM_B4_NO_DRIVE", "0") == "1"
 
 # -- Obstacle avoidance --------------------------------------------------------
@@ -390,6 +420,11 @@ class EPCameraBeaconFollower:
         self._gimbal_lock = False
         self._gimbal_lock_period_s = GIM_LOCK_PERIOD_S_DEFAULT   # live-configurable via /carolus/gimbal_lock_period
         self._lock_timer = None   # current rospy.Timer, recreated when the period changes
+        # Chassis-referenced hold (2026-08-14): the yaw_rel the operator last
+        # asked for. None until the first reading arrives, then updated by any
+        # manual gimbal command. See _gimbal_hold_tick.
+        self._hold_target_yaw_rel = None
+        self._hold_lock = threading.Lock()
         # "Gimbal busy" window (night of 2026-07-23): while time.time() is below this
         # value an async gimbal action (recenter) is in flight, so the MANUAL loop and
         # the LOCK tick suspend their commands rather than cancelling it.
@@ -527,10 +562,9 @@ class EPCameraBeaconFollower:
         if GIMBAL_TORQUE_ON:
             try:
                 self.gimbal.resume()
-                rospy.logwarn("[GIMBAL] RM_GIMBAL_TORQUE=on -- torque ACTIVE. The gimbal "
-                              "can be aimed, and it WILL drift ~6 deg/min against the "
-                              "attitude bias (BUG-104). Use the default (off) for any "
-                              "stationary measurement.")
+                rospy.loginfo("[GIMBAL] torque ACTIVE (default) -- the gimbal can be aimed. "
+                              "Its inertial drift is cancelled by the chassis-referenced "
+                              "HOLD trim, not by cutting torque; see _gimbal_hold_tick.")
             except Exception as e:
                 rospy.logwarn(f"[GIMBAL] resume failed: {e}")
         else:
@@ -669,6 +703,7 @@ class EPCameraBeaconFollower:
         # Beacon DETECTED/LOST status (2026-07-23): a periodic log parsed by
         # carolus_launcher.py (same pattern as [BAT]/[ATTI]/[POS]) to drive the
         # indicator and the minimap. 5 Hz, independent of the LOCK ON/OFF state.
+        rospy.Timer(rospy.Duration(GIMBAL_HOLD_PERIOD_S), self._gimbal_hold_tick)
         rospy.Timer(rospy.Duration(0.2), self._beacon_status_tick)
 
         self.rate = rospy.Rate(TARGET_FPS)
@@ -882,6 +917,77 @@ class EPCameraBeaconFollower:
             rospy.loginfo(f"[LOCK] centrage : yaw_err={yaw_err_deg:.1f}° -> move(yaw={GIM_YAW_SIGN*yaw_err_deg:.1f})")
         except Exception as e:
             rospy.logwarn(f"[LOCK] gimbal.move a echoue: {e}")
+
+    def _gimbal_hold_tick(self, event):
+        """Cancel the gimbal's inertial drift without giving up manual aiming.
+
+        The firmware holds a heading in the power-on frame, which drifts with
+        the attitude estimate (measured -6.35 deg/min). `yaw_rel` -- the
+        gimbal-to-chassis joint angle -- does NOT drift: it is an encoder
+        reading, not an integrated estimate. So we hold THAT constant instead:
+        every tick, close the gap between the current yaw_rel and the one the
+        operator last asked for.
+
+        Deliberately a slow trim, not a servo: 2 s period, 0.8 deg deadband,
+        60 deg/s. It corrects roughly 0.2 deg per tick against a 6 deg/min
+        drift, which is an order of magnitude more authority than needed.
+
+        Yields to: LOCK (which is already re-aiming at the beacon), an
+        in-flight RECENTER, any non-MANUAL mode, and a live manual command.
+        """
+        if not GIMBAL_HOLD_ENABLED or not GIMBAL_TORQUE_ON:
+            return
+        if self._mode != "MANUAL":
+            return
+        if self._gimbal_lock:
+            return          # LOCK owns the gimbal; two correctors would fight
+        if time.time() < self._gimbal_busy_until:
+            return          # a RECENTER is in flight
+        with self._gim_lock:
+            manual_active = (self._gim_pitch != 0.0 or self._gim_yaw != 0.0)
+        with self._gim_angle_lock:
+            cur = self._gim_yaw_rel
+        if cur is None:
+            return
+        with self._hold_lock:
+            # While the operator is driving the gimbal, follow them: the
+            # target IS wherever they are pointing right now.
+            if manual_active or self._hold_target_yaw_rel is None:
+                self._hold_target_yaw_rel = cur
+                return
+            target = self._hold_target_yaw_rel
+        err = cur - target
+        if abs(err) < GIMBAL_HOLD_DEADBAND:
+            return
+        if abs(err) > GIMBAL_HOLD_MAX_CORR:
+            # Not drift -- the gimbal was moved by something else (a manual
+            # command that has already ended, a RECENTER, a physical knock).
+            # Adopt the new position rather than yanking it back.
+            with self._hold_lock:
+                self._hold_target_yaw_rel = cur
+            rospy.loginfo(f"[HOLD] gap {err:+.1f} deg exceeds {GIMBAL_HOLD_MAX_CORR} deg "
+                          f"-- treating as a deliberate move, new target {cur:+.1f}")
+            return
+        try:
+            # SIGN, derived from LOCK's proven behaviour rather than guessed --
+            # and the first version of this line had it backwards, which
+            # AMPLIFIED the drift to -18.4 deg/min against a natural -6.35
+            # (measured, which is how it was caught).
+            #
+            # LOCK centres a beacon seen at bearing b (positive = right) with
+            # move(yaw = GIM_YAW_SIGN * b) = move(yaw = -b), and turning right
+            # lowers yaw_rel. So move(yaw = X) changes yaw_rel by +X. To bring
+            # `cur` back to `target` the move is therefore (target - cur), i.e.
+            # -err, with no GIM_YAW_SIGN: that constant maps a camera-frame
+            # bearing onto a gimbal command, and this is already a gimbal-frame
+            # angle. Applying it here was the bug.
+            self.gimbal.move(pitch=0.0, yaw=(-err),
+                             pitch_speed=0.0, yaw_speed=GIMBAL_HOLD_SPEED)
+            rospy.loginfo_throttle(30.0,
+                f"[HOLD] trimming gimbal drift: yaw_rel {cur:+.2f} vs target "
+                f"{target:+.2f} (err {err:+.2f} deg) -- correcting")
+        except Exception as e:
+            rospy.logwarn_throttle(10.0, f"[HOLD] gimbal.move failed: {e}")
 
     def _beacon_status_tick(self, event):
         """Periodic DETECTED/LOST log (2026-07-23), parsed by carolus_launcher.py
