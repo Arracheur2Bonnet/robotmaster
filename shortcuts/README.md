@@ -184,14 +184,11 @@ Below the dashboard's camera panel.
 
 ---
 
-### RECENTER CAM (gimbal base position, 2026-07-23)
+### RECENTER CAM — REMOVED 2026-08-14
 
-The **RECENTER CAM** button, below the camera panel. Publishes `"RECENTER"` on `/carolus/gimbal_recenter`.
+The button, its `/carolus/gimbal_recenter` relay in `cam_view_helper.py`, and the launcher handler are gone (unused in practice). The node-side subscriber still exists, so `rostopic pub /carolus/gimbal_recenter std_msgs/String "data: 'RECENTER'"` still works by hand.
 
-- Returns the gimbal to its base position (pitch=0, yaw=0, the gimbal's power-on frame) via the SDK's `gimbal.recenter()` — orientation of the **camera**, independent of the robot chassis's orientation.
-- Re-centering speed: 360°/s on both axes (the SDK's cap for `recenter()`, different from `move()` which caps at 540°/s).
-- Active only in MANUAL mode (same scope as LOCK).
-- **Bug fixed 2026-07-23 (night)**: wasn't working because the MANUAL loop kept re-sending `drive_speed(0,0)` at 20Hz, cancelling the re-centering action ~50ms after it started (a large re-centering angle takes ~0.7s). Fix: a 2.5s "gimbal busy" window during which the MANUAL loop and LOCK suspend their commands. **Fixed in code, not yet deployed/tested** (Pi unreachable at the time of the fix).
+**It is also mostly moot now**: since 2026-08-14 the node recentres the gimbal itself at startup and then cuts its torque (`RM_GIMBAL_TORQUE`, default `off`), so the gimbal is already at its base position and cannot be moved anyway. See the drift section below.
 
 ---
 
@@ -287,11 +284,11 @@ cp saves/2026-06-24-20-10/carolus_ws__src__robomaster_cam__scripts__rm_cam_beaco
    carolus_ws/src/robomaster_cam/scripts/rm_cam_beacon.py
 ```
 
-**Files saved:** `carolus_launcher.py`, `cam_view_helper.py`, `map_editor.py`, `rm_cam_beacon.py`, **`beacon_docking.py`**, **`beacon_absolute_pose.py`**, `testcarolus.launch`, plus the workspace's 5 `CMakeLists.txt` files (`src/`, `libuvgs_astrobee/`, `ff_msgs/`, `robomaster_cam/`, `carolus_node/`) — the `CMakeLists.txt` set was added 2026-07-13 to cover the CLAUDE.md rule listing them as critical files; the two docking scripts were added **2026-07-28**.
+**Files saved:** `carolus_launcher.py`, `cam_view_helper.py`, `map_editor.py`, `rm_cam_beacon.py`, **`beacon_docking.py`**, **`beacon_absolute_pose.py`**, `testcarolus.launch`, plus the workspace's 5 `CMakeLists.txt` files (`src/`, `libuvgs_astrobee/`, `ff_msgs/`, `robomaster_cam/`, `carolus_node/`) — the `CMakeLists.txt` set was added 2026-07-13 to cover the CLAUDE.md rule listing them as critical files; the two docking scripts were added **2026-07-28**; **`carolus_node/config/robomaster_s1.yaml` was added 2026-08-14**, on discovering it was absent at the exact moment it was about to be edited (the `min_area` retune) — the third time this same omission has been caught, hence the rule below.
 
 > **Why the two docking scripts were added (2026-07-28):** they were absent from the list while being the most heavily modified files of the docking work, so every backup during that work had to be made **by hand** — twice in a single session. A backup script that silently omits the file you are actually editing is worse than no script, because it gives the impression of a safety net that is not there. **Rule going forward: any source file under active modification must be in `FILES` before the work starts, not after it bites.**
 
-**Expected:** a `saves/YYYY-MM-DD-HH-MM/` folder created with 12 files + `NOTE.txt`.
+**Expected:** a `saves/YYYY-MM-DD-HH-MM/` folder created with 14 files + `NOTE.txt`.
 
 ---
 
@@ -462,8 +459,8 @@ bash shortcuts/leak_scan.sh specific/path         # scan one specific folder
 | `GIMBAL 30.0 0.0` | Publishes `Twist(angular.y=pitch, angular.z=yaw)` on `/carolus/gimbal_vel` |
 | `LOCK ON` / `LOCK OFF` | Publishes `"ON"`/`"OFF"` on `/carolus/gimbal_lock` (periodic re-centering) |
 | `LOCKPERIOD 5.0` | Publishes `"5.0"` on `/carolus/gimbal_lock_period` (period in seconds, falls back to default if invalid) |
-| `RECENTER` | Publishes `"RECENTER"` on `/carolus/gimbal_recenter` (gimbal base position, 2026-07-23) |
-| `DOCK CALIBRATE` / `DOCK CALSTEP2` / `DOCK START` / `DOCK ABORT` | Publishes `"CALIBRATE"`/`"CALSTEP2"`/`"START"`/`"ABORT"` on `/carolus/dock` (consumed by `beacon_docking.py`, T5, 2026-07-27) |
+
+> `RECENTER`, `DOCK …` and `WHEELS …` were removed from this relay on 2026-08-14 along with their launcher buttons. `MODE` now only ever carries `MANUAL`.
 
 **Usage:** (automatic, via the launcher) — manual for debugging:
 ```bash
