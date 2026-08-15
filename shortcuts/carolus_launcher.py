@@ -5,7 +5,6 @@
 import os
 import sys
 import re
-import json
 import math
 import queue
 import tkinter as tk
@@ -134,14 +133,6 @@ def _bracketed(pattern):
     pattern is never hand-written again.
     """
     return "[" + pattern[0] + "]" + pattern[1:] if pattern else pattern
-
-
-def ssh_kill(cmd):
-    """Legacy path: still accepts a full shell command."""
-    subprocess.run(
-        ["ssh"] + SSH_OPTS + ["-o", "ConnectTimeout=3", PI, cmd],
-        capture_output=True
-    )
 
 
 def remote_kill(*patterns, verify=True):

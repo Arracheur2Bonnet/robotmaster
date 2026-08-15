@@ -359,9 +359,6 @@ class EPCameraBeaconFollower:
         self._colmap = MapCollision(MAP_JSON_PATH, inflation_cells=MAP_INFLATION_CELLS)
 
         # Commande roues individuelles (mode MANUEL seulement)
-        self._wheels_active = False
-        self._wheels_vals   = (0, 0, 0, 0)
-        self._wheels_lock   = threading.Lock()
 
         # Angle gimbal lu via sub_angle : (pitch, yaw_rel, pitch_ground, yaw_ground)
         # yaw_rel    = gimbal angle relative to the chassis (APPROACH's alignment signal)
@@ -660,11 +657,10 @@ class EPCameraBeaconFollower:
         rospy.Subscriber("/carolus/mode",       String,      self._mode_cb)
         rospy.Subscriber("/carolus/cmd_vel",    Twist,       self._cmdvel_cb)
         rospy.Subscriber("/carolus/gimbal_vel", Twist,       self._gimbal_cb)
-        rospy.Subscriber("/carolus/wheels",     String,      self._wheels_cb)
         rospy.Subscriber("/carolus/gimbal_lock", String,     self._gimbal_lock_cb)
         rospy.Subscriber("/carolus/gimbal_lock_period", String, self._gimbal_lock_period_cb)
         rospy.Subscriber("/carolus/gimbal_recenter", String, self._gimbal_recenter_cb)
-        rospy.loginfo("[ROS] Subscriptions actives (/pose, /carolus/mode, /carolus/cmd_vel, /carolus/gimbal_vel, /carolus/wheels, /carolus/gimbal_lock, /carolus/gimbal_lock_period, /carolus/gimbal_recenter)")
+        rospy.loginfo("[ROS] Subscriptions active (/pose, /carolus/mode, /carolus/cmd_vel, /carolus/gimbal_vel, /carolus/gimbal_lock, /carolus/gimbal_lock_period, /carolus/gimbal_recenter)")
 
         # BEACON LOCK (2026-07-23): a timer independent of the 20 Hz main loop --
         # periodic re-centring, not a continuous servo. Held on self._lock_timer so it
@@ -807,8 +803,8 @@ class EPCameraBeaconFollower:
             self._search_episode_since = time.time()   # nouvel episode -> horloge globale remise a zero
             try:
                 self.gimbal.drive_speed(pitch_speed=0, yaw_speed=0)
-            except Exception:
-                pass
+            except Exception as e:
+                rospy.logerr(f"[SAFETY] gimbal stop on mode change FAILED: {e}")
             with self._gim_lock:
                 self._gim_pitch = 0.0
                 self._gim_yaw   = 0.0
@@ -1159,19 +1155,13 @@ class EPCameraBeaconFollower:
         except Exception:
             pass
 
-    def _wheels_cb(self, msg):
-        parts = msg.data.strip().split()
-        with self._wheels_lock:
-            if not parts or parts[0].upper() == "STOP":
-                self._wheels_active = False
-                self._wheels_vals   = (0, 0, 0, 0)
-            elif len(parts) == 4:
-                try:
-                    w = tuple(int(p) for p in parts)
-                    self._wheels_vals   = w
-                    self._wheels_active = True
-                except ValueError:
-                    pass
+    # _wheels_cb removed 2026-08-14: the launcher's WHEELS tilt block and
+    # cam_view_helper.py's /carolus/wheels relay were both deleted the same
+    # day, so nothing could publish to it any more -- but it was still a live
+    # path to chassis.drive_wheels(), i.e. an unreachable handler that could
+    # still spin the motors if anyone published by hand. Removed rather than
+    # left dormant, per the standing instruction that nothing capable of
+    # moving the robot unbidden stays in the tree.
 
     def _is_path_blocked(self):
         """Arbiter prioritaire : TOF < seuil OU collision map OU hors zone → (True, raison)."""
@@ -1199,10 +1189,18 @@ class EPCameraBeaconFollower:
         return (p is not None) and (time.time() - p.stamp < POSE_TIMEOUT_S)
 
     def stop_chassis(self):
+        # A FAILED STOP IS A SAFETY EVENT, never a silent one. This used to be
+        # `except Exception: pass`: if the SDK refused the stop, the robot kept
+        # whatever velocity it had and nothing said so -- the same
+        # failure-reports-success shape as BUG-103 (a dead relay that logged
+        # every button press as delivered) and the one that made BUG-104 take
+        # days to pin down. Logged, not raised: the caller is often already
+        # handling an emergency and must not be interrupted by an exception.
         try:
             self.chassis.drive_speed(x=0, y=0, z=0, timeout=1)
-        except Exception:
-            pass
+        except Exception as e:
+            rospy.logerr(f"[SAFETY] stop_chassis FAILED -- the chassis may still be "
+                         f"moving and nothing else will stop it: {e}")
 
     def _is_auto(self):
         with self._mode_lock:
@@ -1213,10 +1211,13 @@ class EPCameraBeaconFollower:
             return self._mode == "LOCATE"
 
     def stop_gimbal(self):
+        # Same reasoning as stop_chassis: a stop that fails silently is worse
+        # than one that fails loudly.
         try:
             self.gimbal.drive_speed(pitch_speed=0, yaw_speed=0)
-        except Exception:
-            pass
+        except Exception as e:
+            rospy.logerr(f"[SAFETY] stop_gimbal FAILED -- the gimbal may still be "
+                         f"moving: {e}")
 
     def _gimbal_servo_yaw(self, p):
         """Gimbal yaw speed (deg/s) that centres the beacon, from the lateral error.
@@ -1415,82 +1416,75 @@ class EPCameraBeaconFollower:
                     wz    = self._man_wz
                     stamp = self._man_stamp
 
-                with self._wheels_lock:
-                    wheels_active = self._wheels_active
-                    w1, w2, w3, w4 = self._wheels_vals
+                # The individual-wheel (tilt/wheelie) branch that used to sit
+                # here was removed 2026-08-14 along with _wheels_cb: nothing can
+                # publish to /carolus/wheels any more, so it was an unreachable
+                # branch holding a live chassis.drive_wheels() call.
+                # Bug 4: safety timeout -- stop if no recent command.
+                # `cmd_fresh` is consumed by the BUG-093 brake-once logic below.
+                cmd_fresh = (time.time() - stamp) <= MANUAL_CMDVEL_TIMEOUT
+                if not cmd_fresh:
+                    vx, wz = 0.0, 0.0
 
-                if wheels_active:
-                    # Commande roues individuelles (tilt / wheelie)
+                # Garde-fou minimal en MANUEL (2026-07-22) : bloque l'AVANCE si un
+                # TOF obstacle is close. Rotation (wz) and reverse (vx<0) stay
+                # allowed so the robot can free itself. Deliberately TOF-only, not
+                # the map/geofence, which need a calibrated odometric origin --
+                # avoids false blocks while driving manually. Inert if the TOF is
+                # absent (S1 roote) : _telem['dist'] reste a 999.0 -> jamais declenche.
+                if vx > 0.0:
+                    with self._telem_lock:
+                        _tof_cm = self._telem['dist']
+                    if _tof_cm < OBSTACLE_TOF_CM:
+                        vx = 0.0
+                        rospy.logwarn_throttle(1.0, f"[MANUAL] avance bloquee (TOF={_tof_cm:.0f}cm)")
+
+                # BUG-093 FIX (2026-08-10) — brake once, then go silent.
+                #
+                # Measured by protocol 22's B4 the same day: re-sending
+                # drive_speed(0,0,0) at 20 Hz IS the uncommanded rotation.
+                # Normal +0.1734 deg/s; gimbal torque cut +0.1327 deg/s (77%
+                # of it survives); commands suppressed +0.0000 deg/s. It was
+                # never the gimbal's gyro -- it is this loop.
+                #
+                # But simply not sending is NOT the fix, also measured: from
+                # 0.15 m/s, ceasing to send leaves a 16.2 cm tail over 1.1 s
+                # (the SDK's own command timeout eventually stops it, slowly).
+                # Sending ONE explicit zero first cuts that to 1.7 cm in
+                # 0.1 s -- a 10x shorter stopping distance for one extra call.
+                #
+                # So: while a command is fresh, drive normally. When the
+                # deadman expires, brake ONCE and then send nothing at all,
+                # which is the state B4 measured at exactly zero drift.
+                if not B4_NO_DRIVE:
+                    # 2026-08-12 -- this block used to end in `except Exception: pass`,
+                    # the same silent-failure anti-pattern that made BUG-103 invisible
+                    # for five days (and BUG-087 before it). An SDK refusal here looks
+                    # exactly like a robot that ignores you: telemetry keeps flowing,
+                    # /odom keeps publishing, and nothing anywhere says the command
+                    # was rejected. The gimbal path immediately below already logged
+                    # its errors; the chassis path did not. It does now.
+                    #
+                    # The [MANUAL-DRIVE] line is the positive counterpart, and exists
+                    # to separate three otherwise-identical symptoms when "the robot
+                    # does not move": the call is not reached at all (line absent ->
+                    # wrong mode, or wheels_active stuck true), the call is made and
+                    # throws (error line), or the call is made and returns cleanly
+                    # while the robot stays put (line present, no error -> the SDK
+                    # accepted and dropped it, look at the connection, not the code).
                     try:
-                        self.chassis.drive_wheels(w1=w1, w2=w2, w3=w3, w4=w4, timeout=1)
-                    except Exception:
-                        pass
-                else:
-                    # Bug 4: safety timeout -- stop if no recent command.
-                    # `cmd_fresh` is consumed by the BUG-093 brake-once logic below.
-                    cmd_fresh = (time.time() - stamp) <= MANUAL_CMDVEL_TIMEOUT
-                    if not cmd_fresh:
-                        vx, wz = 0.0, 0.0
-
-                    # Garde-fou minimal en MANUEL (2026-07-22) : bloque l'AVANCE si un
-                    # TOF obstacle is close. Rotation (wz) and reverse (vx<0) stay
-                    # allowed so the robot can free itself. Deliberately TOF-only, not
-                    # the map/geofence, which need a calibrated odometric origin --
-                    # avoids false blocks while driving manually. Inert if the TOF is
-                    # absent (S1 roote) : _telem['dist'] reste a 999.0 -> jamais declenche.
-                    if vx > 0.0:
-                        with self._telem_lock:
-                            _tof_cm = self._telem['dist']
-                        if _tof_cm < OBSTACLE_TOF_CM:
-                            vx = 0.0
-                            rospy.logwarn_throttle(1.0, f"[MANUAL] avance bloquee (TOF={_tof_cm:.0f}cm)")
-
-                    # BUG-093 FIX (2026-08-10) — brake once, then go silent.
-                    #
-                    # Measured by protocol 22's B4 the same day: re-sending
-                    # drive_speed(0,0,0) at 20 Hz IS the uncommanded rotation.
-                    # Normal +0.1734 deg/s; gimbal torque cut +0.1327 deg/s (77%
-                    # of it survives); commands suppressed +0.0000 deg/s. It was
-                    # never the gimbal's gyro -- it is this loop.
-                    #
-                    # But simply not sending is NOT the fix, also measured: from
-                    # 0.15 m/s, ceasing to send leaves a 16.2 cm tail over 1.1 s
-                    # (the SDK's own command timeout eventually stops it, slowly).
-                    # Sending ONE explicit zero first cuts that to 1.7 cm in
-                    # 0.1 s -- a 10x shorter stopping distance for one extra call.
-                    #
-                    # So: while a command is fresh, drive normally. When the
-                    # deadman expires, brake ONCE and then send nothing at all,
-                    # which is the state B4 measured at exactly zero drift.
-                    if not B4_NO_DRIVE:
-                        # 2026-08-12 -- this block used to end in `except Exception: pass`,
-                        # the same silent-failure anti-pattern that made BUG-103 invisible
-                        # for five days (and BUG-087 before it). An SDK refusal here looks
-                        # exactly like a robot that ignores you: telemetry keeps flowing,
-                        # /odom keeps publishing, and nothing anywhere says the command
-                        # was rejected. The gimbal path immediately below already logged
-                        # its errors; the chassis path did not. It does now.
-                        #
-                        # The [MANUAL-DRIVE] line is the positive counterpart, and exists
-                        # to separate three otherwise-identical symptoms when "the robot
-                        # does not move": the call is not reached at all (line absent ->
-                        # wrong mode, or wheels_active stuck true), the call is made and
-                        # throws (error line), or the call is made and returns cleanly
-                        # while the robot stays put (line present, no error -> the SDK
-                        # accepted and dropped it, look at the connection, not the code).
-                        try:
-                            if cmd_fresh:
-                                self._idle_braked = False
-                                rospy.loginfo_throttle(
-                                    1.0, f"[MANUAL-DRIVE] drive_speed vx={vx:.3f} wz={wz:.1f}")
-                                self.chassis.drive_speed(x=vx, y=0.0, z=wz, timeout=1)
-                            elif not self._idle_braked:
-                                self.chassis.drive_speed(x=0.0, y=0.0, z=0.0, timeout=1)
-                                self._idle_braked = True
-                            # else: deliberately send NOTHING -- see above
-                        except Exception as e:
-                            rospy.logwarn_throttle(
-                                1.0, f"[MANUAL-DRIVE] chassis.drive_speed REFUSEE: {e}")
+                        if cmd_fresh:
+                            self._idle_braked = False
+                            rospy.loginfo_throttle(
+                                1.0, f"[MANUAL-DRIVE] drive_speed vx={vx:.3f} wz={wz:.1f}")
+                            self.chassis.drive_speed(x=vx, y=0.0, z=wz, timeout=1)
+                        elif not self._idle_braked:
+                            self.chassis.drive_speed(x=0.0, y=0.0, z=0.0, timeout=1)
+                            self._idle_braked = True
+                        # else: deliberately send NOTHING -- see above
+                    except Exception as e:
+                        rospy.logwarn_throttle(
+                            1.0, f"[MANUAL-DRIVE] chassis.drive_speed REFUSEE: {e}")
 
                 # Gimbal (MANUEL) : arbitrage en 3 priorites (2026-07-23 nuit) :
                 #   1. Async action in flight (RECENTER) -> emit nothing, let it finish
