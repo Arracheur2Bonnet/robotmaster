@@ -220,6 +220,15 @@ MANUAL_GIMBAL_TIMEOUT = 0.5
 #   2. RM_B4_SUSPEND_GIMBAL=1 -> HA STOPS, HB drifts
 #   3. RM_B4_NO_DRIVE=1       -> HA drifts, HB STOPS
 B4_SUSPEND_GIMBAL = os.environ.get("RM_B4_SUSPEND_GIMBAL", "0") == "1"
+# Gimbal torque, 2026-08-14. DEFAULT OFF -- see the long comment at the call
+# site for the measurements. "off" recentres then cuts torque: the gimbal stops
+# drifting (6.35 -> 0.30 deg/min) but can no longer be aimed. "on" restores the
+# old aimable-but-drifting behaviour.
+GIMBAL_TORQUE_ON = os.environ.get("RM_GIMBAL_TORQUE", "off").strip().lower() == "on"
+# How long to wait for the async recenter to finish before cutting torque.
+# gimbal.recenter() is characterised at ~0.7 s for a large angle at 360 deg/s
+# (test_gimbal_sweep.py); 2.5 s is the same margin GIMBAL_RECENTER_BUSY_S uses.
+GIMBAL_RECENTER_SETTLE_S = 2.5
 B4_NO_DRIVE       = os.environ.get("RM_B4_NO_DRIVE", "0") == "1"
 
 # -- Obstacle avoidance --------------------------------------------------------
@@ -482,23 +491,63 @@ class EPCameraBeaconFollower:
         # is the only trustworthy value. Published once the publishers exist.
         self._robot_mode = _mode_after if isinstance(_mode_after, str) else "unknown"
 
-        # Wake the gimbal from its sleep state (otherwise torque is cut, motors limp)
-        if B4_SUSPEND_GIMBAL:
-            # B4 condition 2: cut gimbal torque instead. Documented as "the motors
-            # of the gimbal axes will no longer exercise control", which is exactly
-            # what HA needs removed. Everything else stays identical.
-            try:
-                self.gimbal.suspend()
-                rospy.logwarn("[B4] RM_B4_SUSPEND_GIMBAL=1 -- gimbal.suspend() called, "
-                              "torque CUT. Test mode, not normal operation.")
-            except Exception as e:
-                rospy.logwarn(f"[B4] gimbal.suspend() failed: {e}")
-        else:
+        # ---- GIMBAL TORQUE: the fix for the drift, measured 2026-08-14 -------
+        #
+        # THE DEFAULT IS NOW TORQUE OFF, and that is a deliberate reversal.
+        #
+        # What was happening: with torque active the gimbal's own stabilisation
+        # loop holds a constant heading in the POWER-ON frame (`yaw_ground`).
+        # That frame is derived from the chassis attitude estimate, which drifts
+        # (BUG-104). Holding a constant heading against a drifting reference
+        # means the firmware physically rotates the gimbal, forever. That
+        # rotation is the "drift" -- the camera really does turn, and it walks
+        # off the beacon within minutes.
+        #
+        # Measured on this robot, stationary, T1+T2 only, 40 s windows:
+        #
+        #                       torque ON        torque OFF
+        #     yaw_rel           -6.35 deg/min    -0.30 deg/min   (21x better)
+        #     yaw_ground        +0.00 (held)     +7.81 deg/min   (the raw bias)
+        #
+        # With torque off, `yaw_rel` spans 0.2 deg across 381 samples -- the
+        # sensor's own quantisation step. The gimbal is genuinely motionless.
+        # `yaw_ground` then shows BUG-104's bias undisguised, which is the same
+        # defect measured directly for the first time with the servo out of the
+        # loop.
+        #
+        # THE ORDER MATTERS. Suspending torque lets the gimbal fall to its
+        # mechanical rest position: measured, it dropped 17 deg (yaw_rel -21 ->
+        # -38) and lost the beacon entirely. So recenter FIRST, let the async
+        # recenter finish, and only then cut torque -- the gimbal ends up
+        # centred AND motionless.
+        #
+        # COST, stated plainly: with torque off the gimbal cannot be aimed. The
+        # numpad gimbal keys and LOCK have no effect. That is the right trade
+        # for a stationary measurement (the internship's 1.4b needs a camera
+        # that does not move for ~30 min) and the wrong one for tracking a
+        # moving target. Set RM_GIMBAL_TORQUE=on to get the old behaviour back,
+        # drift included.
+        if GIMBAL_TORQUE_ON:
             try:
                 self.gimbal.resume()
-                rospy.loginfo("[GIMBAL] resume OK -- torque active")
+                rospy.logwarn("[GIMBAL] RM_GIMBAL_TORQUE=on -- torque ACTIVE. The gimbal "
+                              "can be aimed, and it WILL drift ~6 deg/min against the "
+                              "attitude bias (BUG-104). Use the default (off) for any "
+                              "stationary measurement.")
             except Exception as e:
                 rospy.logwarn(f"[GIMBAL] resume failed: {e}")
+        else:
+            try:
+                self.gimbal.resume()          # torque must be on to move at all
+                self.gimbal.recenter(pitch_speed=360.0, yaw_speed=360.0)
+                time.sleep(GIMBAL_RECENTER_SETTLE_S)
+                self.gimbal.suspend()
+                rospy.loginfo("[GIMBAL] recentred, then torque CUT (default) -- the gimbal "
+                              "is now motionless and will not drift. It also cannot be "
+                              "aimed: numpad and LOCK are inert. RM_GIMBAL_TORQUE=on to "
+                              "restore aiming.")
+            except Exception as e:
+                rospy.logwarn(f"[GIMBAL] recenter+suspend failed: {e}")
         if B4_NO_DRIVE:
             rospy.logwarn("[B4] RM_B4_NO_DRIVE=1 -- the 20 Hz chassis command loop is "
                           "SUPPRESSED. The robot cannot be driven. Test mode.")
@@ -721,10 +770,23 @@ class EPCameraBeaconFollower:
             self._mode = new_mode
         if new_mode == "MANUAL" and old_mode != "MANUAL":
             self.stop_chassis()
-            try:
-                self.gimbal.resume()   # re-activer le couple au cas ou drive_speed(0,0) l'aurait suspendu
-            except Exception as e:
-                rospy.logwarn(f"[GIMBAL] resume at MANUAL: {e}")
+            # 2026-08-14: this resume() is skipped when the gimbal was
+            # deliberately suspended at startup (RM_B4_SUSPEND_GIMBAL=1).
+            # Without the guard the suspend was pointless: the launcher sends
+            # MODE MANUAL ~500 ms after T2 comes up, this fired, torque came
+            # straight back, and the test lever silently did nothing.
+            if B4_SUSPEND_GIMBAL or not GIMBAL_TORQUE_ON:
+                # Without this guard the startup suspend was pointless: the
+                # launcher sends MODE MANUAL ~500 ms after T2 comes up, this
+                # fired, torque came straight back, and the gimbal resumed
+                # drifting. Found 2026-08-14 while fixing exactly that.
+                rospy.loginfo("[GIMBAL] MANUAL entered, torque deliberately left CUT "
+                              "(RM_GIMBAL_TORQUE=off) -- no resume, no drift")
+            else:
+                try:
+                    self.gimbal.resume()   # re-activer le couple au cas ou drive_speed(0,0) l'aurait suspendu
+                except Exception as e:
+                    rospy.logwarn(f"[GIMBAL] resume at MANUAL: {e}")
             rospy.loginfo("[CTRL] Mode -> MANUAL")
         elif new_mode == "LOCATE" and old_mode != "LOCATE":
             self.stop_chassis()

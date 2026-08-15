@@ -3087,44 +3087,82 @@ camera slowly turns away from whatever it was pointed at --- losing the beacon
 after a few minutes. Left alone the gimbal keeps going, eventually reaching its
 mechanical limit.
 
-\textbf{Cause.} The robot's own attitude estimate drifts (measured
-$+0.0918$\textdegree/s, about $5.5$\textdegree/min). In \texttt{free} mode the
-gimbal holds an \emph{inertial} heading, so it faithfully follows that drifting
-reference and physically turns with it. The chassis is not moving; only the
-gimbal is.
+\textbf{Cause, established by measurement 2026-08-14.} The robot's own
+attitude estimate drifts --- measured directly, with the gimbal servo taken out
+of the loop, at $+7.8$\textdegree/min. The gimbal's stabilisation loop holds a
+constant heading in the \emph{power-on} frame (\texttt{gimbal\_yaw\_ground}),
+and that frame is derived from the drifting estimate. Holding a fixed heading
+against a moving reference means the firmware \textbf{physically rotates the
+gimbal}, continuously. The chassis does not move; the camera does.
 
-\textbf{Fix.} Run the robot in \texttt{chassis\_lead}, where the gimbal follows
-the chassis instead of an inertial heading. The drifting estimate leaves the
-control loop entirely. This is the default; select it explicitly with the
-\texttt{RM\_ROBOT\_MODE} environment variable when launching the camera node:
+\textbf{Fix: cut the gimbal's torque. This is now the default.} With torque
+off the gimbal is mechanically still and has nothing to chase. Because
+suspending torque lets the gimbal fall to its rest position (measured: it
+dropped 17\textdegree{} and lost the beacon), the node \emph{recentres first},
+waits for the asynchronous recentre to finish, and only then cuts torque. It
+ends up centred and motionless. Nothing to configure --- it is what
+\texttt{rm\_cam\_beacon.py} does on startup, logged as:
 
 \begin{lstlisting}[style=shell]
-RM_ROBOT_MODE=chassis_lead python3 src/robomaster_cam/scripts/rm_cam_beacon.py
+[GIMBAL] recentred, then torque CUT (default) -- the gimbal is now
+motionless and will not drift.
 \end{lstlisting}
 
-\textbf{Measured (2026-08-14, 314 samples over 359\,s):} drift falls from
-$+0.0918$\textdegree/s in \texttt{free} to $-0.00007$\textdegree/s in
-\texttt{chassis\_lead}. Over a half-hour measurement that is
-$0.13$\textdegree{} instead of roughly $165$\textdegree.
+\textbf{Measured (2026-08-14, stationary, 40--55\,s windows):}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+ & torque on & torque off (default) \\
+\midrule
+\texttt{gimbal\_yaw\_rel} & $-6.35$\textdegree/min & $+0.24$\textdegree/min \\
+\texttt{gimbal\_yaw\_ground} & $+0.00$ (held) & $+7.81$\textdegree/min \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A 26-fold reduction: over a half-hour measurement, about 7\textdegree{} of
+gimbal movement instead of 190\textdegree. The right-hand column also shows
+the attitude bias undisguised for the first time --- with the servo no longer
+hiding it inside its own setpoint.
 
 \begin{warningbox}
-\textbf{Use \texttt{free} for docking, not \texttt{chassis\_lead}.} Docking
-aligns the chassis by rotating it until the gimbal-to-chassis angle
-(\texttt{/carolus/gimbal\_yaw\_rel}) reaches zero. In \texttt{chassis\_lead} the
-gimbal follows the chassis, so that angle \emph{cannot change} when the chassis
-turns --- the alignment has nothing left to measure and never completes. Launch
-the camera node with \texttt{RM\_ROBOT\_MODE=free} before docking.
+\textbf{The cost, stated plainly: with torque off the gimbal cannot be aimed.}
+The numpad gimbal keys and \texttt{LOCK} have no effect. Aim the \emph{robot}
+at the target instead, with the gimbal at its centred rest position. That is
+the right trade for a stationary measurement and the wrong one for tracking a
+moving target --- set \texttt{RM\_GIMBAL\_TORQUE=on} to restore aiming, drift
+included:
 
-The same trade-off applies whenever the camera must stay locked on a target
-while the robot drives: \texttt{chassis\_lead} makes the camera swing with the
-robot. Prefer \texttt{chassis\_lead} for stationary measurements and
-\texttt{free} for driving.
+\begin{lstlisting}[style=shell]
+RM_GIMBAL_TORQUE=on python3 src/robomaster_cam/scripts/rm_cam_beacon.py
+\end{lstlisting}
 \end{warningbox}
 
-\textbf{This is a workaround, not a repair.} The attitude estimate itself is
-still wrong, so \texttt{[ATTI]} pitch, roll and yaw remain unusable as an
-absolute reference in either mode --- budget roughly $5.5$\textdegree/min of
-yaw error on anything that reads them.
+\begin{warningbox}
+\textbf{Correction to an earlier claim in this manual.} Until 2026-08-14 this
+section said the fix was to run in \texttt{chassis\_lead} rather than
+\texttt{free}, citing a drop to $-0.00007$\textdegree/s. \textbf{That was
+wrong, and the number was measured with a blind instrument.} It was taken on
+\texttt{gimbal\_yaw\_rel} --- the gimbal-to-chassis angle --- which in
+\texttt{chassis\_lead} is constant \emph{by construction}, since the gimbal
+follows the chassis by definition of the mode. A flat reading there is
+compatible with the robot being perfectly still and with it spinning on the
+spot. Re-measured on the same signal with the same mode active, the drift is
+$-6.35$\textdegree/min. The mode changes nothing; the torque does.
+\end{warningbox}
+
+\textbf{Still not a repair of the underlying defect.} The attitude estimate is
+as wrong as it ever was --- \texttt{[ATTI]} pitch, roll and yaw remain unusable
+as an absolute reference, and anything reading them accumulates roughly
+$5$--$8$\textdegree/min of yaw error. What is fixed is that the gimbal no
+longer acts on it.
+
+\textbf{Docking needs \texttt{RM\_ROBOT\_MODE=free}}, separately from all of
+the above: it aligns the chassis by driving \texttt{/carolus/gimbal\_yaw\_rel}
+to zero, and in \texttt{chassis\_lead} that angle cannot change when the
+chassis turns, so the alignment never converges. The script refuses to start
+in the wrong mode rather than failing obscurely.
 
 \section{The robot slowly rotates on its own}
 \label{sec:uncommanded-yaw}
