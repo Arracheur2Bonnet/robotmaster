@@ -1593,7 +1593,7 @@ MINS is built in its own catkin workspace on the lab PC
 (\texttt{mins\_sandbox/}), kept entirely separate from the workspace this
 manual otherwise describes --- nothing under \texttt{carolus\_ws} depends on
 it, and nothing here should be built alongside the main pipeline. This is
-also separate from the \texttt{T6 MINS (simulation, Pi)} launcher button
+also separate from the \texttt{T5 MINS (simulation, Pi)} launcher button
 (Section~\ref{sec:launcher-tabs}), which runs MINS's own bundled simulation
 demo on the Pi's \texttt{\textasciitilde{}/mins\_sandbox\_ws} and is
 unaffected by anything in this section --- both are real, both are
@@ -2042,7 +2042,7 @@ known_points: "0.0825 0.0 0.0 -0.0825 0.0 0.0 0.0 0.072 0.0 0.0 0.0 0.0555"
 # --- Blob detection ---
 min_circularity: 0.6
 saturation_threshold: 80
-min_area: 8.0
+min_area: 0.4        # was 8.0; lowered for long-range detection, see below
 max_area: 1800.0
 max_distance_lim: 1000.0
 lb_hue: 90.0        # OpenCV 0-180 scale, NOT 0-360. Blue LEDs here.
@@ -2198,7 +2198,7 @@ Parameter & What it does \\
 \texttt{queue\_size} & How many incoming images ROS buffers before dropping the oldest. If detection is slower than the camera publishes, a larger queue stops frames being dropped --- at the cost of processing older ones. \\
 \texttt{min\_circularity} & How round a blob must be, scored 0--1. Closer to 1 is stricter. \\
 \texttt{saturation\_threshold} & Minimum HSV saturation (0--255) a pixel must have to be considered at all, applied before hue filtering. \\
-\texttt{min\_area}, \texttt{max\_area} & Valid blob size range in pixels. Anything outside is rejected. \\
+\texttt{min\_area}, \texttt{max\_area} & Valid blob size range in pixels. Anything outside is rejected. \textbf{This is the parameter that sets the maximum working distance}, because a blob's area falls off as the inverse square of range: the LEDs measure 85--131\,px$^2$ at 0.78\,m on this robot (\textbf{Measured} 2026-08-14, from the node's own \texttt{Area:} output), which scales to roughly 0.8--1.3\,px$^2$ at 8\,m. \texttt{min\_area} was lowered 8.0\,$\rightarrow$\,0.4 on that basis, since the old threshold would have rejected every blob past about 2.5\,m. \textbf{Not yet confirmed at 8\,m on hardware} --- and note that a blob of about 1\,px$^2$ is near the limit at which \texttt{min\_circularity} can still be computed meaningfully, so that parameter may become the next binding constraint. \\
 \texttt{max\_distance\_lim} & Maximum pixel distance beyond which candidate blobs are discarded. \\
 \texttt{lb\_hue}, \texttt{ub\_hue} & Accepted hue range in HSV, in \textbf{OpenCV's 0--180 scale}, not 0--360. Any blob whose colour falls outside is rejected. \\
 \texttt{kernel\_size\_gaussian} & Gaussian blur kernel size --- reduces sensor noise and smooths the image before thresholding. \\
@@ -2553,24 +2553,22 @@ Tab & What it starts & Unlocks when \\
    by the SEARCH/ALIGN/APPROACH pipeline, which reads \texttt{/pose}
    directly \\
 \addlinespace
-\textbf{T5} Docking [PC]
- & local: \texttt{beacon\_docking.py}
- & manual (see Section~\ref{sec:docking}) \\
-\addlinespace
-\textbf{T6} MINS [Pi]
+\textbf{T5} MINS [Pi]
  & SSH: MINS's own \texttt{simulation.launch}, in a separate sandbox
-   workspace
- & independent --- runs its own master, unrelated to the pipeline above \\
+   workspace (Chapter~\ref{ch:mins-ground-station})
+ & independent --- runs its own master, unrelated to the pipeline above.
+   \textbf{Not} killed by \texttt{KILL ALL}, for that reason; use its own
+   Kill button \\
 \bottomrule
 \end{tabular}
 \end{center}
 
 \textbf{T1--T3 are the working stack.} T4 is for validating orientation and
-for future sensor-fusion work; T5 is the docking behaviour; T6 is
-unrelated experimental work. A normal session is T1, T2, T3.
+for future sensor-fusion work; T5 is unrelated experimental work. A normal
+session is T1, T2, T3.
 
 \textbf{Every tab label names its machine} (\texttt{T1 roscore [Pi]},
-\texttt{T5 Docking [PC]}). This is deliberate: the ROS master lives on the
+\texttt{T5 MINS [Pi]}). This is deliberate: the ROS master lives on the
 Pi in every configuration, so nothing else on screen distinguishes a node
 running on the Pi from one running on the workstation --- and a rate
 measurement was once attributed to the wrong machine for exactly that
@@ -2578,8 +2576,10 @@ reason.
 
 \section{Driving the robot by hand}
 
-Click \texttt{MODE: AUTO} to switch to \texttt{MODE: MANUAL} (the button
-turns orange). Two key blocks appear and light up as keys are pressed.
+\textbf{The launcher is MANUAL-only.} It sends \texttt{MODE MANUAL} once T2
+reports the camera ready, and there is no mode switch --- MANUAL is also the
+safe default, being the mode in which the robot never moves on its own. Two
+key blocks light up as keys are pressed.
 
 \begin{center}
 \begin{tabular}{p{0.44\textwidth}p{0.44\textwidth}}
@@ -2623,14 +2623,9 @@ to get manual gimbal control back.
 \toprule
 Control & What it does \\
 \midrule
-\texttt{MODE: AUTO/MANUAL} & Switches between the autonomous state machine
-  and keyboard piloting. \\
-\addlinespace
 \texttt{LOCK} & Periodically re-centres the gimbal on the beacon. Period
   configurable in seconds. Ignores corrections below a 5\,\textdegree{}
   deadband and skips any beyond 45\,\textdegree{} (an implausible pose). \\
-\addlinespace
-\texttt{RECENTER CAM} & Returns the gimbal to its base position. \\
 \addlinespace
 \texttt{CAM PREVIEW} & Toggles the camera view. \textbf{Off by default} ---
   it costs network bandwidth and GUI smoothness, so turn it on only when you
@@ -2644,11 +2639,9 @@ Control & What it does \\
   rviz --- useful for confirming only the beacon's 4 LEDs are being picked up,
   not a reflection or another light source. \\
 \addlinespace
-\texttt{LOCATE} & Localises the beacon without advancing. Activates
-  automatically 500\,ms after T2 confirms the camera is ready. \\
-\addlinespace
 \texttt{Kill} & Stops everything and \emph{verifies} the remote processes
-  actually died. \\
+  actually died. \texttt{KILL ALL} covers T1--T4 but deliberately not T5
+  (MINS), which is independent --- kill that one from its own button. \\
 \addlinespace
 \texttt{F11} / \texttt{Escape} & Fullscreen on / off. \\
 \bottomrule
@@ -2656,8 +2649,8 @@ Control & What it does \\
 \end{center}
 
 \textbf{The dashboard} is split into two panels, \textbf{Robot Status}
-(state --- SEARCH / APPROACH / STOP / LOCATE / MANUAL --- beacon distance,
-battery, attitude, chassis speed, wheel RPM) directly above
+(state, beacon distance, battery, attitude, chassis speed, wheel RPM)
+directly above
 \textbf{Raspberry Pi Status} (the Pi's own temperature, load and RAM,
 refreshed every 20\,s, separated out 2026-08-14 since it describes the Pi
 carrying the perception pipeline, not the robot itself). The Pi's
@@ -2673,9 +2666,8 @@ separate zoom control. The underlying image transferred from the Pi stays
 costs no extra network bandwidth.
 
 \textbf{The beacon indicator} reads \texttt{BEACON: DETECTED} (green) or
-\texttt{BEACON: LOST} (red), and a small minimap shows where the beacon sits
-\emph{within the camera frame} --- green when centred within
-$\pm$3\,\textdegree{}, orange otherwise.
+\texttt{BEACON: LOST} (red). To see \emph{where} the beacon sits within the
+frame, use \texttt{CAM PREVIEW} or \texttt{BLOB VIEW}.
 
 \section{Session logs on disk}
 
@@ -2708,45 +2700,327 @@ can kill that shell before it reaches the real target, non-deterministically
 and with nothing reported.
 \end{warningbox}
 
-\section{Beacon docking (T5)}
+\section{Beacon docking --- removed from the launcher}
 \label{sec:docking}
 
-\textbf{Status: works, with a known limitation --- read this before running
-it near anything fragile.} The docking behaviour drives the robot to a fixed
-distance from the beacon (0.20\,m) in three phases: align the gimbal to the
-beacon, rotate the chassis until it agrees with the gimbal, then drive
-forward.
+\textbf{Not reachable from the GUI since 2026-08-14.} The docking behaviour
+had its own launcher tab and control panel; both were removed at the
+project's request, along with the \texttt{/carolus/dock} relay in
+\texttt{cam\_view\_helper.py} that carried its commands. \textbf{The script
+itself, \texttt{carolus\_ws/src/robomaster\_cam/scripts/beacon\_docking.py},
+is still in the repository and still works} --- it is simply no longer
+wired to a button. To use it you would run it by hand and publish to
+\texttt{/carolus/dock} directly (\texttt{rostopic pub}); its own
+\texttt{--selftest} flag runs its pure-geometry suite with no robot needed.
 
-The \textbf{DOCKING BALISE} panel has four buttons:
+What it does, for anyone who picks it up again: drives the robot to a fixed
+distance from the beacon (0.20\,m) in three phases --- align the gimbal to
+the beacon, rotate the chassis until it agrees with the gimbal, then drive
+forward. Commands are \texttt{CALIBRATE} and \texttt{CALSTEP2} (a two-step
+calibration: face-on, then again after \emph{you} have pivoted the robot
+roughly 30--45\,\textdegree{}), then \texttt{START}, with \texttt{ABORT} to
+stop.
+
+\begin{warningbox}
+\textbf{Two known limitations, both unresolved, if you re-enable it.}
+Nothing corrects the chassis heading \emph{during} the drive --- only the
+camera tracks the beacon, so a run can finish close to the beacon but
+off-centre. A collision happened once on this project, caused by a silent
+gimbal-probe failure that let the chassis align to the wrong reference
+(since fixed, with a retry and an abort guard). And it requires
+\texttt{RM\_ROBOT\_MODE=free} --- in \texttt{chassis\_lead} its chassis
+alignment has no observable to converge on (Section~\ref{sec:robot-mode}),
+which the script now refuses outright rather than failing obscurely.
+\textbf{Run docking with clear space around the robot, and keep a hand near
+ABORT.}
+\end{warningbox}
+
+\chapter{MINS on the Ground Station}
+\label{ch:mins-ground-station}
+
+\runson{the \textbf{lab PC}, in its own isolated workspace ---
+\texttt{mins\_sandbox/catkin\_ws}, deliberately separate from
+\texttt{carolus\_ws}. Nothing here is required to run the robot itself; this
+chapter is for fusing a recorded session's camera and IMU data through MINS
+(\texttt{github.com/rpng/open\_vins}'s multi-sensor successor) as a
+ground-station replay, not for anything that runs live on the robot.}
+
+\section{What this is, and what it is not}
+
+MINS is not part of the robot's own pipeline --- Carolus already produces a
+pose from the beacon, and nothing here changes that. This chapter is a
+\emph{separate} estimator, replayed offline against a recorded rosbag, to
+compare against Carolus/the wheel odometry on the same trajectory. Two
+consequences follow directly:
+
+\begin{itemize}
+  \item It needs no robot connection to build or to run its own bundled
+  synthetic demo (Section~\ref{sec:mins-build}--\ref{sec:mins-simulation}).
+  It \emph{does} need a real recorded rosbag, from the robot, to do anything
+  useful with this project's own data (Section~\ref{sec:mins-rosbag}).
+  \item \texttt{mins\_sandbox/catkin\_ws} is intentionally not
+  \texttt{carolus\_ws}. Building or rebuilding anything in this chapter
+  never touches the packages the robot itself depends on.
+\end{itemize}
+
+\section{Building on the lab PC (Ubuntu 22.04)}
+\label{sec:mins-build}
+
+\textbf{Verified 2026-08-11/2026-08-13.} This machine's Ubuntu 22.04 ships
+native library versions (OpenCV 4.5.4, \texttt{log4cxx} 0.12, GDAL 30/PROJ
+22) newer than what ROS Noetic's prebuilt Ubuntu-20.04-targeted binaries were
+built against (OpenCV 4.2, \texttt{log4cxx} 0.10, GDAL 26/PROJ 15). Every
+build failure below traces back to the same root cause --- two incompatible
+major versions of one C++ library loaded into the same process --- appearing
+in three different places. \textbf{The Raspberry Pi runs Ubuntu 20.04
+natively, ROS Noetic's actual target, so none of this class of bug is
+expected to recur there} (checked directly for the log4cxx case: only one
+version installed on the Pi).
+
+\begin{enumerate}
+  \item Clone the workspace's three source trees into
+  \texttt{mins\_sandbox/catkin\_ws/src/}: \texttt{mins}
+  (\texttt{github.com/rpng/open\_vins}'s MINS fork --- itself a metapackage
+  bundling \texttt{ov\_core}, \texttt{ov\_init}, \texttt{ov\_msckf},
+  \texttt{ov\_eval}, \texttt{mins}, \texttt{mins\_eval}, \texttt{mins\_data}
+  and its \texttt{BSplineDataset}/\texttt{FloorPlans} synthetic datasets),
+  \texttt{vision\_opencv} (\texttt{ros-perception/vision\_opencv}, the
+  \texttt{noetic} branch), and \texttt{image\_transport\_plugins}
+  (\texttt{ros-perception/image\_transport\_plugins}, the
+  \texttt{noetic-devel} branch --- confirmed with \texttt{git ls-remote
+  --heads} rather than assumed, \texttt{vision\_opencv}'s branch name does
+  not carry over).
+
+  \item \textbf{Fix 1 --- \texttt{cv\_bridge}/OpenCV ABI mixing (BUG-101).}
+  The Debian-packaged \texttt{ros-noetic-cv-bridge} links against OpenCV
+  4.2; this workspace's own code resolves to the one real OpenCV install on
+  this machine, 4.5.4. Mixing the two crashes at process exit inside
+  \texttt{libproj} (two \texttt{libproj} major versions loaded
+  simultaneously, pulled in transitively through each OpenCV build's GDAL
+  support) --- confirmed with a standalone \texttt{gdb} reproducer built
+  from real camera frames, not inferred from a warning. \textbf{Fix:} build
+  \texttt{cv\_bridge}/\texttt{image\_geometry} from the cloned
+  \texttt{vision\_opencv} instead of using the Debian package, so everything
+  in the workspace resolves to one OpenCV (4.5.4). One extra link fix needed
+  on the way: \texttt{cv\_bridge.cpp} calls \texttt{boost::regex} but its
+  own \texttt{CMakeLists.txt} never linked \texttt{Boost\_LIBRARIES} --- add
+  \texttt{boost\_regex} explicitly.
+
+  \item \textbf{Fix 2 --- \texttt{ov\_core}/\texttt{ov\_eval} need C++17,
+  not C++14.} \texttt{liblog4cxx-dev} 0.12.1-4 on this machine typedefs
+  \texttt{std::shared\_mutex} in a header \texttt{ros/console.h} pulls in
+  unconditionally, which needs C++17; \texttt{mins}/\texttt{mins\_eval}
+  already requested it, \texttt{ov\_core}/\texttt{ov\_eval} did not. Bump
+  both.
+
+  \item \textbf{Fix 3 --- stale \texttt{catkin\_LIBRARIES} entries.}
+  \texttt{cv\_bridge}'s re-exported link list references OpenCV modules
+  (\texttt{objdetect}, \texttt{contrib}, \texttt{photo}, \texttt{shape},
+  \texttt{stitching}, \texttt{superres}, \texttt{video}, \texttt{videostab},
+  \texttt{viz}) that do not exist as \texttt{*4.2} packages on this system.
+  Rather than blacklisting module names one failed link at a time, filter
+  \texttt{catkin\_LIBRARIES} in \texttt{ov\_core}/\texttt{ov\_eval}/
+  \texttt{mins}/\texttt{mins\_eval}'s \texttt{CMakeLists.txt}/
+  \texttt{cmake/ROS1.cmake} to drop any entry that is an absolute path to a
+  file that does not exist on disk.
+
+  \item \textbf{Fix 4 --- \texttt{liblog4cxx} 10-vs-12 collision (BUG-107).}
+  \texttt{mins\_lib.so} ended up linked against both
+  \texttt{liblog4cxx.so.10} (via ROS's own prebuilt
+  \texttt{librosconsole\_log4cxx.so}, a hardcoded \texttt{NEEDED} entry) and
+  \texttt{liblog4cxx.so.12} (this Ubuntu 22.04 system's native package),
+  through an ambiguous \texttt{liblog4cxx.so} symlink that Fix~3's filter did
+  not catch (the file exists on disk, it just resolves to the wrong major
+  version). Confirmed with \texttt{gdb}: \texttt{SIGSEGV} inside
+  \texttt{liblog4cxx.so.12}'s destructor, called from code built against
+  \texttt{.so.10}. \textbf{Fix:} extend the same filter with a name match on
+  the ambiguous \texttt{liblog4cxx\textbackslash.so\$} symlink specifically,
+  leaving \texttt{.so.10} to arrive exactly once, transitively, via
+  \texttt{roscpp}.
+
+  \item \textbf{Fix 5 --- \texttt{compressed\_image\_transport} ABI mixing
+  (BUG-108).} A second, later \texttt{SIGSEGV} in \texttt{libproj}, this
+  time invisible to a static \texttt{ldd} walk of the built executable ---
+  it comes from a \texttt{pluginlib}/\texttt{dlopen} load at runtime, not a
+  link-time dependency. The prebuilt Noetic \texttt{.deb} for
+  \texttt{compressed\_image\_transport} links the old OpenCV
+  4.2/GDAL~26/PROJ~15 chain, colliding with this workspace's own
+  4.5.4/GDAL~30/PROJ~22 stack the moment \texttt{image\_transport} advertises
+  a publisher and pluginlib loads every registered transport plugin.
+  \textbf{Fix:} rebuild all three plugins in the cloned
+  \texttt{image\_transport\_plugins} from source ---
+  \texttt{compressed\_image\_transport},
+  \texttt{compressed\_depth\_image\_transport} \emph{and}
+  \texttt{theora\_image\_transport} (the first fix attempt rebuilt only
+  \texttt{compressed\_image\_transport} and the crash did not go away ---
+  \texttt{compressed\_depth\_image\_transport} turned out to be the plugin
+  actually being loaded, confirmed with \texttt{info sharedlibrary} inside
+  \texttt{gdb} rather than assumed from the first fix looking plausible).
+
+  \item Build the whole workspace: \texttt{catkin build} from
+  \texttt{mins\_sandbox/catkin\_ws}. All packages succeed; \texttt{devel/lib/mins/}
+  contains three binaries --- \texttt{simulation}, \texttt{bag}, and
+  \texttt{subscribe}.
+\end{enumerate}
+
+\begin{warningbox}
+\textbf{Known non-blocking issue: BUG-109.} After Fix~5, a different
+exception appears at process teardown --- \texttt{terminate called after
+throwing an instance of 'class\_loader::LibraryUnloadException'} --- thrown
+from \texttt{class\_loader}'s own bookkeeping while unloading the locally
+rebuilt \texttt{compressed\_depth\_image\_transport}, not an ABI conflict.
+It fires strictly at \texttt{exit()}, after all output files are already
+written correctly (verified: the trajectory file and its timing file are
+present and correct before the exception fires, both in this workspace and,
+independently, on a Pi build of the related sqrtVINS project using the
+stock unmodified Noetic \texttt{.deb} --- the same exception class on a
+machine with no local rebuilds at all, so this is a general
+\texttt{pluginlib}/\texttt{class\_loader} quirk in this ROS Noetic era, not
+something this workspace's rebuild introduced). Confirmed harmless by
+inspecting the output, not by ignoring the crash.
+\end{warningbox}
+
+\section{Running the bundled simulation (proof of life)}
+\label{sec:mins-simulation}
+
+\textbf{Verified 2026-08-13.} MINS ships its own self-contained synthetic
+dataset --- no download, no robot needed.
+
+\begin{lstlisting}[style=shell]
+source /opt/ros/noetic/setup.bash
+source mins_sandbox/catkin_ws/devel/setup.bash
+roslaunch mins simulation.launch
+\end{lstlisting}
+
+The \texttt{dataset} argument defaults to \texttt{UD\_Warehouse} (other
+bundled options: \texttt{EUROC\_MH1}, \texttt{EUROC\_V11}, \texttt{TUM\_C},
+\texttt{TUM\_R1}, \texttt{UD\_Gore}, \texttt{UD\_Small}, \texttt{UD\_Spencer}
+--- see \texttt{mins/mins/launch/simulation.launch} for the full list and
+override with \texttt{dataset:=NAME}). A successful run writes, under
+\texttt{outputs/tmp/}: \texttt{0.txt} (a TUM-format trajectory --- one line
+per pose, \texttt{timestamp x y z qx qy qz qw} --- with full covariance),
+\texttt{0/imu\_gt.txt}/\texttt{imu\_est.txt}/\texttt{imu\_std.txt}
+(ground-truth vs.\ estimated vs.\ propagated-uncertainty IMU-frame pose),
+and \texttt{0.time} (the run's own wall-clock duration). \textbf{Check these
+files exist and look physically plausible before trusting a run} --- BUG-109
+above means the process can exit with a visible exception even on a
+successful estimation.
+
+\section{Config and launch file reference}
 
 \begin{center}
-\begin{tabular}{p{0.22\textwidth}p{0.70\textwidth}}
+\begin{tabular}{p{0.32\textwidth}p{0.60\textwidth}}
 \toprule
-Button & What it does \\
+File & Role \\
 \midrule
-\texttt{CALIBRATE} & Step 1 of a two-step calibration: measures the beacon
-  face-on. \\
-\texttt{CAL STEP 2} & Step 2: measures again after \emph{you} have pivoted
-  the robot roughly 30--45\,\textdegree{}. No time pressure between the two
-  steps. \\
-\texttt{START} & Runs the docking sequence. \\
-\texttt{ABORT} & Stops it. \\
+\texttt{mins/mins/launch/simulation.launch} & Entry point for the bundled
+  synthetic demo (Section~\ref{sec:mins-simulation}). \\
+\addlinespace
+\texttt{devel/lib/mins/bag} & The replay entry point for a real recorded
+  rosbag (Section~\ref{sec:mins-rosbag}) --- confirmed present, not yet
+  exercised against this project's own data. \\
+\addlinespace
+\texttt{devel/lib/mins/subscribe} & Live-subscribe entry point (consumes
+  ROS topics directly instead of a bag) --- present, not evaluated for this
+  project; replay was confirmed sufficient for the ground-station use case
+  (Hector explicitly accepts rosbag collection over a live run). \\
+\addlinespace
+\texttt{mins\_data} (bundled package) & \texttt{BSplineDataset/}\allowbreak
+  \texttt{FloorPlans/} --- the synthetic trajectories/floorplans
+  \texttt{simulation.launch} reads via \texttt{\$(find mins\_data)}. \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-The buttons only unlock once the node has reported its own status at least
-once --- commands sent before that used to be silently dropped.
+\section{Recording a rosbag for a real replay}
+\label{sec:mins-rosbag}
 
 \begin{warningbox}
-\textbf{Known limitation, unresolved:} nothing corrects the chassis heading
-\emph{during} the drive --- only the camera tracks the beacon. A run can
-therefore finish close to the beacon but off-centre. A collision has
-happened once on this project, caused by a silent gimbal-probe failure that
-let the chassis align to the wrong reference (since fixed, with a retry and
-an abort guard). \textbf{Run docking with clear space around the robot, and
-keep a hand near ABORT.}
+\textbf{Not yet executed --- a procedure to follow, not a report of a run
+that happened.} Written from the exact commands \texttt{plan-fin-de-stage.md}
+specifies and from reading \texttt{ov\_eval}'s own alignment code
+(\texttt{perform\_association}), not from having done it. The honesty
+markers on this section are \textbf{Inherited/not executed} throughout.
 \end{warningbox}
+
+MINS needs a camera topic and an IMU topic recorded \emph{simultaneously} in
+one bag --- checked across all 26 \texttt{.bag} files anywhere in this
+project (including \texttt{old/}/\texttt{documentations/}) and none carries
+both at once, so this recording does not yet exist anywhere.
+
+\begin{enumerate}
+  \item Lay out a rectangle on the floor with tape; measure and record the
+  \emph{actual} corner-to-corner lengths (not nominal ones).
+  \item Start recording both \texttt{/camera/color/image\_raw} and
+  \texttt{/imu} (both already publish independently, confirmed working on
+  the Pi --- this is the first session to capture them into the same file):
+\begin{lstlisting}[style=shell]
+rosbag record /camera/color/image_raw /imu -O rectangle_run.bag
+\end{lstlisting}
+  \item Drive the robot manually (ZQSD, the launcher's MANUAL mode) around
+  the taped rectangle. Manual piloting is explicitly sufficient here ---
+  Hector's own ask does not require autonomous motion to work reliably.
+  \item \textbf{Mark the exact moment the robot passes each corner} ---
+  \texttt{ov\_eval}'s trajectory alignment needs at least 3 common
+  timestamps between the ground truth and the estimate to align at all.
+  A coordinate alone, without its timestamp, cannot be used.
+  \item Before trusting the bag: re-run \texttt{shortcuts/tear\_check.py}
+  (the torn-frame detector, already validated 6/6 against synthetic seams
+  and confirmed 0/60 under chassis motion in an earlier session) immediately
+  before the real take, not as a standing clearance from a previous session
+  --- the torn-frame defect it screens for is intermittent.
+\end{enumerate}
+
+\section{Plotting the estimate against ground truth}
+
+\begin{warningbox}
+\textbf{Not yet executed}, same honesty marker as
+Section~\ref{sec:mins-rosbag} --- this is \texttt{ov\_eval}'s documented
+usage, confirmed by reading \texttt{plot\_trajectories.cpp}, not a report of
+having run it.
+\end{warningbox}
+
+\begin{enumerate}
+  \item Replay the rosbag through MINS: \texttt{devel/lib/mins/bag}, pointed
+  at \texttt{rectangle\_run.bag} (exact CLI arguments to be confirmed
+  against \texttt{bag}'s own \texttt{--help} at the point this is first
+  run --- not assumed here).
+  \item Extract the live pose topic to a TUM-format file:
+\begin{lstlisting}[style=shell]
+rosrun ov_eval pose_to_file <pose_topic> estimate.txt
+\end{lstlisting}
+  \item Build a sparse ground-truth TUM file by hand from the taped
+  rectangle's four measured corner coordinates and their logged
+  pass-through timestamps (Section~\ref{sec:mins-rosbag}, step 4) ---
+  \texttt{timestamp x y z qx qy qz qw} per line, orientation columns can be
+  the identity quaternion if corner heading was not recorded.
+  \item Align and plot:
+\begin{lstlisting}[style=shell]
+rosrun ov_eval plot_trajectories <align_mode> ground_truth.txt estimate.txt
+\end{lstlisting}
+  \texttt{ov\_eval}'s Absolute Trajectory Error alignment implements Zhang
+  \& Scaramuzza, IROS 2018 (documented by OpenVINS itself) --- cite this
+  rather than describing the alignment as unexplained. No prior tutorial or
+  repository was found for the sparse, hand-measured (taped-corner)
+  ground-truth method itself specifically --- this is original protocol
+  design for this project, not a known pattern to fall back on if the
+  result looks wrong.
+\end{enumerate}
+
+\section{sqrtVINS --- the comparison partner}
+
+A separate, related project (\texttt{github.com/rpng/sqrtVINS}, an
+OpenVINS-family square-root-filter estimator built for embedded hardware,
+no wheel-encoder input) is being evaluated \emph{on the Pi}, in its own
+isolated workspace (\texttt{\textasciitilde/sqrtvins\_ws}, not this chapter's
+\texttt{mins\_sandbox}), as the platform this ground-station MINS build is
+meant to be compared against. \textbf{Verified 2026-08-13:} builds cleanly
+on the Pi (\texttt{catkin build}, no special flags), and its own bundled
+simulation produces genuine trajectory output there too. The real
+comparison --- update rate and accuracy against this chapter's MINS, over
+the \emph{same} rectangular-motion trajectory --- needs
+Section~\ref{sec:mins-rosbag}'s recording to exist first, and is not yet
+done.
 
 \chapter{Troubleshooting}
 \label{ch:troubleshooting}
@@ -2781,8 +3055,7 @@ node look identical from most checks.
 \texttt{cam\_view\_helper.py} does two jobs at once: it writes the preview
 thumbnail the launcher displays, and it is the relay through which
 \emph{every} camera and gimbal command reaches ROS --- the numpad, LOCK,
-RECENTER, mode switching, manual driving. If it is not running, all of them
-are dropped.
+and manual driving. If it is not running, all of them are dropped.
 
 \textbf{It runs on the lab PC, not the Pi}, as a local subprocess of the
 launcher (the launcher writes to its standard input, so the two must share a

@@ -33,10 +33,6 @@ _ROOT    = os.path.dirname(HERE)
 WS       = os.environ.get("CAROLUS_WS", os.path.join(_ROOT, "carolus_ws"))
 BEACON_PI = "/home/ubuntu/carolus_ws/src/robomaster_cam/scripts/rm_cam_beacon.py"
 TF_BROADCASTER_PI = "/home/ubuntu/carolus_ws/src/carolus_node/scripts/carolus_tf_broadcaster.py"
-# Docking (2026-07-27): runs on the lab PC, not the Pi -- it holds no SDK
-# connection of its own (it commands through /carolus/cmd_vel, already relayed by
-# rm_cam_beacon.py), so the "single SDK owner" constraint does not apply here.
-DOCKING_SCRIPT = os.path.join(WS, "src/robomaster_cam/scripts/beacon_docking.py")
 # MINS (2026-08-04): runs on the Pi, in its own workspace, deliberately kept
 # separate from carolus_ws (a disposable sandbox while MINS is not integrated).
 # Measured 2026-08-04: simulation.launch works and is accurate (RMSE 0.113 deg /
@@ -102,7 +98,6 @@ RE_STATUS    = re.compile(r"\[STATUS\]\s*pickup=(\d)\s*slip=(\d)\s*roll=(\d)\s*s
 RE_TOF       = re.compile(r"\[TOF\]\s*front=([0-9.]+)cm")
 RE_OBSTACLE  = re.compile(r"\[OBSTACLE\]\s*(.+)")
 RE_BEACON    = re.compile(r"\[BEACON\]\s*status=(DETECTED|LOST)(?:\s*yaw_err=([+-]?[0-9.]+)\s*pitch_err=([+-]?[0-9.]+))?")
-RE_DOCKSTATUS = re.compile(r"\[DOCKSTATUS\]\s*status=(\S+)\s*yaw_validated=(True|False)")
 
 BEACON_FRESH_S = 1.5   # must match POSE_TIMEOUT_S in rm_cam_beacon.py
 
@@ -214,7 +209,7 @@ class App(tk.Tk):
         # fixed layout -- but not when the window can be taller than the screen
         # it opens on: the operator then has no way to reach the bottom of it.
         self.resizable(True, True)
-        self.procs      = [None, None, None, None, None, None]   # Popen T1..T6
+        self.procs      = [None, None, None, None, None]   # Popen T1..T5
         self.cam_proc   = None                 # Popen helper video (stdin=PIPE)
         self.cam_img    = None                 # reference PhotoImage (anti-GC)
         self.blobs_img  = None                 # reference PhotoImage blobs (anti-GC)
@@ -229,7 +224,7 @@ class App(tk.Tk):
         self._preview_zoom = 1
         self._resize_after_id = None
         self.last_state = None
-        self.gui_mode   = "AUTO"               # "AUTO" ou "MANUAL"
+        self.gui_mode   = "MANUAL"             # the only mode since 2026-08-14 (AUTO removed)
         self._keys_down = set()
         self._gim_down  = set()
         self._chassis_release_pending = {}   # touche -> id after() en attente (debounce X11)
@@ -239,7 +234,6 @@ class App(tk.Tk):
         self._log_queue  = queue.Queue()       # lignes T2 integre -> main thread
         self._chassis_btns = {}                # label widgets touches ZQSD
         self._gimbal_btns  = {}                # label widgets numpad 8/4/5/6/2
-        self._locate_active  = False   # mode LOCALISER actif
         # GUI camera preview: OFF by default (2026-07-23) -- both for smoother
         # piloting (a less loaded Tkinter mainloop) and to free network bandwidth:
         # cam_view_helper.py subscribes to the same /camera/color/image_raw topic
@@ -256,7 +250,6 @@ class App(tk.Tk):
         self._last_robot_pos = (0.0, 0.0)   # dernière pos sub_position (m)
         self._last_robot_yaw = 0.0          # dernière orientation robot (deg, sub_attitude)
         self._last_beacon_ts = 0.0          # horodatage dernier [BEACONPOS] recu
-        self._t5_dock_ready = False         # 1er [DOCKSTATUS] vu -> abonnements T5 etablis
         self._build()
         self._bind_keys()
         self.bind("<Configure>", self._on_root_resize)
@@ -315,11 +308,12 @@ class App(tk.Tk):
             ("2  Camera + Beacon",           False),
             ("3  Carolus Astrobee",          False),
             ("4  TF Broadcaster (quat fix)", False),
-            ("5  Beacon Docking",            False),
-            # T6: independent of the rest (runs on the Pi, against its own local
-            # roscore). Left enabled from the start -- it waits on no topic from
-            # our pipeline while running its own simulation.
-            ("6  MINS (simulation, Pi)",      True),
+            # Beacon Docking was terminal 5 until 2026-08-14, removed at the
+            # user's request; MINS moved up from index 5 to index 4 with it.
+            # T5 (MINS): independent of the rest (runs on the Pi, against its own
+            # local roscore). Left enabled from the start -- it waits on no topic
+            # from our pipeline while running its own simulation.
+            ("5  MINS (simulation, Pi)",      True),
         ]
         body = tk.Frame(left_col, bg=BG)
         body.pack(fill="x", padx=12, pady=8)
@@ -342,20 +336,17 @@ class App(tk.Tk):
             kill.pack(side="left", padx=2)
             self.rows.append((launch, status, kill))
 
-        # --- kill all + bouton mode ---
+        # --- kill all + controls ---
+        # The MODE AUTO/MANUAL toggle and the LOCATE button were removed
+        # 2026-08-14 at the user's request. The launcher is MANUAL-only now:
+        # `gui_mode` is pinned to "MANUAL" and MODE MANUAL is sent once when T2
+        # comes up. That is also the safe default -- MANUAL is the mode in which
+        # the robot never moves autonomously.
         ctrl = tk.Frame(left_col, bg=BG)
         ctrl.pack(fill="x", padx=12, pady=(0, 6))
         tk.Button(ctrl, text="KILL ALL", bg=COL_KO, fg=FG, relief="flat",
                   activebackground="#ff3333", activeforeground=FG, font=FONT,
                   command=lambda: self._on_kill(-1)).pack(side="left", fill="x", expand=True, padx=(0, 4))
-        self.mode_btn = tk.Button(ctrl, text="MODE: AUTO", bg=COL_STOP, fg=FG, relief="flat",
-                                  activebackground=ACCENT, activeforeground=BG, font=FONT,
-                                  command=self._toggle_mode)
-        self.mode_btn.pack(side="left", fill="x", expand=True, padx=(4, 4))
-        self._locate_btn = tk.Button(ctrl, text="LOCATE", bg=BG3, fg=FG_DIM, relief="flat",
-                                     activebackground=COL_ALIGN, activeforeground=FG, font=FONT,
-                                     command=self._toggle_locate)
-        self._locate_btn.pack(side="left", fill="x", expand=True, padx=(4, 4))
         self._lock_btn = tk.Button(ctrl, text="LOCK: OFF", bg=BG3, fg=FG_DIM, relief="flat",
                                    activebackground=COL_ALIGN, activeforeground=FG, font=FONT,
                                    command=self._toggle_gimbal_lock)
@@ -480,7 +471,11 @@ class App(tk.Tk):
         self.blobs_canvas.pack()
         self._blobs_txt = self.blobs_canvas.create_text(*self._preview_center(), text="disabled", fill=FG_DIM)
 
-        # --- Voyant statut balise + minimap (2026-07-23) ---
+        # --- Beacon status indicator (2026-07-23) ---
+        # The BEACON MINIMAP that used to sit below this, and the RECENTER CAM
+        # button below that, were removed 2026-08-14 at the user's request --
+        # unused in practice. The DETECTED/LOST indicator stays: it is how
+        # detection quality is read at a glance during a session.
         beacon_row = tk.Frame(right, bg=BG2)
         beacon_row.pack(fill="x", pady=(6, 0))
         self._beacon_dot = tk.Canvas(beacon_row, width=14, height=14, bg=BG2, highlightthickness=0)
@@ -488,59 +483,7 @@ class App(tk.Tk):
         self._beacon_dot.pack(side="left")
         self._beacon_status_lbl = tk.Label(beacon_row, text="BEACON: LOST", bg=BG2, fg=COL_KO, font=FONT_MONO)
         self._beacon_status_lbl.pack(side="left", padx=6)
-
-        tk.Label(right, text="BEACON MINIMAP", bg=BG2, fg=ACCENT, anchor="w", font=FONT).pack(anchor="w", pady=(6, 0))
-        self._minimap = tk.Canvas(right, width=100, height=100, bg="black", highlightthickness=0)
-        self._minimap.pack()
-        self._minimap_cross_h = self._minimap.create_line(0, 50, 100, 50, fill="#444444")
-        self._minimap_cross_v = self._minimap.create_line(50, 0, 50, 100, fill="#444444")
-        self._minimap_dot = self._minimap.create_oval(46, 46, 54, 54, fill=COL_IDLE, outline="", state="hidden")
         self._beacon_detected = False
-
-        # RECENTRER CAM (2026-07-23) : remet la nacelle a sa position de base
-        # (pitch=0, yaw=0, gimbal.recenter() du SDK) -- orientation de la CAMERA,
-        # independant de l'orientation du chassis robot.
-        self._recenter_btn = tk.Button(right, text="RECENTER CAM", bg=BG3, fg=FG,
-                                       relief="flat", activebackground=COL_ALIGN, activeforeground=FG,
-                                       font=FONT, command=self._on_gimbal_recenter)
-        self._recenter_btn.pack(fill="x", pady=(6, 0))
-
-        # --- Docking (2026-07-27): commands on /carolus/dock (relayed by
-        # cam_view_helper.py, same mechanism as RECENTER), status read from T5's
-        # logs ([DOCKSTATUS], same mechanism as [BEACON]). ---
-        tk.Label(right, text="BEACON DOCKING", bg=BG2, fg=ACCENT, anchor="w", font=FONT).pack(anchor="w", pady=(10, 0))
-        # Two independent-click calibration (2026-07-27): no blocking timer between
-        # the two measurements -- each step waits for an explicit click, read from the
-        # GUI status rather than by watching for a message in a scrolling log.
-        dock_cal_row = tk.Frame(right, bg=BG2)
-        dock_cal_row.pack(fill="x", pady=(2, 0))
-        tk.Button(dock_cal_row, text="CALIBRATE (1)", bg=BG3, fg=FG, relief="flat",
-                  activebackground=COL_ALIGN, activeforeground=FG, font=FONT,
-                  command=lambda: self._on_dock_cmd("CALIBRATE")).pack(side="left", fill="x", expand=True, padx=(0, 2))
-        tk.Button(dock_cal_row, text="CAL STEP 2", bg=BG3, fg=FG, relief="flat",
-                  activebackground=COL_ALIGN, activeforeground=FG, font=FONT,
-                  command=lambda: self._on_dock_cmd("CALSTEP2")).pack(side="left", fill="x", expand=True, padx=(2, 0))
-        # Isolated tests (2026-07-28): ALIGN_ONLY rotates the chassis WITHOUT ever
-        # advancing; APPROACH_ONLY advances WITHOUT ever rotating the chassis (and
-        # refuses if the chassis is not already aligned -- see beacon_docking.py).
-        dock_test_row = tk.Frame(right, bg=BG2)
-        dock_test_row.pack(fill="x", pady=(2, 0))
-        tk.Button(dock_test_row, text="ALIGN ONLY", bg=BG3, fg=FG, relief="flat",
-                  activebackground=COL_ALIGN, activeforeground=FG, font=FONT,
-                  command=lambda: self._on_dock_cmd("ALIGN_ONLY")).pack(side="left", fill="x", expand=True, padx=(0, 2))
-        tk.Button(dock_test_row, text="APPROACH ONLY", bg=BG3, fg=FG, relief="flat",
-                  activebackground=COL_ALIGN, activeforeground=FG, font=FONT,
-                  command=lambda: self._on_dock_cmd("APPROACH_ONLY")).pack(side="left", fill="x", expand=True, padx=(2, 0))
-        dock_row = tk.Frame(right, bg=BG2)
-        dock_row.pack(fill="x", pady=(2, 0))
-        tk.Button(dock_row, text="START", bg=BG3, fg=FG, relief="flat",
-                  activebackground=COL_OK, activeforeground=FG, font=FONT,
-                  command=lambda: self._on_dock_cmd("START")).pack(side="left", fill="x", expand=True, padx=(0, 2))
-        tk.Button(dock_row, text="ABORT", bg=BG3, fg=COL_KO, relief="flat",
-                  activebackground=COL_KO, activeforeground=FG, font=FONT,
-                  command=lambda: self._on_dock_cmd("ABORT")).pack(side="left", fill="x", expand=True, padx=(2, 0))
-        self._dock_status_lbl = tk.Label(right, text="DOCK: —", bg=BG2, fg=FG_DIM, font=FONT_MONO)
-        self._dock_status_lbl.pack(anchor="w", pady=(4, 0))
 
         # --- logs : un onglet par terminal (T1-T5), selectionnables + bouton copier ---
         logh = tk.Frame(right_col, bg=BG)
@@ -569,7 +512,7 @@ class App(tk.Tk):
         # screen distinguished them. The machine name is the most useful thing
         # on the tab -- it comes first.
         tab_labels = ["T1 roscore [Pi]", "T2 Camera+Beacon [Pi]", "T3 Carolus [Pi]",
-                      "T4 TF Broadcaster [Pi]", "T5 Docking [PC]", "T6 MINS [Pi]"]
+                      "T4 TF Broadcaster [Pi]", "T5 MINS [Pi]"]
         for label in tab_labels:
             box = tk.Text(self.log_nb, height=16, width=66, bg=BG2, fg=FG,
                           insertbackground=FG, relief="flat", padx=6, pady=4,
@@ -627,43 +570,9 @@ class App(tk.Tk):
             btn.bind("<ButtonPress-1>",   lambda e, a=action: self._on_gimbal_btn_press(a))
             btn.bind("<ButtonRelease-1>", lambda e, a=action: self._on_gimbal_btn_release(a))
 
-        # ── Bloc 3 : Roues individuelles (tilt / wheelie) ────────────────────
-        wr = tk.Frame(blocks, bg=BG2, padx=10, pady=6)
-        wr.pack(side="left", fill="both", expand=True, padx=(4, 0))
-        tk.Label(wr, text="WHEELS (tilt)", bg=BG2, fg=ACCENT,
-                 anchor="w", font=FONT).pack(anchor="w", pady=(0, 4))
-        wr_keys = tk.Frame(wr, bg=BG2)
-        wr_keys.pack()
-        # Forward (rear wheels push, the front lifts)
-        b_av = tk.Label(wr_keys, text="FW↑", width=4, height=1,
-                        bg=BG3, fg=FG, font=FONT_MONO, bd=1, relief="raised")
-        b_av.grid(row=0, column=0, padx=3, pady=3)
-        # Wheel stop
-        b_st = tk.Label(wr_keys, text="■", width=4, height=1,
-                        bg=BG3, fg=COL_KO, font=FONT_MONO, bd=1, relief="raised")
-        b_st.grid(row=0, column=1, padx=3, pady=3)
-        # Backward (front wheels push, the rear lifts)
-        b_ar = tk.Label(wr_keys, text="BW↑", width=4, height=1,
-                        bg=BG3, fg=FG, font=FONT_MONO, bd=1, relief="raised")
-        b_ar.grid(row=0, column=2, padx=3, pady=3)
-
-        b_av.bind("<ButtonPress-1>",   lambda e: self._on_tilt_press("0 0 300 300"))
-        b_av.bind("<ButtonRelease-1>", lambda e: self._on_tilt_release())
-        b_st.bind("<ButtonPress-1>",   lambda e: self._on_tilt_release())
-        b_ar.bind("<ButtonPress-1>",   lambda e: self._on_tilt_press("300 300 0 0"))
-        b_ar.bind("<ButtonRelease-1>", lambda e: self._on_tilt_release())
-
-        tk.Label(wr, text="Press and hold", bg=BG2, fg=FG_DIM,
-                 font=FONT).pack(anchor="w", pady=(4, 0))
-
-    def _toggle_locate(self):
-        self._locate_active = not self._locate_active
-        if self._locate_active:
-            self._locate_btn.config(bg=COL_ALIGN, fg=FG)
-            self._send_to_helper("MODE LOCATE")
-        else:
-            self._locate_btn.config(bg=BG3, fg=FG_DIM)
-            self._send_to_helper("MODE AUTO")
+        # The third block here was WHEELS (tilt/wheelie) -- individual wheel
+        # speeds via /carolus/wheels. Removed 2026-08-14 at the user's request,
+        # never used in practice, along with its relay in cam_view_helper.py.
 
     def _toggle_gimbal_lock(self):
         # Active only in MANUAL mode on the rm_cam_beacon.py side (silently ignored
@@ -690,74 +599,26 @@ class App(tk.Tk):
         self._send_to_helper(f"LOCKPERIOD {value}")
         self.after(0, self._log, f"> LOCK re-centring period -> {value}s (falls back to 2s if invalid)")
 
-    def _on_gimbal_recenter(self):
-        self._send_to_helper("RECENTER")
-        self.after(0, self._log, "> RECENTER CAM -- gimbal to its base position")
-
-    def _on_dock_cmd(self, cmd):
-        # T5 must be running for the command to have any effect (nothing else
-        # subscribes to /carolus/dock) -- no blocking guard here, the button stays
-        # usable at any time, same reasoning as LOCK.
-        self._send_to_helper(f"DOCK {cmd}")
-        self.after(0, self._log, f"> DOCK {cmd}")
-
-    def _on_dock_status(self, status, yaw_validated):
-        """Parse [DOCKSTATUS] status=... yaw_validated=... (~1Hz, T5) : met a jour
-        the label. Same mechanism as _on_beacon_status for [BEACON]."""
-        if status in ("DOCKED", "CAL_DONE", "RANGE_ONLY", "ALIGN_DONE", "APPROACH_DONE"):
-            color = COL_OK
-        elif status in ("ABORTED", "ERROR", "CAL_FAILED", "CAL_INCONCLUSIVE", "NO_BEACON",
-                        "NOT_CONVERGED", "GIMBAL_ALIGN_FAILED", "NOT_ALIGNED",
-                        # 2026-07-30: CHASSIS_ALIGN_FAILED and SEQUENCE_TIMEOUT
-                        # have been emitted by beacon_docking.py since 2026-07-28
-                        # but never appeared here -- so they showed as "unknown"
-                        # grey instead of red. CHASSIS_ALIGN_FAILED is precisely
-                        # the status of the 2026-07-29 failure cascade.
-                        "CHASSIS_ALIGN_FAILED", "SEQUENCE_TIMEOUT",
-                        # new status from the verified alignment loop
-                        "ALIGN_NOT_CONVERGED"):
-            color = COL_KO
-        elif status in ("DOCKING", "CALIBRATING", "CAL_STEP1_DONE",
-                        # neither a clear success nor a failure: yaw_rel converged but the
-                        # mesure de controle n'a pas pu etre faite (2026-07-30)
-                        "ALIGN_DONE_UNVERIFIED"):
-            color = COL_ALIGN
-        else:
-            color = FG_DIM
-        suffix = " [YAW OK]" if yaw_validated else " [YAW NOT VALIDATED]"
-        self._dock_status_lbl.config(text=f"DOCK: {status}{suffix}", fg=color)
-
     def _reset_beacon_ui(self):
-        """Full visual reset of the indicator and minimap -- called at the same
-        points as the LOCK reset (entering MANUAL, leaving AUTO, Kill)."""
+        """Visual reset of the beacon indicator -- called at the same points as
+        the LOCK reset (T2 start, Kill)."""
         self._beacon_detected = False
         self._beacon_dot.itemconfig(self._beacon_dot_id, fill=COL_KO)
         self._beacon_status_lbl.config(text="BEACON: LOST", fg=COL_KO)
-        self._minimap.itemconfig(self._minimap_dot, state="hidden")
 
     def _on_beacon_status(self, status, yaw_err_str, pitch_err_str):
-        """Parse [BEACON] status=DETECTED/LOST (~5Hz, cf. rm_cam_beacon.py) : met a
-        jour voyant et minimap."""
+        """Parse [BEACON] status=DETECTED/LOST (~5Hz, cf. rm_cam_beacon.py) and
+        update the indicator. The yaw/pitch error arguments used to also drive a
+        minimap dot; the minimap was removed 2026-08-14 and they are now accepted
+        and ignored, keeping the caller's regex and signature unchanged."""
         detected = (status == "DETECTED")
         self._beacon_detected = detected
-
         if detected:
             self._beacon_dot.itemconfig(self._beacon_dot_id, fill=COL_OK)
             self._beacon_status_lbl.config(text="BEACON: DETECTED", fg=COL_OK)
-            if yaw_err_str is not None and pitch_err_str is not None:
-                yaw_err, pitch_err = float(yaw_err_str), float(pitch_err_str)
-                ox = 50 + int((yaw_err / 45.0) * 50)
-                oy = 50 + int((pitch_err / 45.0) * 50)
-                ox = max(3, min(97, ox))
-                oy = max(3, min(97, oy))
-                centered = abs(yaw_err) < 3.0 and abs(pitch_err) < 3.0
-                self._minimap.coords(self._minimap_dot, ox - 4, oy - 4, ox + 4, oy + 4)
-                self._minimap.itemconfig(self._minimap_dot, fill=(COL_OK if centered else COL_APPROACH),
-                                         state="normal")
         else:
             self._beacon_dot.itemconfig(self._beacon_dot_id, fill=COL_KO)
             self._beacon_status_lbl.config(text="BEACON: LOST", fg=COL_KO)
-            self._minimap.itemconfig(self._minimap_dot, state="hidden")
 
     def _toggle_camera_preview(self):
         # OFF by default (2026-07-23): this cuts the helper's /camera/color/image_raw
@@ -793,13 +654,6 @@ class App(tk.Tk):
             self.after(0, self._log, "> Camera preview OFF (smoothness + bandwidth)")
 
     # ── tilt roues (mode MANUEL uniquement) ──────────────────────────────────
-
-    def _on_tilt_press(self, cmd):
-        if self.gui_mode == "MANUAL":
-            self._send_to_helper(f"WHEELS {cmd}")
-
-    def _on_tilt_release(self):
-        self._send_to_helper("WHEELS STOP")
 
     def _make_key_btn(self, parent, label, row, col):
         btn = tk.Label(parent, text=label, width=3, height=1,
@@ -1287,11 +1141,6 @@ class App(tk.Tk):
                 wy = ry - rel_z * math.sin(yaw_r) + rel_x * math.cos(yaw_r)
                 face_deg = math.degrees(math.atan2(rx - wx, ry - wy))
                 self._last_beacon_ts = time.time()
-        if "[DOCKSTATUS]" in line:
-            self._t5_dock_ready = True   # premiere ligne vue -> T5 a fini son __init__
-            m = RE_DOCKSTATUS.search(line)
-            if m:
-                self._on_dock_status(m.group(1), m.group(2) == "True")
 
     def _check_beacon_freshness(self):
         """Expire the last-detection timestamp after BEACON_FRESH_S.
@@ -1502,19 +1351,11 @@ class App(tk.Tk):
                     "export ROS_IP=192.168.0.103; "
                     f"stdbuf -oL -eL python3 -u {TF_BROADCASTER_PI} 2>&1"]
         if i == 4:
-            # Runs on the lab PC, not the Pi: it holds no SDK connection of its own,
-            # commande via /carolus/cmd_vel deja relaye par rm_cam_beacon.py --
-            # commanding through /carolus/cmd_vel, already relayed by rm_cam_beacon.py.
-            return ["bash", "-c",
-                    "source /opt/ros/noetic/setup.bash && "
-                    "export ROS_MASTER_URI=http://192.168.0.103:11311 && "
-                    "export ROS_IP=192.168.0.100 && "
-                    f"stdbuf -oL -eL python3 -u {DOCKING_SCRIPT} 2>&1"]
-        if i == 5:
-            # MINS tourne SUR LE PI (contrairement a T3/T5) : c'est la machine
-            # that carries the sensors, and the only one on Ubuntu 20.04, ROS
-            # Noetic's official target. Runs its own simulation for now -- the next
-            # step is pointing it at our real topics.
+            # MINS runs ON THE PI (unlike T3): it is the machine that carries the
+            # sensors, and the only one on Ubuntu 20.04, ROS Noetic's official
+            # target. Runs its own simulation for now -- the next step is pointing
+            # it at our real topics. Was index 5 until 2026-08-14, when Beacon
+            # Docking (the old index 4) was removed.
             return ["ssh", "-tt"] + SSH_OPTS + ["-o", "ConnectTimeout=5", PI,
                     "source /opt/ros/noetic/setup.bash; "
                     "export ROS_MASTER_URI=http://localhost:11311; "
@@ -1574,9 +1415,6 @@ class App(tk.Tk):
             except Exception:
                 pass
 
-        if i == 4:
-            self._t5_dock_ready = False   # nouveau process : reinitialise l'attente
-
         self.procs[i] = subprocess.Popen(
             self._cmd_integrated(i),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -1596,38 +1434,16 @@ class App(tk.Tk):
                 return
             self.after(0, self._log, "> OK - Camera ready", i)
             self._start_cam_helper()
-            # MANUAL mode by default when T2 starts (2026-07-21, user request) --
-            # replaces the old auto-LOCATE (automatic sweep). LOCATE is still available
-            # through the LOCATE button, it is just no longer triggered automatically.
-            # Goes through _ensure_manual_default rather than _toggle_mode directly, to
-            # re-check the state at firing time: this prevents a KILL inside the 500 ms
-            # window (which forces AUTO) from being flipped back to MANUAL against an
-            # already-dead stack.
+            # MANUAL mode asserted when T2 starts (2026-07-21, user request) --
+            # it replaced an automatic LOCATE sweep at the time, and since
+            # 2026-08-14 it is the launcher's only mode. Deferred 500 ms and
+            # re-checked at firing time so a Kill inside that window does not
+            # announce MANUAL against an already-dead stack.
             self.after(500, self._ensure_manual_default)
         elif i == 2:
             self.after(0, self._log, "> T3 launched - watch for RPY in the logs", i)
         elif i == 3:
             self.after(0, self._log, "> T4 launched - TF broadcaster active (quaternion fixed, BUG-048)", i)
-        elif i == 4:
-            # A real wait before unlocking the DOCK buttons (2026-07-27, a bug
-            # found in testing: without it, START could be sent before
-            # beacon_docking.py's ROS subscription to /carolus/dock was established
-            # -> the command was silently lost, with no error). Same logic as
-            # _wait_for_roscore/_wait_for_camera for T1/T2: wait for a real sign of
-            # life from the node (its first [DOCKSTATUS]), not merely for the
-            # process to have started.
-            self.after(0, self._log, "> Waiting for beacon_docking.py to be ready (first DOCKSTATUS)...", i)
-            deadline = time.time() + 15
-            while time.time() < deadline and not self._t5_dock_ready:
-                if self._launch_cancelled[i]:
-                    self.after(0, self._log, "> Cancelled", i)
-                    return
-                time.sleep(0.2)
-            if not self._t5_dock_ready:
-                self.after(0, self._log, "> Timeout -- T5 is not responding, use Kill to reset", i)
-                return
-            self.after(0, self._log, "> T5 launched - docking ready (waiting for /pose, /odom, /carolus/gimbal_yaw_rel)", i)
-
         self._set_status(i, S_OK)
         if i + 1 < len(self.rows):
             self._reset_row(i + 1, unlocked=True)
@@ -1639,17 +1455,25 @@ class App(tk.Tk):
         threading.Thread(target=self._run_kill, args=(i,), daemon=True).start()
 
     def _run_kill(self, i):
-        targets = [i] if i >= 0 else [0, 1, 2, 3, 4]
+        # KILL ALL covers the main chain (T1-T4) only, NOT MINS -- MINS runs on
+        # the Pi against its own local roscore and is independent of this
+        # pipeline. That was already true before 2026-08-14, when MINS sat at
+        # index 5 and this list read [0,1,2,3,4] with 4 being Beacon Docking;
+        # docking's removal shifted MINS down to 4, so the list is trimmed to
+        # [0,1,2,3] to keep the same behaviour rather than silently start
+        # killing MINS. Killing MINS individually still works (its own Kill
+        # button passes i=4).
+        targets = [i] if i >= 0 else [0, 1, 2, 3]
         # cancel any in-flight wait_for_* for these targets
         for t in targets:
             self._launch_cancelled[t] = True
         time.sleep(0.1)   # let the threads see the flag
         for t in sorted(targets, reverse=True):
             if t == 4:
-                local_kill("beacon_docking.py")
+                # MINS (on the Pi, own roscore) -- only reachable via its own
+                # Kill button, never from KILL ALL (see the comment above).
+                self._kill_on_pi(4, "roslaunch", "mins")
                 self._close_terminal(4)
-                self._t5_dock_ready = False
-                self.after(0, lambda: self._dock_status_lbl.config(text="DOCK: —", fg=FG_DIM))
             elif t == 3:
                 self._kill_on_pi(3, "carolus_tf_broadcaster.py")
                 self._close_terminal(3)
@@ -1665,7 +1489,7 @@ class App(tk.Tk):
                 self._close_terminal(1)
                 self._stop_cam_helper()
                 self.after(0, self._reset_dashboard)
-                self.after(0, self._force_auto_mode)
+                self.after(0, self._reset_manual_state)
             elif t == 0:
                 self._kill_on_pi(0, "rm_cam_beacon.py", "carolus_astrobee",
                                  "roslaunch", "carolus_tf_broadcaster.py",
@@ -1678,7 +1502,7 @@ class App(tk.Tk):
                 self._close_terminal(2)
                 self._close_terminal(3)
                 self.after(0, self._reset_dashboard)
-                self.after(0, self._force_auto_mode)
+                self.after(0, self._reset_manual_state)
 
         time.sleep(1)
         # remet les flags a False pour permettre les prochains lancements
@@ -1690,58 +1514,33 @@ class App(tk.Tk):
             self._reset_row(j, unlocked=False)
         self.after(0, self._log, "> OK - Stopped. Relaunch with the button.")
 
-    # ── mode AUTO / MANUEL ───────────────────────────────────────────────────
+    # ── MANUAL mode (the only mode since 2026-08-14) ─────────────────────────
 
     def _ensure_manual_default(self):
-        # Bascule differee vers MANUEL au demarrage de T2. Re-verifie a l'instant du
-        # tir : (a) que T2 n'a pas ete tue entre-temps (procs[1] remis a None par
-        # _close_terminal), (b) qu'on est bien encore en AUTO. Sinon no-op.
+        """Send MODE MANUAL once T2 is up. Fired 500 ms after T2 reports the
+        camera ready, and re-checks at firing time that T2 was not killed inside
+        that window (procs[1] reset to None by _close_terminal) -- otherwise it
+        would announce MANUAL against a dead stack.
+
+        Until 2026-08-14 this called a MODE AUTO/MANUAL toggle; AUTO was removed
+        at the user's request, so there is nothing to toggle and this just
+        asserts the one mode the launcher has."""
         if self.procs[1] is None:
             return
-        if self.gui_mode != "MANUAL":
-            self._toggle_mode()
-
-    def _toggle_mode(self):
-        if self.gui_mode == "AUTO":
-            self.gui_mode = "MANUAL"
-            self.focus_set()   # force focus on the root window (ZQSD/numpad stay active even when a log tab is clicked)
-            self.mode_btn.config(text="MODE: MANUAL  (ZQSD active)", bg=COL_APPROACH)
-            # Beacon lock reset to OFF on every ENTRY into MANUAL: guarantees a test
-            # session always starts with a fixed gimbal, and neutralises a LOCK ON
-            # clicked by mistake in AUTO/LOCATE (a no-op there, but it would otherwise
-            # have persisted to here).
-            self._gimbal_lock_active = False
-            self._lock_btn.config(text="LOCK: OFF", bg=BG3, fg=FG_DIM)
-            self._reset_beacon_ui()
-            self._send_to_helper("MODE MANUAL")
-            self._send_to_helper("LOCK OFF")
-            # dashboard: reflect MANUAL mode on the state dot (BUG-014)
-            self.last_state = "MANUAL"
-            self.state_dot.itemconfig(self._dot, fill=COL_MANUAL)
-            self.state_lbl.config(text="MANUEL")
-            self.depth_lbl.config(text="")
-            self.after(0, self._log, "> MANUAL mode active - ZQSD to drive")
-        else:
-            self.gui_mode = "AUTO"
-            self._keys_down.clear()
-            self._gim_down.clear()
-            self._update_chassis_visual()
-            self._update_gimbal_visual()
-            self.mode_btn.config(text="MODE: AUTO", bg=COL_STOP)
-            self._send_to_helper("STOP")
-            self._send_to_helper("GIMBAL 0.0 0.0")
-            self._send_to_helper("MODE AUTO")
-            # Lock balise scope au mode MANUEL — reset a la sortie pour ne pas
-            # laisser un etat "actif" trompeur au prochain passage en MANUEL.
-            self._gimbal_lock_active = False
-            self._lock_btn.config(text="LOCK: OFF", bg=BG3, fg=FG_DIM)
-            self._send_to_helper("LOCK OFF")
-            self._reset_beacon_ui()
-            # dashboard: reset so the next T2 line restores the real state (BUG-014)
-            self.last_state = None
-            self.state_dot.itemconfig(self._dot, fill=COL_IDLE)
-            self.state_lbl.config(text="--- (AUTO)")
-            self.after(0, self._log, "> AUTO mode active - grace period 5s")
+        self.focus_set()   # ZQSD/numpad stay active even when a log tab is clicked
+        # Beacon lock forced OFF on entry: guarantees a session always starts
+        # with a fixed gimbal.
+        self._gimbal_lock_active = False
+        self._lock_btn.config(text="LOCK: OFF", bg=BG3, fg=FG_DIM)
+        self._reset_beacon_ui()
+        self._send_to_helper("MODE MANUAL")
+        self._send_to_helper("LOCK OFF")
+        # dashboard: reflect MANUAL on the state dot (BUG-014)
+        self.last_state = "MANUAL"
+        self.state_dot.itemconfig(self._dot, fill=COL_MANUAL)
+        self.state_lbl.config(text="MANUAL")
+        self.depth_lbl.config(text="")
+        self.after(0, self._log, "> MANUAL mode active - ZQSD to drive")
 
     # ── clavier ZQSD ─────────────────────────────────────────────────────────
 
@@ -1986,13 +1785,18 @@ class App(tk.Tk):
                 self.after(0, self._log,
                            f"> !! command '{cmd}' NOT SENT ({e}).", 1)
 
-    def _force_auto_mode(self):
-        self.gui_mode = "AUTO"
+    def _reset_manual_state(self):
+        """Called on Kill: drop every held key and reset the LOCK/beacon UI.
+
+        Was `_force_auto_mode` until 2026-08-14, which additionally flipped
+        `gui_mode` to "AUTO". With AUTO removed, doing that would have left the
+        GUI in a mode with no way back -- every ZQSD/numpad handler gates on
+        `gui_mode == "MANUAL"`, so the keyboard would have been permanently dead
+        after the first Kill. It now stays MANUAL and only clears state."""
         self._keys_down.clear()
         self._gim_down.clear()
         self._update_chassis_visual()
         self._update_gimbal_visual()
-        self.mode_btn.config(text="MODE: AUTO", bg=COL_STOP)
         self._gimbal_lock_active = False
         self._lock_btn.config(text="LOCK: OFF", bg=BG3, fg=FG_DIM)
         self._reset_beacon_ui()

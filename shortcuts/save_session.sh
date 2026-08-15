@@ -24,6 +24,10 @@ FILES=(
     # activement modifie doit etre dans cette liste, sans exception.
     "carolus_ws/src/carolus_node/scripts/carolus_tf_broadcaster.py"
     "carolus_ws/src/carolus_node/launch/testcarolus.launch"
+    # 2026-08-14 : ajoute apres avoir constate qu'il en etait absent au moment
+    # meme ou il devenait le fichier touche (tuning min_area pour la portee
+    # 8m, demande d'Hector) -- meme regle que ci-dessus, sans exception.
+    "carolus_ws/src/carolus_node/config/robomaster_s1.yaml"
     "carolus_ws/src/CMakeLists.txt"
     "carolus_ws/src/libuvgs_astrobee/CMakeLists.txt"
     "carolus_ws/src/ff_msgs/CMakeLists.txt"

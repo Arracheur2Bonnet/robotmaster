@@ -16,22 +16,25 @@ Three roles:
 
 Usage: cam_view_helper.py [output_png_path] [output_blobs_png_path]
 stdin commands (one per line):
-  MODE AUTO           -> publishes "AUTO" on /carolus/mode
   MODE MANUAL         -> publishes "MANUAL" on /carolus/mode
   VX 0.20 WZ 5.0      -> publishes Twist(linear.x, angular.z) on /carolus/cmd_vel
   STOP                -> publishes Twist(0, 0) on /carolus/cmd_vel
   GIMBAL pitch yaw    -> publishes Twist(angular.y, angular.z) on /carolus/gimbal_vel
-  WHEELS w1 w2 w3 w4  -> publishes "w1 w2 w3 w4" on /carolus/wheels
-  WHEELS STOP         -> publishes "STOP" on /carolus/wheels
   LOCK ON / LOCK OFF  -> publishes "ON"/"OFF" on /carolus/gimbal_lock (periodic re-centring, see rm_cam_beacon.py)
   LOCKPERIOD 5.0      -> publishes "5.0" on /carolus/gimbal_lock_period (seconds, falls back to 2.0 if invalid)
-  RECENTER            -> publishes "RECENTER" on /carolus/gimbal_recenter (gimbal base position)
   CAM ON / CAM OFF    -> subscribes/unsubscribes /camera/color/image_raw (OFF by default at startup)
   BLOBS ON / BLOBS OFF -> subscribes/unsubscribes /postprocessed/image (OFF by default at startup)
 
 Both thumbnails are plain resizes of their source topic, no overlay drawn on
 either (the reticle/beacon-marker HUD that used to be drawn here was removed
 2026-08-14 -- see journal.md for why).
+
+Stripped 2026-08-14, at the user's request, of relays for features the project
+does not use: WHEELS (wheel tilt), RECENTER (gimbal recenter), DOCK (beacon
+docking), and MODE AUTO (the launcher is MANUAL-only now). The node-side
+handlers in rm_cam_beacon.py are deliberately left in place -- that file holds
+the SDK connection and is the prime suspect in an open drift investigation;
+changing it now would confound that diagnosis.
 """
 
 import os
@@ -52,7 +55,7 @@ import sys
 # Why this went unnoticed for five days: carolus_launcher.py starts this helper
 # with stderr=subprocess.DEVNULL, so the traceback went nowhere, and the
 # launcher logged "> Helper video lance" regardless. Since this helper is ALSO
-# the stdin relay for every camera/gimbal command (GIMBAL, LOCK, RECENTER,
+# the stdin relay for every camera/gimbal command (GIMBAL, LOCK,
 # MODE), its death silently disabled all of them -- the launcher kept logging
 # each button press as if it had been delivered. Symptom seen on 2026-08-12:
 # no camera preview, gimbal frozen and unable to be recentred onto the beacon,
@@ -106,7 +109,6 @@ _last_blobs = [0.0]
 _pub_mode    = None
 _pub_cmdvel  = None
 _pub_gimbal  = None
-_pub_wheels  = None
 _pub_lock    = None
 _pub_lock_period = None
 # Camera subscription: created and destroyed on demand (CAM ON/OFF), not subscribed
@@ -243,9 +245,6 @@ def _stdin_reader():
                 t.angular.y = float(parts[1])   # pitch speed (deg/s)
                 t.angular.z = float(parts[2])   # yaw speed (deg/s)
                 _pub_gimbal.publish(t)
-            elif line.startswith("WHEELS"):
-                payload = line[len("WHEELS"):].strip()   # "w1 w2 w3 w4" ou "STOP"
-                _pub_wheels.publish(String(data=payload))
             elif line.startswith("LOCKPERIOD"):
                 # BEFORE the "LOCK" branch below: "LOCKPERIOD 5.0".startswith("LOCK")
                 # is also true, so the elif order decides which topic is used.
@@ -260,11 +259,6 @@ def _stdin_reader():
             elif line.startswith("BLOBS"):
                 state = line.split()[1].upper()   # "ON" ou "OFF"
                 _set_blob_subscription(state == "ON")
-            elif line == "RECENTER":
-                _pub_gimbal_recenter.publish(String(data="RECENTER"))
-            elif line.startswith("DOCK"):
-                cmd = line.split()[1].upper()   # "START", "CALIBRATE" ou "ABORT"
-                _pub_dock.publish(String(data=cmd))
         except Exception as e:
             rospy.logwarn(f"[CAMVIEW] commande mal formee ({line!r}): {e}")
 
@@ -272,28 +266,19 @@ def _stdin_reader():
 # -- main ----------------------------------------------------------------------
 
 def main():
-    global _pub_mode, _pub_cmdvel, _pub_gimbal, _pub_wheels, _pub_lock, _pub_lock_period
-    global _pub_gimbal_recenter, _pub_dock
+    global _pub_mode, _pub_cmdvel, _pub_gimbal, _pub_lock, _pub_lock_period
 
     rospy.init_node("carolus_gui_cam", anonymous=True, disable_signals=True)
 
     _pub_mode   = rospy.Publisher("/carolus/mode",        String, queue_size=1, latch=True)
     _pub_cmdvel = rospy.Publisher("/carolus/cmd_vel",     Twist,  queue_size=1)
     _pub_gimbal = rospy.Publisher("/carolus/gimbal_vel",  Twist,  queue_size=1)
-    _pub_wheels = rospy.Publisher("/carolus/wheels",      String, queue_size=1)
     # No latch here, unlike /carolus/mode: the beacon lock is a safety flag whose
     # safe default (OFF) already lives in rm_cam_beacon.py. Latching "ON" would make a
     # restarting node inherit active auto-tracking with no user action -- we prefer a
     # fresh node to come up OFF and wait for an explicit click.
     _pub_lock   = rospy.Publisher("/carolus/gimbal_lock", String, queue_size=1)
     _pub_lock_period = rospy.Publisher("/carolus/gimbal_lock_period", String, queue_size=1)
-    # RECENTER CAM (2026-07-23): no latch. It is a one-shot action, not a persistent
-    # state to be replayed when a node restarts.
-    _pub_gimbal_recenter = rospy.Publisher("/carolus/gimbal_recenter", String, queue_size=1)
-    # Docking (2026-07-27, beacon_docking.py): no latch, same reason as RECENTER --
-    # a START/CALIBRATE/ABORT command must never be replayed automatically when a
-    # node restarts.
-    _pub_dock = rospy.Publisher("/carolus/dock", String, queue_size=1)
 
     # No camera subscription by default (2026-07-23): enabled on demand through the
     # "CAM ON" stdin command (the launcher's CAM PREVIEW button, OFF by default).
