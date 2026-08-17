@@ -463,45 +463,58 @@ class EPCameraBeaconFollower:
         # day: sub_imu returned True while no data ever arrived). So we READ the actual
         # mode instead of assuming it, force it explicitly, and read it back to verify
         # the request was honoured.
-        # 2026-08-14 (BUG-113): the mode is now selectable, defaulting to
-        # CHASSIS_LEAD rather than FREE.
+        # 2026-08-14 (BUG-113): the mode became selectable, defaulting to
+        # CHASSIS_LEAD rather than FREE. WHY, at the time: in FREE mode the gimbal
+        # holds an INERTIAL heading, so BUG-104's drifting attitude estimate made it
+        # physically slew (-34 -> -229 deg unattended, losing the beacon in ~4 min).
+        # CHASSIS_LEAD made the yaw setpoint chassis-referenced instead, which took
+        # the drifting estimate out of that particular loop.
         #
-        # WHY. BUG-104 established that this robot's attitude estimate integrates a
-        # constant misaligned gyro bias with no gravity correction, rotating about a
-        # fixed axis tilted ~11 deg from the body vertical at +0.0918 deg/s
-        # (R^2=0.9997). In FREE mode "the gimbal and the chassis move without
-        # affecting each other" (DJI's own wording), i.e. the gimbal holds an
-        # INERTIAL heading -- against that drifting reference. So it physically
-        # slews at the same rate: measured -34 deg -> -229 deg unattended, closing
-        # on the ~250 deg mechanical limit, and the beacon left the frame after
-        # roughly four minutes every time.
+        # REVERSED 2026-08-17 (BUG-114): default is back to FREE.
         #
-        # In CHASSIS_LEAD "the gimbal follows the chassis to rotate along the yaw
-        # axis" -- the yaw setpoint becomes chassis-referenced, so the drifting
-        # attitude estimate is no longer in the loop at all. The camera test of
-        # 2026-08-13 proved the chassis does not physically rotate (0.4 px measured
-        # against 227 px expected, 567x), so a chassis-referenced gimbal has nothing
-        # left to chase.
+        # Two things changed since BUG-113 was written. First, entry (24)'s
+        # `_gimbal_hold_tick` now holds `yaw_rel` (a joint encoder, not an
+        # integrated estimate) directly, in software, regardless of which frame
+        # the firmware references internally -- it fixes the exact drift BUG-113
+        # was defending against, and does so in FREE mode too. CHASSIS_LEAD's
+        # protection became redundant.
         #
-        # TRADE-OFF, stated because it is real: in CHASSIS_LEAD the gimbal no longer
-        # stabilises against genuine chassis rotation, so while DRIVING it will swing
-        # with the robot. That is the correct trade for a stationary measurement
-        # (1.4b, calibration) and the wrong one for driving with a locked heading.
-        # Set RM_ROBOT_MODE=free to restore the old behaviour.
+        # Second, and why this could not simply be left as a redundant no-op:
+        # CHASSIS_LEAD has a cost BUG-113 did not know about. With T2 alone up,
+        # zero commands on /carolus/cmd_vel, and the robot on its wheels, the
+        # user found the wheels turning continuously -- burning battery for no
+        # commanded reason. Switching live to FREE stopped it outright; nothing
+        # in our code ever sends a drive command in that window (grepped the
+        # session log, none). The mechanism is almost certainly BUG-104 again,
+        # one level down: CHASSIS_LEAD's own firmware loop trying to hold the
+        # CHASSIS against the same drifting attitude estimate, the way it used to
+        # hold the gimbal in FREE mode. That would also retroactively explain the
+        # real, physical chassis-platform-yaw rotation chased across several
+        # earlier sessions whenever the robot sat on a surface with grip --
+        # wheels spinning in place do nothing elevated, but turn the platform the
+        # moment they touch down. Not proven by a dedicated experiment, but it is
+        # the only mechanism consistent with everything measured so far, and FREE
+        # mode has none of it, so there is nothing more to test to justify
+        # reverting the default.
         #
-        # *** CHASSIS_LEAD BREAKS DOCKING -- USE free FOR T5. ***
+        # NOTE: BUG-113 itself was never written into journal.md when it landed
+        # -- caught while writing this one up. Both are documented together,
+        # 2026-08-17.
+        #
+        # *** CHASSIS_LEAD STILL BREAKS DOCKING. ***
         # beacon_docking.py aligns the chassis by driving `yaw_rel` to zero
         # (chassis_align_tick). In CHASSIS_LEAD the gimbal follows the chassis, so
         # yaw_rel is CONSTANT BY DEFINITION and rotating the chassis cannot change
         # it -- the control law has no observable to servo on and can never
         # converge. Its no-progress guard turns that into a visible abort rather
-        # than an endless spin, but docking simply does not work in this mode.
-        # Relaunch the camera node with RM_ROBOT_MODE=free before using T5.
-        _mode_env = os.environ.get("RM_ROBOT_MODE", "chassis_lead").strip().lower()
+        # than an endless spin. Docking needs FREE, which is now the default
+        # anyway -- this note is kept so nobody sets RM_ROBOT_MODE=chassis_lead
+        # for T5 thinking it is the safer or more "locked" choice.
+        _mode_env = os.environ.get("RM_ROBOT_MODE", "free").strip().lower()
         _mode_map = {"free": robot.FREE,
                      "chassis_lead": robot.CHASSIS_LEAD,
                      "gimbal_lead": robot.GIMBAL_LEAD}
-        _mode_want = _mode_map.get(_mode_env, robot.CHASSIS_LEAD)
+        _mode_want = _mode_map.get(_mode_env, robot.FREE)
         try:
             _mode_before = self.ep.get_robot_mode()
             rospy.loginfo(f"[MODE] mode read at connection: {_mode_before!r}")

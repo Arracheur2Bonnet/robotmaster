@@ -270,6 +270,25 @@ Avec `--d`, il donne la borne superieure (deplacement entierement perpendiculair
 
 ---
 
+## `beacon_brightness_live.py`
+
+**What:** live meter for the beacon's LED intensity — saturated-pixel count, hue, and detection rate, on one refreshing line.
+
+**Why:** the intensity knob is physical and has no readout, and getting it wrong is not a mild degradation. On 2026-08-17, too-bright made the four LEDs bloom into one merged blob of **88 628 saturated px (9.6% of the frame)**, which fails `max_area` and `min_circularity` — and Carolus then logs `Not enough blobs with required circularity` followed by `0 contours found`. **That wording points you at "beacon missing" when the truth is the exact opposite.** This meter shows you which.
+
+**Usage** (from the lab PC — needs `-t` for the refreshing line):
+```bash
+ssh -t -i ~/.ssh/carolus_nopass ubuntu@192.168.0.103 'source /opt/ros/noetic/setup.bash; export ROS_MASTER_URI=http://localhost:11311; python3 /tmp/beacon_brightness_live.py'
+```
+
+**Expected:** `sat px 13613  GOOD  hue 103.6  RATE 5.4 Hz ok`
+
+**Tune to maximise RATE, not to hit a pixel target.** The first version of this tool showed brightness only and that was the wrong target — a setting that looked plausible by pixel count was delivering 1.5 Hz. Reference bands: ≥8 Hz excellent, 4–8 Hz usable, <4 Hz do not measure on it. The known-good signature is recorded in `carolus_ws/src/carolus_node/config/beacon_reference.yaml`.
+
+> **The LEDs are PWM-driven**, established 2026-08-17: across 333 frames the saturated count ranged 0–37 182, and a frame reading exactly zero is the camera catching the off phase. So dimming does not merely shrink the blobs — it lowers the detection *rate*, because more frames land mid-off and fail outright. That is the real trade-off when turning the knob down.
+
+---
+
 ## 1.4b measurement tools (`q14b_capture.py`, `q14b_bracket.py`)
 
 **What:** capture and analyse the quaternion-validation readings (`plan-fin-de-stage.md` item 1.4b).

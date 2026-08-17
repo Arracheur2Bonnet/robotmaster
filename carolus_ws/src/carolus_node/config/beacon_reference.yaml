@@ -1,0 +1,63 @@
+# Known-good beacon signature — RoboMaster S1 + tripod-mounted LED beacon
+#
+# WHAT THIS IS FOR. The beacon's LED intensity is a physical knob with no
+# readout. If the beacon is knocked, or the knob is nudged, nothing in the
+# system says so -- detection simply degrades, and the failure looks exactly
+# like "beacon absent" in the logs. This file records what the working setting
+# measures like, so a drift can be detected instead of discovered.
+#
+# HOW THE FAILURE PRESENTS, measured 2026-08-17. Too bright is NOT a mild
+# problem: at 88628 saturated px the four LEDs bloomed into one merged,
+# irregular blob. Carolus then reported `Not enough blobs with required
+# circularity` followed by `0 contours found` -- i.e. the log says "nothing
+# there" when the truth is "far too much there". Recognising that inversion is
+# the whole point of this file.
+#
+# Measured with: shortcuts/beacon_brightness_live.py (live meter) and a 35 s
+# statistical capture. Robot elevated ~18 cm on its support, beacon on tripod
+# ~24 cm up, 1 m nominal separation, face to face.
+
+reference_date: "2026-08-17"
+
+# Distance this signature was taken at. Saturated area scales roughly as the
+# inverse square of distance, so compare like for like.
+distance_m: 0.766
+
+# Pixel count above luminance 250, on the 1280x720 colour frame.
+saturated_px:
+  median: 13613
+  # The spread is enormous and it is NOT measurement noise: some frames read
+  # ZERO saturated pixels. That is the signature of PWM-driven LEDs -- the
+  # camera samples the off phase of the duty cycle. It is also why lowering
+  # the intensity lowers the DETECTION RATE rather than simply shrinking the
+  # blobs: dimmer means more frames caught mid-off, each of which fails.
+  min: 0
+  max: 37182
+
+# Mean hue of the saturated region, on OpenCV's 0-180 scale (NOT 0-360).
+# robomaster_s1.yaml's window is lb_hue 90 -> ub_hue 140.
+hue_opencv: 103.6
+
+# THE NUMBER THAT ACTUALLY MATTERS. Brightness is the knob; this is the
+# result. Tune to maximise it, not to hit a pixel target.
+pose_rate_hz: 5.4
+
+# Rates observed on this rig, for calibrating expectations:
+#   13.9 Hz  best seen (2026-08-17 afternoon, before the tripod rebuild)
+#    5.4 Hz  this reference -- the lowest intensity the operator could set
+#            without interference, and sufficient: the 1.4b reference capture
+#            taken at this setting returned 0.0% P4P ambiguity and an
+#            interquartile spread of 0.07/0.35/0.31 deg, the cleanest of the
+#            project so far.
+#    1.5 Hz  too weak to measure on; re-tune before trusting anything.
+
+thresholds:
+  # Below this, treat the reading as unusable rather than merely poor.
+  pose_rate_hz_min: 4.0
+  # A saturated-pixel median more than ~3x this reference, at this distance,
+  # means the intensity has been raised and blobs are merging.
+  saturated_px_warn_above: 40000
+  # Hue outside the config window means the detector will reject every blob
+  # regardless of how good the brightness looks.
+  hue_opencv_min: 90.0
+  hue_opencv_max: 140.0

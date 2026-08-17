@@ -2240,6 +2240,37 @@ beacon that has been physically disassembled or rebuilt needs that
 re-measured too.
 \end{warningbox}
 
+\begin{warningbox}
+\textbf{Too bright looks exactly like ``no beacon'' in the log. Read this
+before diagnosing a detection failure.} \textbf{Measured 2026-08-17}: with the
+intensity set high, the four LEDs bloom and merge into a single irregular
+blob covering \textbf{88\,628 saturated pixels --- 9.6\% of the whole frame}.
+That blob is rejected by \texttt{max\_area} for size and by
+\texttt{min\_circularity} for shape, so Carolus reports
+\texttt{Not enough blobs with required circularity} and then
+\texttt{0 contours found}. \textbf{Both messages point an operator towards a
+missing or unlit beacon, when the cause is the exact opposite.} If detection
+has stopped and the beacon is plainly lit, check the brightness before
+anything else.
+
+\texttt{shortcuts/beacon\_brightness\_live.py} exists for this: it prints the
+saturated-pixel count, the hue, and the detection rate on one refreshing
+line, so the physical knob --- which has no readout of its own --- can be
+turned against live feedback. \textbf{Tune to maximise the detection rate,
+not to hit a pixel count}: on the same day a setting that looked plausible by
+brightness alone was delivering 1.5\,Hz where 5.4\,Hz was achievable.
+A known-good signature is recorded in
+\texttt{carolus\_node/config/beacon\_reference.yaml}.
+
+\textbf{The LEDs are PWM-driven}, which shapes the trade-off. Across 333
+consecutive frames the saturated-pixel count ranged from \textbf{0 to
+37\,182}, and a frame reading exactly zero is not noise --- it is the camera
+sampling the off phase of the duty cycle. So turning the intensity down does
+not merely shrink the blobs, it lowers the detection \emph{rate}, because
+more frames land mid-off and fail outright. There is a floor below which
+detection degrades regardless of how well-sized the blobs look.
+\end{warningbox}
+
 \subsection{Operating rules for the beacon}
 \label{sec:beacon-operating-rules}
 
@@ -3206,6 +3237,31 @@ skipped:
   \item The gimbal being off-centre. Deliberately offsetting it by
   $32.5$\textdegree{} produced no chassis rotation over a minute.
 \end{itemize}
+
+\begin{warningbox}
+\textbf{Found 2026-08-17, likely the real mechanism: \texttt{chassis\_lead}
+robot mode itself.} Not on the list above --- it was not yet the default when
+that investigation ran. With the node up, zero commands on
+\texttt{/carolus/cmd\_vel} (confirmed absent from the log), and the robot's
+wheels held \textbf{clear of any surface}, the wheels were observed turning
+continuously. No ground contact, so this cannot be a friction or
+surface-level effect; it is an uncommanded drive signal, full stop. Switching
+the robot's mode from \texttt{chassis\_lead} to \texttt{free} while running
+stopped it immediately. \textbf{Not yet isolated by a dedicated experiment}
+--- the working explanation is that \texttt{chassis\_lead}'s own firmware
+loop holds the chassis against the same drifting attitude estimate
+(Section~\ref{sec:robot-mode}) that used to drive the gimbal in \texttt{free}
+mode, one level down. If so, this also explains why 2026-08-12's table-vs-floor
+result did not reproduce later on the floor alone (Section~\ref{sec:robot-mode}
+already flags that contradiction): the wheels may have been turning in both
+cases, translating into visible platform rotation only where the surface had
+enough grip to carry it. \textbf{The default robot mode is \texttt{free} as of
+2026-08-17 for exactly this reason} --- \texttt{RM\_ROBOT\_MODE=chassis\_lead}
+still exists as an override but is no longer recommended for any use,
+including the driving case \texttt{chassis\_lead} was originally chosen for,
+since Section~\ref{sec:robot-mode}'s chassis-referenced hold now solves that
+problem in \texttt{free} mode directly.
+\end{warningbox}
 
 \begin{warningbox}
 \textbf{Do not diagnose this from the chassis IMU alone.} It is not reliable
