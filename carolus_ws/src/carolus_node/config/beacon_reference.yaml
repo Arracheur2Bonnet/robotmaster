@@ -16,6 +16,14 @@
 # Measured with: shortcuts/beacon_brightness_live.py (live meter) and a 35 s
 # statistical capture. Robot elevated ~18 cm on its support, beacon on tripod
 # ~24 cm up, 1 m nominal separation, face to face.
+#
+# THIS IS NOW THE STANDARD RIG, kept permanently rather than re-set up each
+# session (2026-08-17). Confirmed harmless to leave this way: the beacon's own
+# LED geometry (known_points, below) is unaffected by mount height -- only the
+# camera's viewing angle changes, already folded into every reading here. The
+# robot stays elevated independently, for BUG-104/BUG-116 (wheels turn without
+# a command; elevated, they cannot move the chassis). Revisit the robot's
+# height, not the beacon's, once BUG-116 is understood.
 
 reference_date: "2026-08-17"
 
