@@ -15,11 +15,15 @@ Turning the intensity down is a physical knob with no feedback, so this gives
 the feedback: run it, turn the knob, watch the number. It is passive -- it
 subscribes to the camera and prints, and commands nothing.
 
-WHAT THE TARGET IS. The four LEDs occupied roughly 118 saturated px at ~0.9 m
-in the sessions where detection worked (13.9 Hz on `/pose`). The band below is
-set around that, generously, because it varies with distance and exposure:
-the number to trust is `pose`, and the pixel count is the knob-turning aid
-that gets you there.
+WHAT THE TARGET IS. Measured on this rig, not guessed: a median of 13 613
+saturated px gave 5.4 Hz on `/pose` and the cleanest 1.4b captures the project
+has produced. ~88 600 px is where the blobs merge and detection fails
+completely. The band is set from those two numbers.
+
+THE PIXEL COUNT IS NOT THE TARGET -- the DETECTION RATE is. The first version
+of this tool showed brightness only, and a setting that looked plausible by
+pixel count was delivering 1.5 Hz where 5.4 Hz was achievable. Tune to
+maximise the rate; the pixel count is only what you watch while turning.
 
 Usage, from the lab PC:
     ssh -t ubuntu@192.168.0.103 'source /opt/ros/noetic/setup.bash; \
@@ -37,8 +41,15 @@ from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import Image
 
 SAT = 250          # a pixel this bright is saturated on at least one channel
-TARGET_LO = 60     # below this the LEDs are likely too dim to segment reliably
-TARGET_HI = 900    # above this they are blooming and will merge
+# BANDS, corrected 2026-08-17 from measurement rather than intuition. The
+# first version used 60-900, guessed before any reference existed, and it
+# called 8721 px "TOO BRIGHT" on a rig where detection ran perfectly at a
+# median of 13 613 px. A meter that mislabels a working setting is worse than
+# no meter, so these now come from beacon_reference.yaml's recorded values:
+# 13 613 px median at 5.4 Hz, against ~88 600 px where blobs merged and
+# detection failed outright.
+TARGET_LO = 2000    # below this the LEDs get too dim to segment reliably
+TARGET_HI = 45000   # approaching the merge regime; ~88 600 px is total failure
 
 state = {"sat": None, "hue": None, "last_pose": 0.0, "frames": 0}
 # Rolling window of /pose arrival times. The DETECTION RATE is the real
@@ -96,6 +107,8 @@ def main():
 
     print(f"target {TARGET_LO}-{TARGET_HI} saturated px   "
           f"(hue should read 90-140, the blue window the config expects)")
+    print("TUNE FOR THE RATE, NOT THE PIXEL COUNT -- the band is only a guide;")
+    print("a setting inside it can still be poor, and the rate will say so.")
     print("turn the beacon's intensity knob and watch. Ctrl-C to stop.\n")
     try:
         while not rospy.is_shutdown():
