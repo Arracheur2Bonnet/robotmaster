@@ -2520,16 +2520,40 @@ source; the determinant argument, checked against REP-103's stated axis
 conventions; and the numerical agreement with the independent Limo result,
 computed directly.
 
-\textbf{Not yet verified:} an end-to-end physical measurement on this robot
---- placing the beacon at a known orientation and comparing
-\texttt{rosrun tf tf\_echo camera\_link beacon\_observed} against it. Until
-that is done, treat this chapter as a derivation that has passed every
-available desk check but has not been confirmed against a ruler. The test
-itself is cheap: rotate the beacon by a known angle about one camera axis at
-a time and confirm the reported rotation matches in both axis and sign. Note
-that a $180^\circ$ test rotation cannot distinguish a correct conversion from
-a mirrored one --- the two coincide exactly at that angle --- so use
-something well away from both $0^\circ$ and $180^\circ$.
+\textbf{Verified end-to-end on hardware, 2026-08-17.} The beacon was rotated
+by roughly $30^\circ$ about each camera axis in turn, held still, and
+\texttt{tf\_echo camera\_link beacon\_observed} read before and after ---
+bracketed by a second reference reading once the beacon was returned to
+straight, so the small residual attitude drift documented in
+Section~\ref{sec:uncommanded-yaw} could be measured and subtracted rather
+than assumed negligible.
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Axis & Gesture & Measured (drift-corrected) \\
+\midrule
+Yaw (Z)   & tripod pan, $\sim30^\circ$ clockwise from above & $-28.8^\circ$ \\
+Pitch (Y) & tripod tilt, $\sim30^\circ$ backward             & $-23.7^\circ$ \\
+Roll (X)  & hand twist, $\sim30^\circ$, steering-wheel motion & $-23.6^\circ$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Zero axes inverted.} Each rotation landed on its own axis --- the
+other two moved by at most a few degrees, the residual of an imperfect hand
+gesture rather than cross-talk between axes --- and every measured sign
+matches the derivation above. \textbf{The 2026-08-11 formula is confirmed on
+this robot, not just on paper.}
+
+One methodological note worth keeping: \textbf{the first attempt at the roll
+axis was itself invalid, and it is worth knowing why.} A rigid tripod's own
+rotation is a vertical pan, which is yaw, not roll --- a rotation about the
+camera-to-beacon line needs the beacon twisted by hand, independent of any
+tripod mechanism. The two are easy to conflate verbally ("spin the beacon")
+while being mechanically distinct, and the first attempt reproduced the yaw
+result almost exactly under the roll label before this was caught by
+comparing the two readings side by side.
 
 \chapter{Operating the Robot: the Launcher}
 \label{ch:launcher}
