@@ -83,7 +83,8 @@ COL_KO       = "#cc0000"
 COL_KEY_ACT  = "#d4a017"   # gold, for an active key (ZQSD / numpad)
 
 # High-rate telemetry lines: dashboard only, kept out of the text log
-_LOG_SUPPRESS = frozenset({"[ESC]", "[ATTI]", "[POS]", "[BAT]", "[VEL]", "[TOF]", "[BEACON]"})
+_LOG_SUPPRESS = frozenset({"[ESC]", "[ATTI]", "[POS]", "[BAT]", "[VEL]", "[TOF]", "[BEACON]",
+                           "[BEACONSIG]"})
 # [BEACONPOS] deliberately excluded from the filter: the raw values are useful for diagnosing orientation
 
 RE_DEPTH     = re.compile(r"depth=([0-9.]+)m")
@@ -97,6 +98,7 @@ RE_STATUS    = re.compile(r"\[STATUS\]\s*pickup=(\d)\s*slip=(\d)\s*roll=(\d)\s*s
 RE_TOF       = re.compile(r"\[TOF\]\s*front=([0-9.]+)cm")
 RE_OBSTACLE  = re.compile(r"\[OBSTACLE\]\s*(.+)")
 RE_BEACON    = re.compile(r"\[BEACON\]\s*status=(DETECTED|LOST)(?:\s*yaw_err=([+-]?[0-9.]+)\s*pitch_err=([+-]?[0-9.]+))?")
+RE_BEACONSIG = re.compile(r"\[BEACONSIG\]\s*sat=(\d+)\s*hue=([+-]?[0-9.]+)")
 
 BEACON_FRESH_S = 1.5   # must match POSE_TIMEOUT_S in rm_cam_beacon.py
 
@@ -173,6 +175,31 @@ def local_kill(pattern):
 
 
 # ── Interface ────────────────────────────────────────────────────────────────
+
+def _load_beacon_reference():
+    """Read config/beacon_reference.yaml -- the known-good beacon signature.
+
+    Returns None rather than raising if it is missing or unreadable: the panel
+    then shows raw values with no verdict, which is still more than the
+    operator had before. A missing reference must not stop the launcher.
+    """
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "carolus_ws", "src", "carolus_node", "config",
+                        "beacon_reference.yaml")
+    try:
+        import yaml
+        with open(path, encoding="utf-8") as fh:
+            d = yaml.safe_load(fh)
+        # Fail loudly-ish (return None) rather than half-load: a partial
+        # reference would produce confident-looking wrong verdicts.
+        for k in ("saturated_px", "hue_opencv", "pose_rate_hz", "distance_m",
+                  "thresholds"):
+            if k not in d:
+                return None
+        return d
+    except Exception:
+        return None
+
 
 class App(tk.Tk):
 
@@ -476,6 +503,27 @@ class App(tk.Tk):
         self._beacon_status_lbl.pack(side="left", padx=6)
         self._beacon_detected = False
 
+        # --- Beacon brightness signature (2026-08-17) ---
+        # Added because over-brightness is INVISIBLE from the logs and reads as
+        # the opposite of what it is: past a point the four LEDs bloom into one
+        # merged blob that fails max_area and min_circularity, and Carolus then
+        # reports "Not enough blobs with required circularity" / "0 contours
+        # found" -- i.e. "no beacon" when the truth is "far too much beacon".
+        # The intensity knob is physical and has no readout, so this panel is
+        # the only feedback the operator gets. Reference values and thresholds
+        # come from carolus_node/config/beacon_reference.yaml, read at startup
+        # rather than hardcoded here, so re-measuring the reference does not
+        # require editing the GUI.
+        self._beacon_sig_lbl = tk.Label(beacon_row, text="sig: N/A", bg=BG2,
+                                        fg=FG_DIM, font=FONT_MONO)
+        self._beacon_sig_lbl.pack(side="left", padx=6)
+        ref = _load_beacon_reference()
+        self._beacon_ref = ref
+        ref_txt = (f"ref {ref['saturated_px']['median']} px  hue {ref['hue_opencv']}"
+                   f"  {ref['pose_rate_hz']} Hz @ {ref['distance_m']} m"
+                   if ref else "no beacon_reference.yaml -- thresholds unavailable")
+        tk.Label(right, text=ref_txt, bg=BG2, fg=FG_DIM, font=FONT).pack(anchor="w")
+
         # --- logs : un onglet par terminal (T1-T5), selectionnables + bouton copier ---
         logh = tk.Frame(right_col, bg=BG)
         logh.pack(fill="x", padx=12, pady=(6, 0))
@@ -596,6 +644,35 @@ class App(tk.Tk):
         self._beacon_detected = False
         self._beacon_dot.itemconfig(self._beacon_dot_id, fill=COL_KO)
         self._beacon_status_lbl.config(text="BEACON: LOST", fg=COL_KO)
+
+    def _on_beacon_signature(self, sat_str, hue_str):
+        """Show the beacon's brightness signature, judged against the recorded
+        reference. See the panel's own comment for why this exists.
+
+        The verdict is deliberately about BLOOMING, not about matching the
+        reference exactly: brightness legitimately varies with distance, and
+        the number that actually decides quality is the detection rate, shown
+        by the DETECTED/LOST indicator beside it.
+        """
+        try:
+            sat = int(sat_str)
+            hue = float(hue_str)
+        except (TypeError, ValueError):
+            return
+        ref = self._beacon_ref
+        if not ref:
+            self._beacon_sig_lbl.config(text=f"sig: {sat} px  hue {hue:.0f}", fg=FG)
+            return
+        th = ref["thresholds"]
+        if sat == 0:
+            txt, col = f"sig: {sat} px  NO LIGHT", COL_KO
+        elif sat > th["saturated_px_warn_above"]:
+            txt, col = f"sig: {sat} px  TOO BRIGHT (blobs merge)", COL_KO
+        elif not (th["hue_opencv_min"] <= hue <= th["hue_opencv_max"]):
+            txt, col = f"sig: {sat} px  hue {hue:.0f} OUT OF WINDOW", COL_KO
+        else:
+            txt, col = f"sig: {sat} px  hue {hue:.0f}", COL_OK
+        self._beacon_sig_lbl.config(text=txt, fg=col)
 
     def _on_beacon_status(self, status, yaw_err_str, pitch_err_str):
         """Parse [BEACON] status=DETECTED/LOST (~5Hz, cf. rm_cam_beacon.py) and
@@ -919,6 +996,7 @@ class App(tk.Tk):
         self.atti_lbl.config(text="pitch: N/A   roll: N/A")
         self.vel_lbl.config(text="vx: N/A   vy: N/A")
         self.esc_lbl.config(text="W1:---  W2:---  W3:---  W4:---")
+        self._beacon_sig_lbl.config(text="sig: N/A", fg=FG_DIM)
         self.status_lbl.config(text="OK", fg=ACCENT)
         self.tof_lbl.config(text="N/A", fg=FG)
         self.cam_canvas.delete("all")
@@ -1117,6 +1195,10 @@ class App(tk.Tk):
             m = RE_BEACON.search(line)
             if m:
                 self._on_beacon_status(m.group(1), m.group(2), m.group(3))
+        if "[BEACONSIG]" in line:
+            m = RE_BEACONSIG.search(line)
+            if m:
+                self._on_beacon_signature(m.group(1), m.group(2))
         if "[BEACONPOS]" in line:
             m = RE_BEACONPOS.search(line)
             if m:

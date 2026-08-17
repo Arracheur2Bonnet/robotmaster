@@ -157,6 +157,50 @@ def _png_writer_blobs():
 
 # -- video stream --------------------------------------------------------------
 
+def _beacon_signature(frame_full):
+    """Emit [BEACONSIG] -- the beacon's brightness signature, for the launcher's
+    BEACON panel.
+
+    WHY THIS IS HERE and not a separate node: this callback already holds a
+    decoded full-resolution frame, so the measurement is a numpy pass over
+    pixels we have anyway. A second subscriber on /camera/color/image_raw is
+    exactly what this file avoids by design (that topic is the Pi/Carolus
+    network bottleneck).
+
+    WHAT IT MEASURES, and why it earns a panel. Beacon over-brightness does
+    not degrade gracefully: past a point the four LEDs bloom into one merged
+    blob that fails `max_area` and `min_circularity`, and Carolus then logs
+    `Not enough blobs with required circularity` / `0 contours found` --
+    wording that reads as "beacon absent" when the truth is the opposite
+    (measured 2026-08-17: 88 628 saturated px, 9.6% of frame). The intensity
+    knob is physical with no readout, so without this the operator has no way
+    to see the difference.
+
+    Computed on the FULL-resolution frame, before the preview resize, so the
+    numbers are comparable with config/beacon_reference.yaml.
+    """
+    lum = frame_full.max(axis=2)
+    mask = lum > 250
+    n = int(mask.sum())
+    if n:
+        b = float(frame_full[:, :, 0][mask].mean())
+        g = float(frame_full[:, :, 1][mask].mean())
+        r = float(frame_full[:, :, 2][mask].mean())
+        mx, mn = max(b, g, r), min(b, g, r)
+        if mx == mn:
+            h = 0.0
+        elif mx == r:
+            h = (60 * ((g - b) / (mx - mn)) + 360) % 360
+        elif mx == g:
+            h = 60 * ((b - r) / (mx - mn)) + 120
+        else:
+            h = 60 * ((r - g) / (mx - mn)) + 240
+        hue = h / 2.0          # OpenCV's 0-180 scale, as the config uses
+    else:
+        hue = -1.0             # no saturated pixel at all: hue is undefined
+    rospy.loginfo_throttle(1.0, f"[BEACONSIG] sat={n} hue={hue:.1f}")
+
+
 def cb_image(msg):
     now = rospy.get_time()
     if now - _last[0] < THROTTLE_S:
@@ -164,6 +208,12 @@ def cb_image(msg):
     _last[0] = now
     try:
         frame = bridge.imgmsg_to_cv2(msg, "bgr8")
+        try:
+            _beacon_signature(frame)
+        except Exception as e:
+            # Never let the signature break the preview -- the preview is the
+            # operator's primary view, this is a readout beside it.
+            rospy.logwarn_throttle(10.0, f"[CAMVIEW] beacon signature error: {e}")
         frame = cv2.resize(frame, SIZE)
         ok, buf = cv2.imencode(".png", frame)
         if ok and not _png_queue.full():

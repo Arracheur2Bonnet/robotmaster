@@ -2700,6 +2700,17 @@ costs no extra network bandwidth.
 \texttt{BEACON: LOST} (red). To see \emph{where} the beacon sits within the
 frame, use \texttt{CAM PREVIEW} or \texttt{BLOB VIEW}.
 
+\textbf{Beside it, the beacon signature} shows the saturated-pixel count and
+hue of what the camera is actually seeing, judged against the recorded
+reference in \texttt{carolus\_node/config/beacon\_reference.yaml}: a plain
+green reading, or one of \texttt{TOO BRIGHT (blobs merge)},
+\texttt{hue OUT OF WINDOW}, \texttt{NO LIGHT}. \textbf{Read this before
+diagnosing any detection failure} --- as
+Section~\ref{sec:beacon-params} explains, an over-bright beacon reports
+itself in the logs as an \emph{absent} one. It is computed inside the camera
+preview's own callback, so \textbf{it only updates while \texttt{CAM PREVIEW}
+is ON}.
+
 \section{Session logs on disk}
 
 Every line shown in any tab is also written to
