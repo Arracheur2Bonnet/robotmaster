@@ -213,7 +213,16 @@ public:
                 private_nh_.getParam("distortion", distCoeffs_vector);
 
                 if (distCoeffs_vector.size() != 4) {
-                    // ROS_WARN("Using default distortion coefficients, expected 4 elements.");
+                    // BUG-117 (2026-08-17): this branch was silently swallowing a
+                    // real configuration error -- a `distortion` param that failed
+                    // to load as a 4-element list (e.g. loaded as a YAML string
+                    // instead of a sequence) fell through to here with no signal
+                    // anywhere, and the node ran on placeholder Astrobee values
+                    // instead of the robot's own measured distortion. Warn loudly.
+                    ROS_WARN("distortion param did not load as 4 elements (got %zu) "
+                             "-- using placeholder Astrobee coefficients instead of "
+                             "the robot's own. Check the YAML is a list, not a "
+                             "quoted string.", distCoeffs_vector.size());
                     distCoeffs_vector = {-0.092775, 0.014312, 0.000103, 0.000220};
                 }
             }
@@ -226,7 +235,10 @@ public:
                 private_nh_.getParam("distortion", distCoeffs_vector);
 
                 if (distCoeffs_vector.size() != 4) {
-                    // ROS_WARN("Using default distortion coefficients, expected 4 elements.");
+                    ROS_WARN("distortion param did not load as 4 elements (got %zu) "
+                             "-- using placeholder Astrobee coefficients instead of "
+                             "the robot's own. Check the YAML is a list, not a "
+                             "quoted string.", distCoeffs_vector.size());
                     distCoeffs_vector = {-0.092775, 0.014312, 0.000103, 0.000220};
                 }
             }

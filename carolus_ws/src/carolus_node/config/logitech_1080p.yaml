@@ -1,0 +1,73 @@
+# Carolus configuration profile — Logitech 1080p USB webcam, ground-station PC
+#
+# For Hector's separate build: Carolus + a Logitech 1080p webcam on a PC, no
+# RoboMaster involved. See overleaf/technical.tex's calibration chapter for
+# the general "copy this file for your own hardware" pattern -- this is that
+# pattern applied.
+#
+# Camera intrinsics: from Hector directly, 2026-08-17 (his email). Approximate
+# -- his own words: "The camera should be calibrated again later, after we
+# get it to work". Treat as a starting point to confirm detection runs at
+# all, not as a formally calibrated value.
+fx: 570.6975
+fy: 572.8081
+cx: 322.6828
+cy: 228.3519
+
+# plumb_bob distortion: k1 k2 p1 p2. A real YAML list, not a quoted string --
+# see BUG-117 (2026-08-17, journal.md): the string form silently fails to
+# load as a vector<double> and the node falls back to a hardcoded Astrobee
+# placeholder with no warning. carolus_astrobee.cpp:352 only ever consumes
+# exactly 4 values regardless of list length, so don't add a 5th (k3).
+distortion: [0.0223, -0.3088, -0.0048, -0.0018]
+
+# --- Beacon geometry ---------------------------------------------------------
+# Copied from robomaster_s1.yaml as a starting point, UNVERIFIED for
+# whichever physical beacon is in front of this camera. If it is the same
+# beacon this project uses on the RoboMaster, these are already correct
+# (confirmed by ruler, see robomaster_s1.yaml's own history). If it is a
+# different physical beacon, measure and replace before trusting any pose.
+known_points: "0.0825 0.0 0.0 -0.0825 0.0 0.0 0.0 0.072 0.0 0.0 0.0 0.0555"
+
+# --- Blob detection ----------------------------------------------------------
+# Copied from robomaster_s1.yaml as a starting point. A different camera at a
+# different resolution/FOV/exposure will very likely need these retuned
+# against /postprocessed/image -- do not assume they carry over.
+min_circularity: 0.6
+saturation_threshold: 80
+min_area: 8.0
+max_area: 1800.0
+max_distance_lim: 1000.0
+
+# Hue window, OpenCV's 0-180 scale (NOT 0-360). Assumes the same blue LED
+# beacon as the RoboMaster's. Re-check with the live meter
+# (shortcuts/beacon_brightness_live.py) if detection fails -- a beacon that
+# looks fine to the eye can still be outside this window under different
+# camera white balance.
+lb_hue: 90.0
+ub_hue: 140.0
+
+# --- Preprocessing -----------------------------------------------------------
+kernel_size_gaussian: 3
+kernel_size_morph: 3
+image_threshold: 190
+
+# --- Outlier rejection (moving-window filter over successive poses) ----------
+filter_size: 7
+translation_threshold: 0.5
+rotation_threshold: 0.3
+fifo_on: true
+
+# --- Execution ---------------------------------------------------------------
+num_threads: 1
+queue_size: 10
+benchtest: true
+
+# --- Camera selection (Astrobee-era flags, kept for compatibility) -----------
+nav_cam: true
+dock_cam: false
+fisheye: false
+fov: true
+mono: false
+
+bot_name: "wannabee"

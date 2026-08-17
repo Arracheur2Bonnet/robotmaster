@@ -21,8 +21,19 @@ fy: 547.0838
 cx: 575.6041
 cy: 372.1876
 
-# plumb_bob distortion: k1 k2 p1 p2 k3
-distortion: "-0.1479, 0.1452, -0.0023, 0.0025, 0.0070"
+# plumb_bob distortion: k1 k2 p1 p2. FOUR values, as a real YAML list -- see
+# BUG-117 (2026-08-17). This used to be a quoted STRING with five values
+# (including k3), which two things silently defeated at once: getParam into a
+# std::vector<double> requires a YAML sequence, not a string, so it failed and
+# left the vector empty; and carolus_astrobee.cpp:352 builds the actual
+# distortion cv::Mat from exactly indices [0..3] regardless of vector length,
+# so k3 could never have been used even with the type fixed. Net effect: this
+# robot's own measured distortion has never been applied. Carolus has been
+# silently using the hardcoded Astrobee "wannabee" placeholder instead
+# ({-0.092775, 0.014312, 0.000103, 0.000220}) for every pose it has ever
+# published on this robot. k3 is dropped here, not rounded away -- the code
+# has no path that could consume a 5th coefficient.
+distortion: [-0.1479, 0.1452, -0.0023, 0.0025]
 
 # --- Beacon geometry ---------------------------------------------------------
 # MEASURE THIS FOR YOUR OWN BEACON. Four LED positions in metres, in Carolus's

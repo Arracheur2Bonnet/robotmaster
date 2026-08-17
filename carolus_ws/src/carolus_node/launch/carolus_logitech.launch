@@ -1,0 +1,26 @@
+<launch>
+    <!-- ====================================================================
+         Ground-station entry point: Carolus + a Logitech 1080p USB webcam,
+         no RoboMaster. Written 2026-08-17 to reproduce and diagnose Hector's
+         report that nothing displays on his own separate build (Carolus on
+         his PC and this camera); see research-log/journal.md that date.
+
+         Deliberately not an edit to testcarolus.launch. That file is the
+         documented RoboMaster S1 entry point, and its own header says so:
+         "Carolus can be run on other robots without editing this file. See
+         carolus.launch for that path." This is that path, taken. No
+         S1-specific static TF (honey/body) here, since there is no robot.
+
+         Prerequisite: ros-noetic-usb-cam installed
+         (sudo apt install ros-noetic-usb-cam), then in a separate terminal:
+             roslaunch usb_cam usb_cam-test.launch
+         which publishes /usb_cam/image_raw, the topic below.
+         ==================================================================== -->
+
+    <include file="$(find carolus_node)/launch/carolus.launch">
+        <arg name="config"
+             value="$(find carolus_node)/config/logitech_1080p.yaml" />
+        <arg name="camera_topic" value="/usb_cam/image_raw" />
+    </include>
+
+</launch>
