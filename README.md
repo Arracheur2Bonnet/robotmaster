@@ -1,8 +1,30 @@
 # Carolus / RoboMaster S1
 
-Vision-based relative navigation (Carolus/UVGS-2: 4-LED beacon detection + P4P
-pose solve) integrated on a rooted RoboMaster S1, fused with wheel odometry via
-`robot_localization`.
+Vision-based relative navigation on a rooted DJI RoboMaster S1 ground robot,
+built around **Carolus/UVGS-2** — a monocular, 4-LED-beacon detection and P4P
+(Perspective-4-Point) pose solver derived from NASA's SVGS system, originally
+developed for the Astrobee free-flyer. A beacon of known geometry gives the
+robot an absolute 6-DOF pose whenever it is in view; that pose is fused with
+wheel odometry through a lightweight EKF (`robot_localization`), as a step
+toward replacing the GPS channel of the MINS multi-sensor navigation
+framework for indoor, GPS-denied relocalization.
+
+```mermaid
+flowchart LR
+    LED["4-LED Beacon<br/>(known geometry)"] --> CAM[RoboMaster Camera]
+    CAM --> CAROLUS["Carolus<br/>P4P / Ceres solver"]
+    CAROLUS -->|"/pose (camera frame)"| TF[TF Broadcast]
+    TF -->|"beacon_observed → odom"| ABS[Absolute Pose]
+    ODOM[Wheel Odometry] --> EKF["robot_localization<br/>EKF"]
+    ABS --> EKF
+    EKF -->|/odometry/filtered| OUT[Fused Pose]
+```
+
+On top of the perception pipeline, an autonomous state machine (SEARCH →
+ALIGN → APPROACH → STOP) drives the robot to the beacon under visual
+servoing, validated end to end on hardware. See
+[`overleaf/technical.pdf`](overleaf/technical.pdf) below for the full setup
+and reproduction guide.
 
 ## License
 
@@ -124,10 +146,11 @@ Then, in order, the launcher's 5 buttons:
 
 **Sanity check that the pipeline is actually working**: with the terminals
 running and an LED beacon in the camera's field of view, `rostopic hz /pose`
-should report a steady rate. Carolus running on the Raspberry Pi processes
-~24 frames/s (measured 2026-08-04); running it on the lab PC instead drops
-this to ~2.5 Hz, because every uncompressed 1280x720 frame has to cross the
-network first — see the technical manual for why the Pi is the right target. `rostopic echo /pose` should show
+should report a steady rate. With Carolus running on the Raspberry Pi that is
+roughly 13 Hz; running it on the lab PC instead drops this to roughly
+2.2 Hz, because every uncompressed 1280x720 frame has to cross the network
+first — see the technical manual for why the Pi is the right target.
+`rostopic echo /pose` should show
 a `geometry_msgs/PoseStamped` with a plausible Z distance matching the
 beacon's real distance from the camera. In the launcher GUI, the
 `BEACON: DETECTED` indicator should light up.
@@ -148,8 +171,10 @@ locally with `pdflatex` (two passes).
 
 ---
 
-## Legacy notes (original inherited README, `v0`)
+<details>
+<summary><h2 style="display:inline">Legacy notes (original inherited README, `v0`)</h2></summary>
 
+```
 # p4p-zbft
 P4P Solver on Manifolds by ZBFT
 
@@ -172,3 +197,6 @@ P4P Solver on Manifolds by ZBFT
 - PUBLISH MSGS AS MARKER TRACKING
 
 @1822 TROPICAL EMPIRE -- ZBFT
+```
+
+</details>
