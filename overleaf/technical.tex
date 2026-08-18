@@ -3088,6 +3088,111 @@ the \emph{same} rectangular-motion trajectory --- needs
 Section~\ref{sec:mins-rosbag}'s recording to exist first, and is not yet
 done.
 
+\chapter{Carolus with a USB Webcam}
+\label{ch:carolus-usbcam}
+
+\runson{the \textbf{lab PC} (or any ground-station machine), with a USB
+webcam. No robot, no Pi, no RNDIS connection --- this chapter is for running
+Carolus's detection and pose pipeline standalone, against a beacon held or
+mounted in front of an ordinary webcam, for calibration and detection-tuning
+work off the robot.}
+
+\section{Why this exists}
+
+Carolus's own architecture already supports this without modification:
+\texttt{carolus.launch} exposes \texttt{camera\_topic} and \texttt{config}
+as real arguments with defaults, precisely so the pipeline can run against
+any image source once it is told the topic name and given a matching
+hardware profile. \texttt{testcarolus.launch}, the robot's own entry point,
+hardcodes both to the RoboMaster's values --- this chapter's entry point,
+\texttt{carolus\_logitech.launch}, is a sibling to it, not an edit to it.
+
+\section{Installing the camera driver}
+
+\texttt{usb\_cam} provides the ROS driver. \textbf{On Ubuntu 20.04, the
+prebuilt package works:}
+
+\begin{lstlisting}[style=shell]
+sudo apt install ros-noetic-usb-cam
+\end{lstlisting}
+
+\begin{warningbox}
+\textbf{On Ubuntu 22.04, that package does not exist, and cannot} --- ROS
+Noetic never had official binary packages past Ubuntu 20.04. Build from
+source instead:
+
+\begin{lstlisting}[style=shell]
+cd carolus_ws/src
+git clone --depth 1 -b master https://github.com/ros-drivers/usb_cam.git
+cd ../.. && catkin_make --pkg usb_cam
+\end{lstlisting}
+
+\texttt{master}, not \texttt{main} --- the latter is the ROS2 branch. This
+project's own copy in \texttt{carolus\_ws/src/usb\_cam/} already carries
+three fixes a stock checkout needs on a modern system: renamed FFmpeg API
+calls, and a \texttt{CMakeLists.txt} filter removing an ambiguous
+\texttt{liblog4cxx.so} reference that otherwise crashes the node at startup
+on any machine where that symlink resolves to a newer major version than
+ROS Noetic's own prebuilt console backend expects (\texttt{exit code -11},
+every launch). If \texttt{catkin\_make} reports a missing
+\texttt{libavcodec.so} at the link step, that specific file is
+missing from an otherwise-installed \texttt{libavcodec-dev} on at least one
+observed machine --- \texttt{sudo apt install --reinstall libavcodec-dev}
+resolves it.
+\end{warningbox}
+
+\section{Running it}
+
+\begin{lstlisting}[style=shell]
+roslaunch usb_cam usb_cam-test.launch
+\end{lstlisting}
+
+Publishes the raw feed on \texttt{/usb\_cam/image\_raw}. \textbf{Verified
+2026-08-17}: 30.0\,Hz average over a 284-sample window, std dev
+0.0018\,s, on a Logitech HD Pro Webcam C920.
+
+\section{The Carolus config}
+
+\texttt{carolus\_node/config/logitech\_1080p.yaml} follows
+\texttt{robomaster\_s1.yaml}'s own documented pattern: copy it, replace the
+camera intrinsics and distortion with your own camera's, keep the beacon
+geometry if it is the same physical beacon. \textbf{Distortion must be a
+real YAML list} (\texttt{[k1, k2, p1, p2]}, four values), not a quoted
+string --- \texttt{getParam} into a \texttt{vector<double>} silently fails
+to load a string and falls back to a hardcoded placeholder with no warning,
+which is exactly what happened to this robot's own profile until it was
+found and fixed (see \texttt{robomaster\_s1.yaml}'s own inline comment on
+the \texttt{distortion} field for the full account).
+
+\begin{lstlisting}[style=shell]
+roslaunch carolus_node carolus_logitech.launch
+\end{lstlisting}
+
+\textbf{Verified 2026-08-17}: run against the live 30\,Hz feed above, no
+crash, every frame processed.
+
+\section{Reading the result}
+
+\texttt{/postprocessed/image} --- the black-and-white blob view --- is
+\textbf{only published on a successful four-blob detection}. Silence on
+that topic by itself does not mean anything is broken: it means no valid
+beacon has been found in any frame since the node started. Before
+suspecting a bug, confirm a lit beacon is actually in frame; then check the
+terminal running \texttt{carolus\_astrobee} for \texttt{Not enough blobs
+with required circularity} or \texttt{0 contours found} (a tuning problem
+--- hue window, \texttt{min\_area}/\texttt{max\_area},
+\texttt{saturation\_threshold}, all in the config file above) versus no
+output at all or a crash (a different, deeper problem).
+
+\texttt{carolus\_rviz.launch} (Chapter~\ref{ch:launcher} covers its
+counterpart on the robot) displays both the raw feed and the blob view side
+by side. \textbf{Its saved config points the ``Camera raw'' panel at
+\texttt{/camera/color/image\_raw}} --- the RoboMaster's topic name. Against
+this chapter's setup, change that panel's \texttt{Image Topic} field to
+\texttt{/usb\_cam/image\_raw} by hand; nothing publishes on the RoboMaster's
+name here, which is why the panel would otherwise show ``No Image''
+indefinitely.
+
 \chapter{Troubleshooting}
 \label{ch:troubleshooting}
 
