@@ -132,8 +132,8 @@ a `geometry_msgs/PoseStamped` with a plausible Z distance matching the
 beacon's real distance from the camera. In the launcher GUI, the
 `BEACON: DETECTED` indicator should light up.
 
-**Known non-blocking warnings** you'll see on a normal launch (documented in
-`CLAUDE.md`, not worth re-diagnosing): a missing
+**Known non-blocking warnings** you'll see on a normal launch, none worth
+re-diagnosing: a missing
 `~/catkin_ws/devel/setup.bash` line in the lab PC's `.bashrc` (leftover from
 a previous setup), a ROS log-directory-over-1GB warning on the Pi, and a
 `pillow`/`imageio` version mismatch from the `myqr` dependency (unused in
