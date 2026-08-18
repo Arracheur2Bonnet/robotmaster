@@ -1129,9 +1129,8 @@ and subscribes to a small set of control topics used by this project's own
 higher-level tooling (not covered in this manual):
 \texttt{/pose} (Carolus's own output, consumed here to drive autonomous
 behavior), \texttt{/carolus/mode}, \texttt{/carolus/cmd\_vel},
-\texttt{/carolus/gimbal\_vel}, \texttt{/carolus/wheels},
-\texttt{/carolus/gimbal\_lock}, \texttt{/carolus/gimbal\_lock\_period}, and
-\texttt{/carolus/gimbal\_recenter}.
+\texttt{/carolus/gimbal\_vel}, \texttt{/carolus/gimbal\_lock},
+\texttt{/carolus/gimbal\_lock\_period}, and \texttt{/carolus/gimbal\_recenter}.
 
 \section{Verifying it is running}
 
@@ -1224,7 +1223,7 @@ $f_x$ & 546.1957 \\
 $f_y$ & 547.0838 \\
 $c_x$ & 575.6041 \\
 $c_y$ & 372.1876 \\
-Distortion (plumb\_bob: $k_1,k_2,p_1,p_2,k_3$) & $-0.1479,\ 0.1452,\ -0.0023,\ 0.0025,\ 0.0070$ \\
+Distortion (plumb\_bob: $k_1,k_2,p_1,p_2$) & $-0.1479,\ 0.1452,\ -0.0023,\ 0.0025$ \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -2032,7 +2031,10 @@ fx: 546.1957
 fy: 547.0838
 cx: 575.6041
 cy: 372.1876
-distortion: "-0.1479, 0.1452, -0.0023, 0.0025, 0.0070"   # k1 k2 p1 p2 k3
+distortion: [-0.1479, 0.1452, -0.0023, 0.0025]   # k1 k2 p1 p2, a real YAML
+                                                   # list -- a quoted string
+                                                   # here silently fails to
+                                                   # load, see BUG-117
 
 # --- Beacon geometry (MEASURE THIS FOR YOUR OWN BEACON) ---
 # Four LED positions in metres, Carolus's left-handed frame. One point is
