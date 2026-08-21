@@ -31,8 +31,8 @@ and reproduction guide.
 Apache License 2.0 — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
 
 This matches what the third-party components already declared rather than
-overriding them: `src/ff_msgs/` is NASA Astrobee code (Apache-2.0) and
-`src/libuvgs_astrobee/` (Carolus/uVGS-2, original author zauberflote1)
+overriding them: `carolus_ws/src/ff_msgs/` is NASA Astrobee code (Apache-2.0) and
+`carolus_ws/src/libuvgs_astrobee/` (Carolus/uVGS-2, original author zauberflote1)
 declares Apache-2.0 in its own `package.xml`. `NOTICE` lists each component,
 its origin, and what was modified here.
 
@@ -60,8 +60,9 @@ inherited code, then new versions/changes on top):
 
 ## Building
 
-Requires ROS Noetic. `catkin build` from the workspace root (`src/` here is
-the catkin `src/` directory).
+Requires ROS Noetic. `catkin_make` from `carolus_ws/` — **not** `catkin
+build`: this workspace has an existing `catkin_make` build space and the two
+tools conflict.
 
 **Not included in this repository** (install separately, standard upstream
 packages, unmodified):
@@ -74,10 +75,32 @@ See `shortcuts/README.md` for the operational scripts (launcher, deployment,
 leak scan) and `cmake_shims/` for the Ubuntu 22.04 build workarounds (no
 `sudo` required).
 
+## Running Carolus under ROS2
+
+The detection and solver code is also **middleware-agnostic**, not just
+robot-agnostic. `libuvgs_astrobee` builds two targets: `carolus_core`, a
+static library holding the algorithm (blob detection, target sort, Ceres P4P
+solve, pose filter) and linking OpenCV/Eigen/Ceres and *nothing else*; and
+`carolus_astrobee`, the ROS1 node that wraps it. The split is verified, not
+asserted — the compiled library has an empty `NEEDED` list and zero
+unresolved ROS symbols, checked on x86_64 and on the Raspberry Pi's aarch64.
+
+[`raspberry5-carolus-ros2/`](raspberry5-carolus-ros2/) builds the same
+sources under ROS2 as the test of that claim. It is deliberately
+self-contained — its own manual, its own copy of the core — so it can be
+handed over and built on its own. See its
+[README](raspberry5-carolus-ros2/README.md).
+
+Verified: the same detection/solver sources build under ROS Noetic, ROS2
+Humble and ROS2 Jazzy, and the ROS2 wrapper detects a real beacon and
+publishes a pose. Pose *accuracy* under ROS2 is not yet validated — the
+solver reports `converged=0` and the ROS2 manual says so where a reader
+will see it.
+
 ## Running Carolus on a different robot
 
 Carolus itself is **robot-agnostic**: the detection and P4P solver
-(`src/libuvgs_astrobee/`) contain no reference to DJI, RoboMaster or RNDIS.
+(`carolus_ws/src/libuvgs_astrobee/`) contain no reference to DJI, RoboMaster or RNDIS.
 It takes a camera image on a ROS topic and publishes a pose. Everything
 specific to one robot lives in a YAML profile, not in the source.
 
@@ -93,7 +116,7 @@ editing any code:
    left-handed frame, with **one point deliberately off the plane of the
    other three** — P4P needs that to resolve pose unambiguously.
 
-3. **Write your profile.** Copy `src/carolus_node/config/robomaster_s1.yaml`,
+3. **Write your profile.** Copy `carolus_ws/src/carolus_node/config/robomaster_s1.yaml`,
    substitute your values, and launch:
 
 ```bash
@@ -141,8 +164,8 @@ Then, in order, the launcher's 5 buttons:
 | 1 · roscore + Pi | SSH → `eth1 up` + `roscore` | port 11311 open |
 | 2 · Camera + Beacon | SSH → `rm_cam_beacon.py` + `cam_view_helper.py` | `/camera/color/image_raw` published |
 | 3 · Carolus Astrobee | `roslaunch carolus_node testcarolus.launch` | manual |
-| 4 · TF Broadcaster | SSH → `carolus_tf_broadcaster.py` on the Pi | manual |
-| 5 · Docking | `beacon_docking.py` (lab PC) — `ALIGN_ONLY`/`APPROACH_ONLY`/`START`/`ABORT` panel | first `[DOCKSTATUS]` line seen |
+| 4 · TF Broadcaster (quat fix) | SSH → `carolus_tf_broadcaster.py` on the Pi | manual |
+| 5 · MINS (simulation, Pi) | SSH → MINS's own `simulation.launch` in `~/mins_sandbox_ws` | always (independent of the pipeline above) |
 
 **Sanity check that the pipeline is actually working**: with the terminals
 running and an LED beacon in the camera's field of view, `rostopic hz /pose`
@@ -168,6 +191,11 @@ this RNDIS-based pipeline).
 technical manual (power-on through building and launching Carolus). This is
 the one to read to set the system up; compile `technical.tex` on Overleaf or
 locally with `pdflatex` (two passes).
+
+`raspberry5-carolus-ros2/technical-ros2.tex` is a **second, separate manual**
+covering the ROS2 port on the lab PC and a Raspberry Pi 5. It is independent
+of the one above rather than a chapter of it, so the ROS2 folder stays
+portable on its own.
 
 ---
 
