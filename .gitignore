@@ -18,6 +18,11 @@
 !/LICENSE
 !/NOTICE
 !/.gitignore
+# Added 2026-08-20: the self-contained ROS2 port (lab PC + Raspberry Pi 5),
+# its own manual and its own copy of the detection/solver core. Published
+# because it is meant to be handed over and built by someone else -- that
+# portability is the whole reason the folder exists.
+!/raspberry5-carolus-ros2/
 
 # .env.example is NOT published: it documents this project's internal
 # Tavily/Perplexity research workflow (research-log/09-tavily/...), which
@@ -35,6 +40,13 @@ carolus_ws/devel/
 carolus_ws/build_isolated/
 carolus_ws/devel_isolated/
 carolus_ws/logs/
+# colcon's own output dir, created when a ROS2 build was run from here
+# (2026-08-19). Singular "log", distinct from catkin's "logs" above.
+carolus_ws/log/
+# colcon build output inside the ROS2 folder, same reasoning
+raspberry5-carolus-ros2/build/
+raspberry5-carolus-ros2/install/
+raspberry5-carolus-ros2/log/
 
 # Upstream clone, not ours to vendor
 carolus_ws/src/robot_localization/

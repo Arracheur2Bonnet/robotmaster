@@ -1,0 +1,599 @@
+\documentclass[11pt]{report}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[english]{babel}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{longtable}
+\usepackage{booktabs}
+\usepackage{geometry}
+\geometry{margin=0.85in}
+\setlength{\parskip}{2pt}
+
+% --- Code listing style ---------------------------------------------------
+\definecolor{codebg}{rgb}{0.96,0.96,0.96}
+\definecolor{codecomment}{rgb}{0.4,0.45,0.4}
+\definecolor{codestring}{rgb}{0.5,0.1,0.1}
+\lstdefinestyle{shell}{
+    backgroundcolor=\color{codebg},
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    numbers=none,
+    language=bash,
+    commentstyle=\color{codecomment},
+    keywordstyle=\bfseries,
+    aboveskip=6pt,
+    belowskip=6pt
+}
+\lstdefinestyle{code}{
+    backgroundcolor=\color{codebg},
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    commentstyle=\color{codecomment},
+    stringstyle=\color{codestring},
+    keywordstyle=\bfseries,
+    aboveskip=6pt,
+    belowskip=6pt
+}
+\lstset{style=shell}
+
+% --- "which machine" banner, used at the top of each chapter -------------
+\newcommand{\runson}[1]{%
+  \begin{center}
+  \fcolorbox{black}{codebg}{\parbox{0.94\textwidth}{\textbf{Runs on:} #1}}
+  \end{center}
+}
+
+% --- boxed warning, for facts that will cost the reader time if missed ----
+\newsavebox{\warnbox}
+\newenvironment{warningbox}%
+  {\begin{lrbox}{\warnbox}\begin{minipage}{0.90\textwidth}}%
+  {\end{minipage}\end{lrbox}%
+   \begin{center}\fcolorbox{black}{codebg}{\usebox{\warnbox}}\end{center}}
+
+
+\title{Carolus under ROS2 --- Lab PC and Raspberry Pi 5}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document is deliberately \textbf{self-contained and independent of the
+main Carolus/RoboMaster manual} (\texttt{overleaf/technical.tex}) and of the
+rest of that project's repository. It, and the folder it lives in
+(\texttt{raspberry5-carolus-ros2/}), can be copied, moved, or handed over on
+their own and still work: the ROS2 wrapper source
+(\texttt{carolus\_ros2/}) holds its own copy of the detection/solver core
+rather than referencing another workspace by relative path, and every
+install step below is written out in full rather than pointed at another
+document. \textbf{The cost of that choice, stated plainly:} the C++ core
+copied into \texttt{carolus\_ros2/src/} and \texttt{include/carolus\_node/}
+is a snapshot, not a live link --- if the ROS1 node's own copy
+(\texttt{carolus\_ws/src/libuvgs\_astrobee/}) is fixed or changed later, this
+copy does not update itself, and someone has to notice and re-sync it by
+hand. Accepted on purpose, because this document's job is to be portable,
+not to be the single source of truth for that source code.
+
+\textbf{What Carolus is, for a reader with no other context:} a physical
+4-LED target (the \emph{beacon}) is detected in a camera frame, and a
+Perspective-4-Point (P4P) solve on the four blob centres yields a full
+6-DOF camera pose relative to it --- originally derived from NASA's SVGS
+system for the Astrobee free-flyer, adapted here for a DJI RoboMaster S1.
+The ROS1 node running this today is \texttt{carolus\_astrobee}.
+
+This is the ROS2 side of Carolus, in full: what it took to build and run the
+same detection/pose pipeline under ROS2, on two different machines. No
+robot is involved anywhere in this document --- both targets run against a
+plain USB webcam, or a synthetic image.
+\end{abstract}
+
+\tableofcontents
+
+\chapter{Carolus under ROS2 --- Lab PC}
+\label{ch:ros2-labpc}
+
+\runson{the \textbf{lab PC} (or any x86\_64 machine with ROS2 installed). No
+robot, no Pi, no RNDIS connection anywhere in this chapter.}
+
+\section{Why this exists}
+
+The Carolus/RoboMaster project's ROS1 node (\texttt{carolus\_astrobee}) mixed
+its detection algorithm (blob preprocessing, contour extraction, blob
+selection) with its ROS wiring inside one class. The detection methods'
+\emph{signatures} were already framework-agnostic ---
+\texttt{cv::Mat}/\texttt{std::vector}/\texttt{double}, no ROS types --- but
+their \emph{bodies} called ROS logging macros directly, which is real
+coupling a signature alone does not show.
+
+That algorithm was extracted into a separate library, \texttt{carolus\_core}
+(\texttt{beacon\_detector.cpp} plus \texttt{ceresP4P.cpp}/\texttt{pose\_est.cpp}/
+\texttt{pose\_filter.cpp}), built with zero ROS headers and zero ROS linkage
+--- confirmed by an empty \texttt{NEEDED} list on the compiled library, not
+assumed from reading the source. The ROS1 node links against it instead of
+containing it; this chapter (and the next) builds the exact same source a
+second and third time, under different toolchains and middlewares, as the
+actual test of that claim --- not that the code compiles, but that it
+produces the same numbers.
+
+\section{Installing ROS2 Humble}
+
+Ubuntu 22.04 is Humble's own native target, so it installs from the official
+packages:
+
+\begin{lstlisting}[style=shell]
+sudo apt install software-properties-common curl -y
+sudo add-apt-repository universe -y
+sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+    -o /usr/share/keyrings/ros-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) \
+    signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+    http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+    | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+sudo apt update
+sudo apt install ros-humble-ros-base ros-humble-image-transport \
+    ros-humble-cv-bridge python3-colcon-common-extensions \
+    libeigen3-dev libceres-dev libopencv-dev build-essential cmake -y
+\end{lstlisting}
+
+\begin{warningbox}
+\texttt{ros-humble-ros-base} alone does \textbf{not} include
+\texttt{image\_transport} or \texttt{cv\_bridge} --- the same gap exists on
+the ROS1 side of this project (\texttt{ros-noetic-ros-base} vs.
+\texttt{ros-noetic-desktop-full}), and skipping either package here
+reproduces the same broken-build failure on ROS2. The four packages after
+\texttt{python3-colcon-common-extensions} are not ROS packages at all ---
+they are \texttt{carolus\_core\_ros2}'s own C++ dependencies
+(\texttt{find\_package(Eigen3/Ceres/OpenCV)} in its \texttt{CMakeLists.txt}),
+easy to miss because this project's own lab PC already had them installed
+from unrelated ROS1 work, which is exactly the trap: a dependency that is
+satisfied by accident on the machine that wrote this document is invisible
+until a genuinely blank machine tries to build it.
+\end{warningbox}
+
+\section{Installing ROS2 Jazzy, in a container}
+
+Jazzy targets Ubuntu 24.04, not 22.04 --- installing its packages natively on
+a 22.04 host risks library-version ABI mismatches between what Jazzy expects
+and what the host actually has. A container sidesteps the question rather
+than risking it:
+
+\begin{lstlisting}[style=shell]
+docker pull ros:jazzy-ros-base
+docker run -d --name carolus_jazzy \
+    -v /path/to/raspberry5-carolus-ros2:/carolus_ros2_ws \
+    ros:jazzy-ros-base sleep infinity
+docker exec carolus_jazzy apt-get update
+docker exec carolus_jazzy apt-get install -y \
+    ros-jazzy-image-transport ros-jazzy-cv-bridge \
+    python3-colcon-common-extensions \
+    libeigen3-dev libceres-dev libopencv-dev build-essential cmake
+\end{lstlisting}
+
+\section{The \texttt{carolus\_ros2} package}
+
+\texttt{carolus\_ros2/} is a minimal \texttt{rclcpp} wrapper --- \textbf{a
+proof that the core ports, not a full reimplementation of the ROS1 node.}
+Unlike an earlier version of this package, it does \textbf{not} reference
+another workspace by relative path: \texttt{src/} and
+\texttt{include/carolus\_node/} hold their own copy of
+\texttt{beacon\_detector}/\texttt{ceresP4P}/\texttt{pose\_est}/\texttt{pose\_filter},
+so this whole folder builds on its own.
+
+Deliberately out of scope, stated here so the gap is not mistaken for an
+oversight later: the Astrobee-specific FOV undistortion path (plumb\_bob
+only), \texttt{ff\_msgs} (dead code even on the ROS1 side --- the node
+advertises a publisher on this message type and immediately overwrites it
+with the real \texttt{/pose} publisher on the next line, so nothing has ever
+consumed it), and the producer/consumer image queue (one synchronous
+callback instead).
+
+\begin{warningbox}
+A ROS2 (\texttt{ament\_cmake}) package must \textbf{not} live inside a
+catkin (ROS1) workspace's source space. \texttt{catkin\_make} refuses to
+configure a workspace containing any non-catkin package --- \texttt{"This
+workspace contains non-catkin packages in it, and catkin cannot build a
+non-homogeneous workspace without isolation"} --- so placing one there
+breaks the ROS1 build of \emph{every} package in that workspace, not just
+its own. A \texttt{CATKIN\_IGNORE} marker does not solve it either:
+\texttt{colcon} honours that file too, so the marker fixes the ROS1 build by
+hiding the package from the ROS2 build. The two build systems need entirely
+separate source trees, which is one reason this whole document and its
+folder are kept independent.
+\end{warningbox}
+
+\begin{lstlisting}[style=shell]
+# Host, Humble:
+source /opt/ros/humble/setup.bash
+mkdir -p ~/humble_ws/src && cd ~/humble_ws
+ln -s /path/to/raspberry5-carolus-ros2/carolus_ros2 src/carolus_ros2
+colcon build --packages-select carolus_ros2
+
+# Inside the container (Jazzy), with this folder mounted at /carolus_ros2_ws:
+source /opt/ros/jazzy/setup.bash
+mkdir -p /colcon_ws/src
+ln -s /carolus_ros2_ws/carolus_ros2 /colcon_ws/src/carolus_ros2
+cd /colcon_ws && colcon build --packages-select carolus_ros2
+\end{lstlisting}
+
+\textbf{Verified 2026-08-18, Jazzy}: clean build, 11.3\,s, zero warnings
+attributable to the new code. \texttt{ldd} on the resulting binary, run with
+the ROS2 environment sourced, resolves every dependency.
+
+\textbf{Verified 2026-08-18, Humble, same host}: clean build, 7.45\,s, same
+zero-warning result. The test in the next section produced byte-identical
+output to the Jazzy run above (same contour count, same solver iteration
+count and cost, matching pose fields to 11 significant digits --- the
+remaining digit is Ceres iteration-order floating-point noise, not a real
+difference) --- the same source, unmodified, compiled by two different ROS2
+toolchains, ran the same detection and solve correctly on both.
+
+\begin{warningbox}
+\texttt{cv\_bridge}'s header is mid-rename across ROS2 distros
+(\texttt{cv\_bridge.h} deprecated, \texttt{cv\_bridge.hpp} its replacement)
+--- and \emph{which one a given install actually has is not predictable
+from the distro name alone}. This project's Jazzy container only has
+\texttt{.hpp}; its Humble install (22.04) only has \texttt{.h} --- confirmed
+directly with \texttt{dpkg -L ros-humble-cv-bridge | grep cv\_bridge}, not
+assumed from a changelog. \texttt{carolus\_node\_ros2.cpp} includes
+whichever header actually exists (\texttt{\#if
+\_\_has\_include(<cv\_bridge/cv\_bridge.hpp>)}) rather than hardcoding one
+distro's answer --- if porting this pattern elsewhere, check the installed
+package directly on the target machine first.
+\end{warningbox}
+
+\section{Testing it, without a robot}
+
+A synthetic beacon frame stands in for a live camera.
+
+\begin{lstlisting}[style=shell]
+sudo apt install -y python3-numpy python3-opencv
+\end{lstlisting}
+
+Four blobs, positioned by projecting the real beacon geometry through this
+project's own camera intrinsics at a plausible working range, published on a
+loop to the node's subscribed topic:
+
+\begin{lstlisting}[style=code]
+import numpy as np, cv2
+fx, fy, cx, cy = 546.1957, 547.0838, 575.6041, 372.1876
+Z = 0.7
+points_3d = [(0.0825,0,0), (-0.0825,0,0), (0,0.072,0), (0,0,0.0555)]
+# Pick the blob colour FROM HSV, not guessed in BGR -- a saturated
+# hand-picked BGR value easily lands too dark to clear the preprocessing
+# threshold once converted to grayscale (this is why: the saturation
+# findAndCalcContours needs for its own hue mask pulls luminance down,
+# working against the brightness the initial threshold wants).
+hsv = np.uint8([[[115, 90, 255]]])   # hue in this project's blue window (90-140)
+bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0][0].tolist()
+img = np.zeros((720, 1280, 3), dtype=np.uint8)
+for X, Y, _ in points_3d:
+    u, v = int(fx*X/Z + cx), int(fy*Y/Z + cy)
+    cv2.circle(img, (u, v), 14, bgr, -1)
+cv2.imwrite('synth_beacon.png', img)
+\end{lstlisting}
+
+Publish it on \texttt{/camera/color/image\_raw} (any small
+\texttt{rclpy} timer-based publisher using \texttt{cv\_bridge}), then:
+
+\begin{lstlisting}[style=shell]
+ros2 run carolus_ros2 carolus_node --ros-args -p image_threshold:=150
+ros2 topic echo /pose --once
+\end{lstlisting}
+
+\begin{warningbox}
+\texttt{image\_threshold:=150} is a test-only override for the synthetic
+image above, not this project's real value (190, tuned for the physical
+beacon). If a publisher process is already running, restarting the image
+generator alone does \textbf{not} update what it sends --- a script that
+loads the frame once at startup keeps serving the first version from memory
+no matter how many times the file on disk changes. Restart the publisher,
+not just the file.
+\end{warningbox}
+
+\subsection{QoS: the ROS2 failure that looks like success}
+
+\begin{warningbox}
+In ROS1 a subscriber connects to any publisher on the topic. In ROS2 it
+connects only if the two QoS profiles are compatible, and an incompatible
+pair delivers \textbf{nothing} --- no error, no warning, no log line. The
+callback simply never fires and the node looks perfectly healthy. A
+\textsc{reliable} subscriber specifically \emph{cannot} receive from a
+\textsc{best effort} publisher --- the one QoS mismatch that silently drops
+every frame rather than negotiating something that still works.
+\end{warningbox}
+
+\textbf{This specific driver does not trigger that trap, measured directly
+rather than assumed:} \texttt{ros2 topic info /image\_raw --verbose} against
+\texttt{ros-humble-usb-cam} 0.8.1 shows \texttt{Reliability: RELIABLE} ---
+\emph{not} best effort. An earlier version of this section asserted "camera
+drivers normally publish best effort" as a general claim; it was never
+measured against this project's own driver, and the measurement contradicts
+it. Both QoS profiles below were tested against the live C920 feed and both
+received frames (\texttt{qos\_profile:=default}: 99 frames in 4\,s;
+\texttt{qos\_profile:=sensor\_data}: 31 frames in 4\,s) --- verified
+2026-08-20, not inferred from the general rule.
+
+\textbf{The default is kept at \texttt{sensor\_data} anyway.} It is still
+the strictly more compatible side --- a best-effort subscriber accepts
+\emph{either} kind of publisher, so it can never be the thing that breaks
+compatibility --- and the RoboMaster's own real camera bridge (not yet
+tested through this ROS2 path) may turn out to publish best-effort, unlike
+this one driver. \texttt{qos\_profile} stays overridable specifically so
+that question can be tested directly against whatever publisher is in front
+of it, rather than assumed either way.
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{\texttt{qos\_profile}} & \textbf{Reliability} & \textbf{Receives from} \\
+\midrule
+\texttt{sensor\_data} (default) & best effort & best-effort \emph{and} reliable publishers \\
+\texttt{default}                & reliable    & reliable publishers only \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{lstlisting}[style=shell]
+# What a publisher actually offers, before assuming either QoS profile:
+ros2 topic info /image_raw --verbose
+\end{lstlisting}
+
+\textbf{Verified 2026-08-18, Jazzy}: with a beacon-shaped frame actually
+arriving, \texttt{findAndCalcContours} found exactly 4 contours,
+\texttt{selectBlobs} returned a 4-blob group, target sorting succeeded, the
+Ceres solver ran (31 iterations, did not converge on this synthetic scene ---
+expected, the flat-depth projection above is not a fully self-consistent P4P
+scene, and convergence was never the point), and a real
+\texttt{geometry\_msgs/msg/PoseStamped} was published and read back,
+correctly typed for ROS2 (\texttt{header.stamp.sec}/\texttt{.nanosec}, the
+ROS2 field names --- ROS1 uses \texttt{.secs}/\texttt{.nsecs} on the same
+field).
+
+\section{Against a real camera: a USB webcam}
+\label{sec:ros2-realcam}
+
+\texttt{ros-humble-usb-cam} is a prebuilt binary --- no source build needed.
+\texttt{rqt\_image\_view} is optional but useful here specifically: unlike
+the synthetic test, what the camera actually sees is not known in advance.
+
+\begin{lstlisting}[style=shell]
+sudo apt install ros-humble-usb-cam ros-humble-rqt-image-view
+\end{lstlisting}
+
+\begin{lstlisting}[style=shell]
+ros2 run usb_cam usb_cam_node_exe --ros-args \
+    -p video_device:=/dev/video1 -p image_width:=1280 -p image_height:=720 \
+    -p pixel_format:=yuyv2rgb
+ros2 run rqt_image_view rqt_image_view /image_raw
+\end{lstlisting}
+
+\begin{warningbox}
+\texttt{pixel\_format:=yuyv2rgb} is not optional on a device whose target
+resolution offers no Motion-JPEG mode (\texttt{usb\_cam}'s own default,
+\texttt{mjpeg2rgb}, silently falls back to raw \texttt{yuv422\_yuy2} in that
+case --- check with the driver's own printed format list). A raw YUYV
+buffer reaching \texttt{carolus\_node} crashes it: \texttt{findAndCalcContours}
+calls into \texttt{cv::findContours}, which requires \texttt{CV\_8UC1}, and a
+2-channel packed YUV image is neither that nor the 3-channel BGR the
+callback otherwise assumes. \texttt{ros2 topic echo <topic> --field encoding
+--once} shows what a driver is actually publishing when in doubt.
+\end{warningbox}
+
+\begin{lstlisting}[style=shell]
+ros2 run carolus_ros2 carolus_node --ros-args \
+    --params-file carolus_ros2/config/logitech_1080p.yaml
+\end{lstlisting}
+
+\texttt{logitech\_1080p.yaml} holds this camera's intrinsics
+(fx=570.6975, fy=572.8081, cx=322.6828, cy=228.3519, distortion
+[0.0223, -0.3088, -0.0048, -0.0018] --- a Logitech HD Pro Webcam C920, from
+Hector directly, 2026-08-17, approximate, "should be calibrated again
+later") and the same beacon geometry used elsewhere in this project.
+\textbf{One field needs a real YAML list, not a string:}
+\texttt{known\_points} must be \texttt{[0.0825, 0.0, 0.0, ...]}, a literal
+list --- \texttt{declare\_parameter} has no string-to-vector parsing for a
+\texttt{std::vector<double>} default, and a quoted string either fails to
+load or silently mismatches the declared type.
+
+\begin{warningbox}
+\textbf{A second silent failure, this one undetectable from the log.}
+\texttt{cv\_bridge::toCvShare(msg, msg->encoding)} returns whatever encoding
+the source publishes --- against this driver, \texttt{rgb8}, not
+\texttt{bgr8}. Converting RGB data with \texttt{cv::COLOR\_BGR2HSV} swaps red
+and blue going into the hue calculation: no crash, no warning, every hue
+silently rotated. A real blue-LED beacon can land clean outside
+\texttt{lb\_hue}/\texttt{ub\_hue} as a direct result, and the node keeps
+publishing \texttt{"0 contours found"} on schedule --- identical to the
+correct output when no beacon is in frame. Fixed by requesting
+\texttt{"bgr8"} explicitly from \texttt{cv\_bridge::toCvShare}, not the
+source encoding: the conversion becomes \texttt{cv\_bridge}'s job for
+whatever a given driver publishes, not an assumption baked into this
+callback.
+\end{warningbox}
+
+\textbf{Verified 2026-08-20}: Logitech HD Pro Webcam C920, 1280x720, measured
+10.000\,Hz average (std dev 0.00392\,s, 30-sample window --- this device
+offers only 10\,FPS at this resolution, confirmed against its own format
+list; 30\,FPS exists only at 640x480 and below). \texttt{carolus\_node}
+processes every frame with no crash, and reports \texttt{"0 contours found"}
+with no beacon in view --- the correct result, not a failure.
+
+\textbf{With a lit beacon in frame, same session:} four blobs found,
+\texttt{SortTargetsUsingTetrahedronGeometry} succeeded, the Ceres solve ran,
+and a \texttt{geometry\_msgs/msg/PoseStamped} was published on \texttt{/pose}
+with a correctly normalised quaternion. \textbf{One parameter change was
+required to get there}, and it is not optional on this camera:
+
+\begin{lstlisting}[style=shell]
+ros2 run carolus_ros2 carolus_node --ros-args \
+    --params-file carolus_ros2/config/logitech_1080p.yaml \
+    -p image_threshold:=100
+\end{lstlisting}
+
+\begin{warningbox}
+\textbf{A lit blue beacon can sit far below \texttt{image\_threshold} while
+being perfectly correct in hue and saturation.} Measured on a real frame
+grabbed off \texttt{/image\_raw}: the LEDs read hue 105--115 (well inside the
+90--140 window) and saturation 200--255 (well above the 80 floor), but their
+\emph{grayscale} value peaks at \textbf{131} --- under the default
+\texttt{image\_threshold} of 190, so \texttt{preprocessImage} discards them
+before the hue mask ever runs. Saturated blue converts to a low grayscale
+value under the standard luminance weighting, where blue's coefficient is
+smallest. The symptom is \texttt{"0 contours found"} on every frame with a
+beacon plainly visible in \texttt{rqt\_image\_view}.
+
+Do not guess a replacement value: grab one frame and measure. Moving the
+beacon closer does \emph{not} fix it (tested --- still zero contours at
+threshold 190), because the ceiling is luminance, not blob size.
+\texttt{image\_threshold:=100} worked for this camera, this beacon and this
+lighting; it is a per-setup value, not a new project default.
+\end{warningbox}
+
+\begin{warningbox}
+\textbf{Detection working does not mean the pose is trustworthy.} Every solve
+in this test reported \texttt{converged=0} (Ceres hit
+\texttt{max\_num\_iterations=30} without converging), and the pose is written
+\emph{unconditionally} --- a non-converged solve returns a finite, plausible
+pose that is indistinguishable from a good one unless the diagnostic fields
+are read. Two \texttt{/pose} reads taken at two visibly different beacon
+positions returned translations a few centimetres apart
+(\texttt{(4.232, 2.957, -7.476)} then \texttt{(4.201, 2.939, -7.444)}), which
+is not what a solver tracking a moved target produces. Treat the pose values
+from this setup as unvalidated: the detection path is confirmed, the pose
+accuracy is not.
+\end{warningbox}
+
+\chapter{Carolus under ROS2 --- Raspberry Pi 5}
+\label{ch:ros2-pi5}
+
+\runson{a \textbf{Raspberry Pi 5}, no RoboMaster attached --- a plain USB
+webcam (the same Logitech C920 as Chapter~\ref{ch:ros2-labpc}) is the only
+sensor. \textbf{Everything below is planned, not yet verified on this board
+--- see the status line at the start of each section.}}
+
+\section{Why a Pi 5, and why aarch64 matters here}
+
+Two things this chapter exists to test that the lab-PC chapter could not:
+whether the extracted core (Chapter~\ref{ch:ros2-labpc}'s claim) is genuinely
+architecture-independent, not just toolchain-independent --- everything
+verified so far ran on x86\_64 --- and whether ROS2 Jazzy runs
+\emph{natively}, without the Docker layer the lab PC needed because its host
+OS is 22.04, not 24.04. The Pi 5 can run Ubuntu 24.04 directly, which is
+Jazzy's own native target.
+
+\section{Installing Ubuntu 24.04 and ROS2 Jazzy, natively}
+
+\textbf{Status: planned, not yet run on this board.}
+
+\begin{lstlisting}[style=shell]
+# Ubuntu Server 24.04 LTS for Raspberry Pi, flashed via Raspberry Pi Imager
+# or manually per Ubuntu's own arm64 Pi image instructions.
+
+sudo apt install software-properties-common curl -y
+sudo add-apt-repository universe -y
+sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+    -o /usr/share/keyrings/ros-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) \
+    signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+    http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+    | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+sudo apt update
+sudo apt install ros-jazzy-ros-base ros-jazzy-image-transport \
+    ros-jazzy-cv-bridge ros-jazzy-usb-cam ros-jazzy-rqt-image-view \
+    python3-colcon-common-extensions -y
+\end{lstlisting}
+
+\begin{warningbox}
+\textbf{Not yet confirmed for this exact board.} The lab-PC chapter found
+that \texttt{ros-*-ros-base} alone omits \texttt{image\_transport} and
+\texttt{cv\_bridge} on Humble; assumed to hold for Jazzy on aarch64 too,
+since it is the same buildfarm packaging convention, but not independently
+checked here yet. Verify with \texttt{ros2 pkg list | grep -E
+"image_transport|cv_bridge"} after install, before assuming the command
+above was sufficient.
+\end{warningbox}
+
+\section{Building \texttt{carolus\_ros2} on aarch64}
+
+\textbf{Status: planned, not yet run on this board.}
+
+\begin{lstlisting}[style=shell]
+source /opt/ros/jazzy/setup.bash
+mkdir -p ~/pi5_ws/src && cd ~/pi5_ws
+ln -s /path/to/raspberry5-carolus-ros2/carolus_ros2 src/carolus_ros2
+colcon build --packages-select carolus_ros2
+\end{lstlisting}
+
+Expected to build unmodified --- \texttt{carolus\_core\_ros2}'s dependencies
+(OpenCV, Eigen3, Ceres) are all available as \texttt{ros-jazzy-*}/plain
+\texttt{apt} packages for arm64, and nothing in the source
+(Chapter~\ref{ch:ros2-labpc}) uses an x86-specific intrinsic or a
+compiler flag that would not carry over. \textbf{This is a prediction, not a
+measurement} --- record the actual build time and any warning here once run,
+the same way Chapter~\ref{ch:ros2-labpc} recorded 7.45\,s (Humble) and
+11.3\,s (Jazzy) on the lab PC.
+
+\section{Against the webcam}
+
+\textbf{Status: planned, not yet run on this board.}
+
+Same procedure as Section~\ref{sec:ros2-realcam}, same physical camera, same
+config file (\texttt{carolus\_ros2/config/logitech\_1080p.yaml}) --- the
+point of reusing it unmodified is that a difference in behaviour would then
+be attributable to the board, not to a re-tuned parameter.
+
+\begin{lstlisting}[style=shell]
+ros2 run usb_cam usb_cam_node_exe --ros-args \
+    -p video_device:=/dev/video0 -p image_width:=1280 -p image_height:=720 \
+    -p pixel_format:=yuyv2rgb
+ros2 run rqt_image_view rqt_image_view /image_raw
+ros2 run carolus_ros2 carolus_node --ros-args \
+    --params-file carolus_ros2/config/logitech_1080p.yaml \
+    -p image_threshold:=100
+\end{lstlisting}
+
+\begin{warningbox}
+\texttt{video\_device} is written as \texttt{/dev/video0} above, not the
+lab PC's \texttt{/dev/video1} --- device enumeration is host-specific
+(driven by what else is attached and in what order), never assume the same
+device path carries over between machines. Confirm with
+\texttt{v4l2-ctl --list-devices} (or, if unavailable,
+\texttt{ls /dev/video*} plus \texttt{udevadm info}) before launching.
+\end{warningbox}
+
+\texttt{image\_threshold:=100} is carried over from the lab PC (see
+Section~\ref{sec:ros2-realcam}'s first warningbox for why the default 190
+finds nothing on this camera). It is a per-setup value --- if the Pi 5 run
+finds nothing, re-measure on a frame from \emph{that} board's own feed rather
+than assuming 100 transfers.
+
+\textbf{Success criteria, not yet measured on this board.} Two stages, in
+order --- do not conflate them:
+
+\begin{enumerate}
+  \item \textbf{Pipeline healthy, no beacon in frame}: \texttt{carolus\_node}
+  runs with no crash, logs \texttt{"Time to find contours"} at the camera's
+  actual rate, reports \texttt{"0 contours found"}. Record the measured rate.
+  \item \textbf{Beacon in frame}: four blobs found, target sort succeeds,
+  Ceres runs, \texttt{/pose} publishes. Record \texttt{final\_cost} and
+  whether \texttt{converged} is 0 or 1 --- on the lab PC it was consistently
+  0, and whether the Pi 5 behaves the same is one of the more interesting
+  things this chapter can establish.
+\end{enumerate}
+
+Both stages passed on the lab PC (Section~\ref{sec:ros2-realcam}). Matching
+stage 1 but failing stage 2 would point at the camera/lighting/threshold;
+failing stage 1 would point at the board, the driver or the build.
+
+\end{document}

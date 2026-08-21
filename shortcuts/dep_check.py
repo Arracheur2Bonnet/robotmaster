@@ -59,6 +59,26 @@ import xml.etree.ElementTree as ET
 HERE = os.path.dirname(os.path.abspath(__file__))
 WS_SRC = os.path.normpath(os.path.join(HERE, "..", "carolus_ws", "src"))
 
+# Packages that live OUTSIDE carolus_ws/src and would otherwise not be scanned
+# at all. carolus_ros2 had to move to the repository root on 2026-08-19: an
+# ament_cmake package inside a catkin source space makes catkin_make refuse to
+# configure the entire workspace. The move silently took it out of this
+# script's scope, which is the failure this list exists to prevent -- a check
+# that quietly stops covering something reports success either way.
+EXTRA_PACKAGE_DIRS = [
+    # 2026-08-20: moved a SECOND time, repository root -> raspberry5-carolus-ros2/,
+    # when the ROS2 work became its own self-contained folder. The MISSING check
+    # below caught this stale path on the next run, which is what it is for.
+    os.path.normpath(os.path.join(HERE, "..", "raspberry5-carolus-ros2", "carolus_ros2")),
+]
+
+# ROS2 packages. Their manifests are still checked for well-formedness and for
+# find_package()/declaration agreement, but their keys are NOT resolved against
+# ubuntu:focal + ROS_DISTRO=noetic: rclcpp and friends do not exist there, so
+# resolution would report failures that mean nothing. Skipped VISIBLY, with the
+# reason printed, never by omission.
+ROS2_PACKAGES = {"carolus_ros2"}
+
 # CMake package names that are provided by catkin itself or by the toolchain,
 # and so never need their own package.xml entry.
 CMAKE_IGNORE = {"catkin", "PkgConfig", "ament_cmake", "GTest", "Threads", "PythonLibs", "PythonInterp"}
@@ -96,7 +116,13 @@ def find_packages(src):
         d = os.path.join(src, name)
         if os.path.isfile(os.path.join(d, "package.xml")):
             out.append((name, d))
-    return out
+    missing = []
+    for d in EXTRA_PACKAGE_DIRS:
+        if os.path.isfile(os.path.join(d, "package.xml")):
+            out.append((os.path.basename(d), d))
+        else:
+            missing.append(os.path.basename(d))
+    return sorted(out), missing
 
 
 def declared_keys(pkg_xml):
@@ -138,9 +164,18 @@ def main():
 
     print("== dep_check.py -- can this workspace build on a machine that is not this one? ==\n")
     problems = 0
+    packages, missing_extra = find_packages(WS_SRC)
+    for _m in missing_extra:
+        # Counted as a problem, not merely printed. An out-of-tree package that
+        # moved must FAIL the run: otherwise this check silently stops covering
+        # it while still reporting "clean", which is the exact defect the
+        # EXTRA_PACKAGE_DIRS list was added to prevent.
+        print("  MISSING        %s (listed in EXTRA_PACKAGE_DIRS, no package.xml"
+              " there -- moved? renamed?)" % _m)
+        problems += 1
     all_keys = set()
 
-    for name, d in find_packages(WS_SRC):
+    for name, d in packages:
         pkg_xml = os.path.join(d, "package.xml")
 
         # 1. Manifest must parse. rosdep refuses the whole workspace otherwise.
@@ -156,7 +191,15 @@ def main():
             print("  skipped        %s (vendored third-party, not ours to police)" % name)
             continue
 
-        all_keys |= declared
+        # ROS2 packages: structural checks below still apply, but their keys
+        # must NOT join the focal/noetic resolution set -- rclcpp and friends
+        # do not exist there and would resolve as spurious failures.
+        is_ros2 = name in ROS2_PACKAGES
+        if is_ros2:
+            print("  ros2           %s (manifest + find_package checked; keys NOT"
+                  " resolved against %s -- wrong target)" % (name, "ubuntu:focal"))
+        else:
+            all_keys |= declared
 
         # 2. Every active find_package() must have a matching declaration.
         cml = os.path.join(d, "CMakeLists.txt")
@@ -175,7 +218,7 @@ def main():
                       " declares no '%s'" % (cm, expected))
                 print("                 -> rosdep will NOT install it; the build dies at configure"
                       " on a clean machine")
-        else:
+        elif not is_ros2:
             print("  OK             %s" % name)
 
     # 3. Every declared key must actually be installable on the target OS.

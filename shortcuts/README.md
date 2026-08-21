@@ -353,11 +353,23 @@ cp saves/2026-06-24-20-10/carolus_ws__src__robomaster_cam__scripts__rm_cam_beaco
    carolus_ws/src/robomaster_cam/scripts/rm_cam_beacon.py
 ```
 
-**Files saved:** `carolus_launcher.py`, `cam_view_helper.py`, `map_editor.py`, `rm_cam_beacon.py`, **`beacon_docking.py`**, **`beacon_absolute_pose.py`**, `testcarolus.launch`, plus the workspace's 5 `CMakeLists.txt` files (`src/`, `libuvgs_astrobee/`, `ff_msgs/`, `robomaster_cam/`, `carolus_node/`) — the `CMakeLists.txt` set was added 2026-07-13 to cover the CLAUDE.md rule listing them as critical files; the two docking scripts were added **2026-07-28**; **`carolus_node/config/robomaster_s1.yaml` was added 2026-08-14**, on discovering it was absent at the exact moment it was about to be edited (the `min_area` retune) — the third time this same omission has been caught, hence the rule below.
+**Files saved:** `carolus_launcher.py`, `cam_view_helper.py`, `map_editor.py`, `rm_cam_beacon.py`, **`beacon_docking.py`**, **`beacon_absolute_pose.py`**, `testcarolus.launch`, `carolus_node/config/robomaster_s1.yaml`, plus the workspace's 5 `CMakeLists.txt` files (`src/`, `libuvgs_astrobee/`, `ff_msgs/`, `robomaster_cam/`, `carolus_node/`) and **`libuvgs_astrobee/src/carolus_astrobee.cpp`, `ceresP4P.cpp`, `pose_est.cpp`** — the `CMakeLists.txt` set was added 2026-07-13 to cover the CLAUDE.md rule listing them as critical files; the two docking scripts were added **2026-07-28**; `robomaster_s1.yaml` was added 2026-08-14, on discovering it was absent at the exact moment it was about to be edited (the `min_area` retune); **the three C++ files were added 2026-08-18**, on the same discovery repeating a fourth time — this time at the start of the core-extraction rework (Hector's ROS-portability request), the most structurally significant change these files have had.
 
-> **Why the two docking scripts were added (2026-07-28):** they were absent from the list while being the most heavily modified files of the docking work, so every backup during that work had to be made **by hand** — twice in a single session. A backup script that silently omits the file you are actually editing is worse than no script, because it gives the impression of a safety net that is not there. **Rule going forward: any source file under active modification must be in `FILES` before the work starts, not after it bites.**
+> **Why the omission keeps recurring:** every one of these additions was caught the same way — a file became the active target of real work while absent from `FILES`, so the backup gave a false sense of a safety net. A backup script that silently omits the file you are actually editing is worse than no script. **Rule, restated because it keeps needing restating: any source file under active modification must be in `FILES` before the work starts, not after it bites.**
 
-**Expected:** a `saves/YYYY-MM-DD-HH-MM/` folder created with 14 files + `NOTE.txt`.
+**Expected:** a `saves/YYYY-MM-DD-HH-MM/` folder created with 35 files + `NOTE.txt`.
+
+**2026-08-19 — two path changes worth knowing about.** The three `carolus_ros2`
+entries now point at `carolus_ros2/` at the repository root, not
+`carolus_ws/src/carolus_ros2/`: a ROS2 (ament) package inside a catkin source
+space makes `catkin_make` refuse to configure the *entire* workspace, so it had
+to move. `pose_filter.{hpp,cpp}` were added the moment they were created, when
+the FIFO outlier filter was extracted out of the ROS1 node into `carolus_core`.
+Both matter here for the same reason: the copy loop skips any path that does not
+exist, so a stale entry produces a *silently smaller* backup rather than an
+error — the run still prints "Sauvegarde ->" and looks like it worked. If you
+move or rename a tracked file, fix this list in the same commit, and check the
+file count above against what actually landed.
 
 ---
 
@@ -457,6 +469,27 @@ python3 /tmp/tear_check.py
 
 ---
 
+## `ros2_sync_check.sh`
+
+**What** — compares the 10 shared core files (`beacon_detector`, `ceresP4P`, `pose_est`, `pose_filter`, `carolus_types`, `compute_jacobian`) between the ROS1 workspace and their copy in `raspberry5-carolus-ros2/`, and fails if any has drifted.
+
+**Why** — `raspberry5-carolus-ros2/` deliberately holds its *own copy* of that core rather than referencing `carolus_ws/` by path, so the folder stays portable and hand-over-able (decision of 2026-08-20, `CLAUDE.md`'s "ROS2 manual" section). The cost is that a fix on one side never reaches the other and **nothing warns you**. This script is that warning, and exists so the sync rule is mechanically checkable instead of relying on someone remembering it.
+
+**Usage**
+```bash
+bash shortcuts/ros2_sync_check.sh
+```
+
+**Expected** — one line per file (`in sync` / `DRIFTED` / `MISSING`), then `RESULT: in sync. 10 files compared, all byte-identical.` Exit 0 in sync, 1 on any drift or missing file, so it works as a pre-push or CI gate.
+
+Deliberately does **not** compare `carolus_astrobee.cpp` (ROS1 node) against `carolus_node_ros2.cpp` (ROS2 wrapper) — those are middleware-specific by design and *supposed* to differ; comparing them would produce a permanent false alarm.
+
+**Verified to actually fail**, both ways, restoring byte-identical each time: appending one comment line to the ROS2 copy of `pose_filter.cpp` produced `DRIFTED pose_filter.cpp` and exit 1; removing `ceresP4P.cpp` entirely produced `MISSING (ROS2)` with the expected path and exit 1. Normal state re-confirmed exit 0 afterwards.
+
+On drift, the script deliberately refuses to say which side is right: usually the ROS1 node is the original, but not always — BUG-125/126 (2026-08-20, the raw-YUV crash and the RGB/BGR hue swap) were both found and fixed on the ROS2 side first.
+
+---
+
 ## `dep_check.py`
 
 **What** — checks that this workspace can build on a machine that is **not this one**. Compares every active `find_package()` in each `CMakeLists.txt` against what the matching `package.xml` declares, validates each manifest is well-formed XML, and with `--resolve` confirms every declared key actually resolves via `rosdep` for a target OS.
@@ -470,7 +503,11 @@ python3 shortcuts/dep_check.py --resolve            # also resolve every key via
 python3 shortcuts/dep_check.py --os ubuntu:jammy --resolve
 ```
 
-**Expected** — one line per package (`OK` / `DRIFT` / `MALFORMED XML` / `skipped`), then, with `--resolve`, either `all N keys resolve` or a list of unresolvable keys. Exit 0 clean, 1 on any problem, so it is usable as a pre-push or CI gate.
+**Expected** — one line per package (`OK` / `DRIFT` / `MALFORMED XML` / `skipped` / `ros2` / `MISSING`), then, with `--resolve`, either `all N keys resolve` or a list of unresolvable keys. Exit 0 clean, 1 on any problem, so it is usable as a pre-push or CI gate.
+
+**2026-08-20 (2) — the stale-path check caught its own list going stale.** `carolus_ros2` moved a second time the same day (repository root → `raspberry5-carolus-ros2/`), and the very next run reported `MISSING carolus_ros2 (listed in EXTRA_PACKAGE_DIRS, no package.xml there -- moved? renamed?)` with exit 1 rather than quietly dropping it from coverage. Path corrected; back to `RESULT: clean`. This is the failure mode the list was added for, reproduced and caught within hours of being written.
+
+**2026-08-20 — scope extended beyond `carolus_ws/src`.** The script scanned only that directory, so when `carolus_ros2/` moved to the repository root (BUG-122: an ament package inside a catkin source space makes `catkin_make` refuse to configure the whole workspace) it dropped out of coverage while the script went on printing `RESULT: clean` — one package fewer than the day before, with nothing saying so. An `EXTRA_PACKAGE_DIRS` list now pulls in out-of-tree packages, and a missing entry there is counted as a **problem** (exit 1), not merely printed: the first version of this very fix printed `MISSING` and still exited 0, which is the same silent-pass defect it was written to close. ROS2 packages are checked structurally (manifest well-formed, `find_package()` matched against declarations) but are **visibly** excluded from the `ubuntu:focal` resolution with the reason printed — `rclcpp` and friends do not exist under Noetic and would fail for a meaningless reason. Both new paths were negative-tested: an undeclared `find_package(Boost)` in `carolus_ros2` produces `DRIFT`, and moving the package away produces `RESULT: 1 problem(s)` with exit 1.
 
 **Verified to actually fail**, four ways, restoring byte-identical each time: removing both Ceres declarations reproduced the supervisor's exact bug and the tool named it precisely; a literal `--` inside an XML comment (illegal in XML, and a mistake genuinely made while fixing this) was caught as a malformed manifest; declaring the bogus key `ceres` was caught as unresolvable; and a sloppy first sabotage that removed only `build_depend` while leaving `exec_depend` correctly reported clean, which exposed the *test* as flawed rather than the tool. Requires `rosdep update --include-eol-distros` to have been run — Noetic is end-of-life and a plain `rosdep update` silently skips it, after which nothing resolves; the script detects that specific state and says so instead of blaming your manifests.
 

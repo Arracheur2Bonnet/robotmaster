@@ -28,11 +28,33 @@ include_directories(
   ${CERES_INCLUDE_DIRS}
 )
 
-# Source files
+# carolus_core -- 2026-08-18, Hector's ROS-portability request ("more
+# important than the rest of the plan"): the P4P/Ceres solver and the beacon
+# detection algorithm, with ZERO ROS dependency, so a future ROS2 wrapper
+# (Humble or a newer distro) needs only this library relinked, not the
+# algorithm rewritten. Deliberately built with NO catkin/ROS linkage at all --
+# verify this stays true with `grep -rn "ros::\|#include <ros" src/ceresP4P.cpp
+# src/pose_est.cpp src/beacon_detector.cpp` (must return nothing) before
+# adding anything to this target.
+set(CORE_SOURCE_FILES
+  src/ceresP4P.cpp
+  src/pose_est.cpp
+  src/beacon_detector.cpp
+  src/pose_filter.cpp
+)
+
+add_library(carolus_core STATIC ${CORE_SOURCE_FILES})
+target_link_libraries(carolus_core
+  ${OpenCV_LIBRARIES}
+  ${EIGEN3_LIBRARIES}
+  ${CERES_LIBRARIES}
+)
+
+# The ROS1 node itself -- thin wrapper around carolus_core (subscriptions,
+# publishers, message<->cv::Mat/Eigen conversion, param loading). This is the
+# only target in the package that links against ROS.
 set(SOURCE_FILES
   src/carolus_astrobee.cpp
-  src/pose_est.cpp
-  src/ceresP4P.cpp
 )
 
 catkin_package(
@@ -45,6 +67,7 @@ add_executable(carolus_astrobee ${SOURCE_FILES})
 
 # Link libraries
 target_link_libraries(carolus_astrobee
+  carolus_core
   ${catkin_LIBRARIES}
   ${OpenCV_LIBRARIES}
   ${EIGEN3_LIBRARIES}

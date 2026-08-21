@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>carolus_ros2</name>
+  <version>0.1.0</version>
+  <description>
+    ROS2 wrapper around carolus_core (libuvgs_astrobee's ROS-free P4P/beacon
+    detection library, extracted 2026-08-18). Proof that the extraction
+    makes the target middleware a later choice: this package adds no new
+    algorithm code, only rclcpp subscriptions/publishers and message
+    conversion around the same detection methods the ROS1 node uses.
+  </description>
+  <maintainer email="noreply@example.com">Nawfel Bouazza</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>image_transport</depend>
+  <depend>cv_bridge</depend>
+  <depend>libopencv-dev</depend>
+  <depend>eigen</depend>
+  <depend>libceres-dev</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

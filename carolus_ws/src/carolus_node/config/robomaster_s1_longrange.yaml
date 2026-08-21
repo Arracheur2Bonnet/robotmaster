@@ -1,0 +1,86 @@
+# Carolus configuration profile — DJI RoboMaster S1, LONG-RANGE variant
+#
+# SIBLING to robomaster_s1.yaml, not a replacement for it. Same robot, same
+# beacon, same camera -- every value here is identical EXCEPT min_area, which
+# trades short-range robustness for long-range sensitivity. Use this profile
+# only for sessions where the beacon is expected around Hector's 8m target;
+# use robomaster_s1.yaml (the default, config-less invocation) for anything
+# closer, including 1.4b-style single-axis validation work.
+#
+#     roslaunch carolus_node testcarolus.launch \
+#         config:=$(rospack find carolus_node)/config/robomaster_s1_longrange.yaml
+#
+# --- Why a second file instead of one compromise value -----------------------
+# min_area=8.0 (robomaster_s1.yaml's default, validated by 1.4b at short range)
+# rejects every blob at 8m: live-measured area at ~0.78m was 85-131 px^2
+# (session-2026-08-14-20-04-48.log), and area scales as 1/distance^2, so 8m
+# predicts ~0.81-1.25 px^2 -- 6-10x below the 8.0 floor. min_area=0.4 (tried
+# 2026-08-14) fixes that but raises P4P combinatorial ambiguity from 3.6% to
+# over half the frames at short range -- a low floor admits enough noise
+# contours into the 4-blob candidate search to confuse selectBlobs(). Neither
+# value serves both distances; this file exists so the choice is made once,
+# by picking a profile, not by an operator remembering to hand-edit a number
+# and forgetting to revert it (which is exactly how the original 0.4 change
+# was found still live weeks after the session it was meant for).
+#
+# --- What is NOT yet validated ------------------------------------------------
+# min_area=0.4 below is the same 2026-08-14 DERIVATION, not a re-measurement
+# at true 8m range -- that has never been run on hardware. It also inherits
+# the same open caveat: a ~1px^2 contour is near OpenCV's practical limit for
+# a stable circularity measurement, so min_circularity=0.6 may itself start
+# rejecting real blobs at extreme range even with min_area no longer blocking
+# them. Confirm both together at the actual working distance before trusting
+# this file for anything beyond a first attempt.
+
+# --- Camera intrinsics -------------------------------------------------------
+fx: 546.1957
+fy: 547.0838
+cx: 575.6041
+cy: 372.1876
+
+# plumb_bob distortion: k1 k2 p1 p2. See BUG-117 (2026-08-17) in
+# robomaster_s1.yaml for why this must be a real YAML list, not a string.
+distortion: [-0.1479, 0.1452, -0.0023, 0.0025]
+
+# --- Beacon geometry ---------------------------------------------------------
+known_points: "0.0825 0.0 0.0 -0.0825 0.0 0.0 0.0 0.072 0.0 0.0 0.0 0.0555"
+
+# --- Blob detection ----------------------------------------------------------
+min_circularity: 0.6
+saturation_threshold: 80
+# The one intentional difference from robomaster_s1.yaml -- see the header
+# above for the full derivation and its caveats.
+min_area: 0.4
+max_area: 1800.0
+max_distance_lim: 1000.0
+
+# Hue window, OpenCV's 0-180 scale (NOT 0-360). This robot uses blue LEDs.
+lb_hue: 90.0
+ub_hue: 140.0
+
+# --- Preprocessing -----------------------------------------------------------
+kernel_size_gaussian: 3
+kernel_size_morph: 3
+image_threshold: 190
+
+# --- Outlier rejection (moving-window filter over successive poses) ----------
+filter_size: 7
+translation_threshold: 0.5
+rotation_threshold: 0.3
+fifo_on: true
+
+# --- Execution ---------------------------------------------------------------
+num_threads: 1
+queue_size: 10
+benchtest: true
+
+# --- Camera selection (Astrobee-era flags, kept for compatibility) -----------
+nav_cam: true
+dock_cam: false
+fisheye: false
+fov: true
+mono: false
+
+# Legacy label inherited from the Astrobee simulation template this node came
+# from. No functional effect; left as-is rather than renamed.
+bot_name: "wannabee"

@@ -46,17 +46,19 @@ known_points: "0.0825 0.0 0.0 -0.0825 0.0 0.0 0.0 0.072 0.0 0.0 0.0 0.0555"
 # Tune these against /postprocessed/image for your own LEDs and lighting.
 min_circularity: 0.6
 saturation_threshold: 80
-# min_area lowered 8.0 -> 0.4 on 2026-08-14, for Hector's 8m (or more) detection
-# range requirement. Derivation, not a guess: live-measured blob area at ~0.78m
-# was 85-131 px^2 (T3's own [INFO] Area: lines, session-2026-08-14-20-04-48.log).
-# Blob area scales as 1/distance^2, so at 8m that predicts ~0.81-1.25 px^2 --
-# 6-10x below the previous min_area=8.0 threshold, which would have rejected
-# every blob at that range. 0.4 leaves margin below the predicted floor.
-# CAVEAT, not yet verified: a ~1px^2 contour is near OpenCV's practical limit
-# for a stable circularity measurement -- min_circularity=0.6 may itself start
-# rejecting real blobs at extreme range even though min_area no longer does.
-# Confirm at the actual working distance before trusting this blindly; revert
-# to 8.0 (or find a middle value) if false positives increase at short range.
+# min_area was lowered 8.0 -> 0.4 on 2026-08-14 for Hector's 8m detection-range
+# requirement, then REVERTED back to 8.0 the same week: 0.4 raised P4P
+# combinatorial ambiguity from 3.6% to well over half the frames at normal
+# (~1m) working distance -- a low area floor admits enough noise/reflection
+# contours into the 4-blob candidate search that selectBlobs() starts picking
+# wrong groups. 8.0 is the value validated by 1.4b (2026-08-17), at short
+# range, where this robot has actually been operated and measured.
+#
+# The 8m requirement is real and still open, but a single global threshold
+# cannot serve both regimes -- see robomaster_s1_longrange.yaml, a SIBLING
+# profile (not a replacement for this one) carrying the low-area value for
+# long-range sessions. Do not lower min_area here again without re-deriving
+# the same close-range ambiguity check this revert was based on.
 min_area: 8.0
 max_area: 1800.0
 max_distance_lim: 1000.0

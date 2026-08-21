@@ -802,6 +802,21 @@ this SDK/Python combination on this hardware; it is not a hard requirement
 enforced elsewhere in this manual, and later versions have since been used
 successfully on the lab PC (Chapter~\ref{ch:carolus-node}) without issue.
 
+\begin{warningbox}
+\textbf{The lab PC and the Pi do not run the same \texttt{robomaster} SDK
+version, and this matters.} Measured directly from each machine's installed
+package, not from a requirements file: \textbf{0.1.1.68} on the lab PC,
+\textbf{0.1.1.62} on the Pi. The Pi's is the one that actually drives the
+robot, since \texttt{rm\_cam\_beacon.py} runs there. For any question about
+SDK behaviour --- a call's return type, a parameter's sign convention, a
+value range --- read the source installed \emph{on the Pi}, never the lab
+PC's copy and never online documentation for an unstated version. Neither
+version's own docstring for \texttt{chassis.drive\_speed}/\texttt{chassis.move}
+documents the sign of the \texttt{z} parameter, only its range --- any sign
+convention this project relies on comes from hardware measurement, not the
+SDK.
+\end{warningbox}
+
 \section{Installing ROS Noetic}
 \label{sec:install-ros}
 
@@ -1543,9 +1558,10 @@ solve ran on any frame, and a $\sim$2.5\,frames/s figure for the lab PC used
 a different counting method again. Use the table above, not those.
 \end{warningbox}
 
-The Pi already had Ceres 1.14, Eigen 3.3.7 and OpenCV 4.2 installed;
-\texttt{catkin\_make} compiled and linked directly on \texttt{aarch64}.
-Available memory (7.6\,GB) was never a constraint.
+The Pi already had \texttt{libceres-dev} 1.14.0-4ubuntu1.1,
+\texttt{libeigen3-dev} 3.3.7-2 and \texttt{libopencv-dev} 4.2.0+dfsg-5
+installed; \texttt{catkin\_make} compiled and linked directly on
+\texttt{aarch64}. Available memory (7.6\,GB) was never a constraint.
 
 \subsection{A note on visual-inertial navigation}
 
@@ -1704,7 +1720,9 @@ top level holds this manual (\texttt{overleaf/}) and the operator tooling
 a standard layout, with the ROS packages under \texttt{carolus\_ws/src/}:
 \texttt{carolus\_ws/src/carolus\_node/} (the launch files and
 configuration), \texttt{carolus\_ws/src/libuvgs\_astrobee/} (Carolus's own
-C++ source, already patched for this robot),
+C++ source, already patched for this robot --- it builds a ROS-free
+algorithm library plus the ROS node that wraps it, see
+Section~\ref{sec:carolus-core}),
 \texttt{carolus\_ws/src/ff\_msgs/} (a message-definition dependency),
 \texttt{carolus\_ws/src/robomaster\_cam/} (the Pi-side bridge,
 Chapter~\ref{ch:camera}), plus \texttt{carolus\_ws/cmake\_shims/} (Ubuntu
@@ -1844,6 +1862,52 @@ your local setup: once the dependency is declared properly, the
 reader rediscovering it one error at a time.
 \end{warningbox}
 
+\section{What the package builds: two targets, not one}
+\label{sec:carolus-core}
+
+\texttt{libuvgs\_astrobee} builds \textbf{two} things, and the split matters
+if you are editing the C++ or porting it elsewhere:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Target} & \textbf{Sources} & \textbf{Links against} \\
+\midrule
+\texttt{carolus\_core} (static lib) & \texttt{beacon\_detector.cpp}, \texttt{ceresP4P.cpp}, & OpenCV, Eigen, Ceres \\
+                                    & \texttt{pose\_est.cpp}, \texttt{pose\_filter.cpp}      & --- \textbf{no ROS at all} \\
+\texttt{carolus\_astrobee} (node)   & \texttt{carolus\_astrobee.cpp}                          & \texttt{carolus\_core} + catkin/ROS \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\texttt{carolus\_core} holds the algorithm: blob preprocessing, contour
+extraction and selection (\texttt{BeaconDetector}), the target sort, the
+Ceres P4P solve (\texttt{CobrasFumantes}), and the FIFO outlier filter
+(\texttt{PoseFilter}). It is verifiably ROS-free --- the compiled library's
+\texttt{NEEDED} list is empty and \texttt{nm -uC} reports zero unresolved
+ROS symbols.
+
+\texttt{carolus\_astrobee.cpp} is the ROS wrapper around it: subscriptions,
+publishers, parameter loading, the image queue, and the conversions between
+ROS types and the core's plain C++/Eigen/OpenCV ones.
+
+\begin{warningbox}
+When editing the core, keep it that way. It links no ROS libraries, so
+\texttt{ROS\_INFO}/\texttt{ROS\_WARN}/\texttt{ROS\_ERROR} are unavailable
+inside it by design --- \texttt{BeaconDetector} and \texttt{PoseFilter} both
+take an injected logger callback in their constructor instead, which the node
+wires to the ROS macros. Adding a ROS include to a core file breaks the
+property the split exists for, and the build will not warn you: it will
+simply succeed and quietly pull ROS back in.
+\end{warningbox}
+
+The core takes timestamps as \texttt{int64\_t} nanoseconds, not
+\texttt{double} seconds. That is not stylistic: an IEEE-754 double at a
+2026-era epoch value has a spacing of roughly 238\,ns between representable
+values, so \texttt{t + 1\,ns == t} evaluates true and a ROS timestamp cannot
+round-trip through it. The node converts once, at its own boundary
+(\texttt{timestamp.toNSec()}).
+
 \section{Building on Ubuntu 20.04 (the Raspberry Pi --- normal case)}
 \label{sec:build2004}
 
@@ -1882,6 +1946,25 @@ fixes are needed before \texttt{catkin\_make} succeeds, and a fifth at launch
 time. They are recorded because this project's lab PC was upgraded to 22.04
 unintentionally and the workarounds took real effort to find --- not because
 this is a recommended configuration.
+
+\begin{center}
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Package} & \textbf{22.04 (this machine)} & \textbf{20.04 (Pi)} & \textbf{Needs} \\
+\midrule
+Ceres        & 2.0.0+dfsg1-5     & 1.14.0-4ubuntu1.1 & no fix, both work \\
+Boost        & 1.74.0-14ubuntu3  & 1.71 (native)     & real 1.71 \texttt{.so} files (Fix 3) \\
+ICU          & 66 + 70           & 67 (native)       & real 1.67 \texttt{.so} files (Fix 4) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{The same \texttt{liblog4cxx} 10-vs-12 collision behind Fix~5 recurs
+elsewhere on this machine} whenever a C++ node built here loads ROS's
+prebuilt console backend --- MINS hit it independently under a different
+build system (Chapter~\ref{ch:mins-ground-station}'s BUG-107), fixed at the CMake level
+there rather than with \texttt{LD\_PRELOAD}. Same root cause, two valid
+fixes depending on whether the build system is yours to patch.
 
 \subsection{Fix 1: glibc symlinks}
 
@@ -2209,6 +2292,43 @@ Parameter & What it does \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+\subsection{The pose filter}
+\label{sec:pose-filter}
+
+A second, separate group of parameters governs what happens \emph{after} a
+pose is solved. Every solved pose goes through a FIFO outlier filter
+(\texttt{PoseFilter}, Section~\ref{sec:carolus-core}) before publication: a
+new pose too far from the last accepted one is rejected outright, and what
+gets published on \texttt{/pose} is the average over a sliding window, not
+the raw single-frame solve.
+
+\begin{center}
+\begin{tabular}{p{0.24\textwidth}p{0.12\textwidth}p{0.54\textwidth}}
+\toprule
+Parameter & Value & What it does \\
+\midrule
+\texttt{fifo\_on} & \texttt{true} & Master switch. With it off, each solved pose is published raw. \\
+\texttt{filter\_size} & 7 & Window length in poses. Translation is averaged arithmetically, rotation by incremental quaternion SLERP. \\
+\texttt{translation\_threshold} & 0.5\,m & A new pose further than this from the last accepted one is rejected as an outlier. \\
+\texttt{rotation\_threshold} & 0.3\,rad & Same gate on angular distance. \\
+\texttt{reject\_limit} & 5 & After this many \emph{consecutive} rejections the window is dropped entirely and rebuilt --- the escape hatch for when the target has genuinely jumped rather than glitched. \\
+\texttt{max\_time\_fifo} & 5.0\,s & If this long passes with no accepted pose, the window is discarded rather than averaged across the gap. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{warningbox}
+\textbf{The published pose is an average, so it lags.} With
+\texttt{filter\_size} at 7 and the pipeline near 13\,Hz, \texttt{/pose} trails
+the real target by roughly half a window. That is the intended trade
+(smoothness against latency), but it means \texttt{/pose} is not the right
+signal for judging raw detection quality --- read the node's own per-frame
+log lines for that, or set \texttt{fifo\_on} to \texttt{false} temporarily.
+
+The stamp on the published pose is the \emph{acquisition} time of the most
+recent image that contributed to the average, not the publication time.
+\end{warningbox}
 
 \textbf{Provenance:} the per-parameter descriptions above are
 \textbf{inherited}, from the Leo Rover integration's own write-up of the same
@@ -3082,9 +3202,27 @@ OpenVINS-family square-root-filter estimator built for embedded hardware,
 no wheel-encoder input) is being evaluated \emph{on the Pi}, in its own
 isolated workspace (\texttt{\textasciitilde/sqrtvins\_ws}, not this chapter's
 \texttt{mins\_sandbox}), as the platform this ground-station MINS build is
-meant to be compared against. \textbf{Verified 2026-08-13:} builds cleanly
-on the Pi (\texttt{catkin build}, no special flags), and its own bundled
-simulation produces genuine trajectory output there too. The real
+meant to be compared against.
+
+\begin{lstlisting}[style=shell]
+mkdir -p ~/sqrtvins_ws/src && cd ~/sqrtvins_ws/src
+git clone https://github.com/rpng/sqrtVINS.git
+cd .. && catkin build ov_srvins -j1
+catkin build
+\end{lstlisting}
+
+\begin{warningbox}
+\textbf{The default parallel build OOM-kills on this Pi.} \texttt{catkin
+build}'s default 4-way parallelism ran out of memory compiling
+\texttt{ov\_srvins} --- this Pi has no swap configured, confirmed via
+\texttt{dmesg}. Build that one package alone at \texttt{-j1} first, then the
+rest of the workspace normally; a plain \texttt{catkin build} with no flags
+will very likely repeat the OOM.
+\end{warningbox}
+
+\textbf{Verified 2026-08-13:} builds cleanly on the Pi with the flags above,
+and its own bundled simulation produces genuine trajectory output there too.
+The real
 comparison --- update rate and accuracy against this chapter's MINS, over
 the \emph{same} rectangular-motion trajectory --- needs
 Section~\ref{sec:mins-rosbag}'s recording to exist first, and is not yet
@@ -3546,6 +3684,25 @@ On the Pi (Ubuntu 20.04) the build is standard; a failure there is usually
 memory --- pass \texttt{-j2}. On a lab PC running Ubuntu 22.04, the five
 fixes in Section~\ref{sec:build2204} are all required, and a segfault at
 launch rather than at build time is Fix 5 (the \texttt{LD\_PRELOAD}).
+
+\section{A plain \texttt{python3} script dies on \texttt{import cv2}}
+
+\begin{lstlisting}[style=code]
+AttributeError: _ARRAY_API not found
+\end{lstlisting}
+
+\begin{warningbox}
+\textbf{numpy shadowing, lab PC only.} A newer \texttt{numpy} (2.2.6)
+installed into \texttt{\textasciitilde/.local/lib/python3.10/site-packages/}
+by an unrelated \texttt{pip} install shadows the system \texttt{numpy} that
+apt's \texttt{python3-opencv} was actually compiled against, for any bare
+\texttt{python3} invocation --- \texttt{python3 -c "import numpy;
+print(numpy.\_\_file\_\_)"} shows which one wins. \textbf{Fix:} set
+\texttt{PYTHONNOUSERSITE=1} before running any script that imports
+\texttt{cv2} via plain \texttt{python3} on this machine. Not needed inside a
+ROS launch (which does not import the user site-packages the same way) or
+on the Pi (no such conflicting install there).
+\end{warningbox}
 
 \section{Messages you can safely ignore}
 

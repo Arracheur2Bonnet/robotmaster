@@ -33,6 +33,46 @@ FILES=(
     "carolus_ws/src/ff_msgs/CMakeLists.txt"
     "carolus_ws/src/robomaster_cam/CMakeLists.txt"
     "carolus_ws/src/carolus_node/CMakeLists.txt"
+    # 2026-08-18 : ajoute apres avoir constate qu'il en etait absent au moment
+    # meme ou il devenait le fichier central de l'extraction du coeur Carolus
+    # hors ROS (demande Hector, "plus important que le reste du plan") --
+    # meme regle que ci-dessus, sans exception. Les nouveaux fichiers
+    # beacon_detector.hpp/.cpp seront ajoutes ici des leur creation.
+    "carolus_ws/src/libuvgs_astrobee/src/carolus_astrobee.cpp"
+    "carolus_ws/src/libuvgs_astrobee/src/ceresP4P.cpp"
+    "carolus_ws/src/libuvgs_astrobee/src/pose_est.cpp"
+    "carolus_ws/src/libuvgs_astrobee/src/beacon_detector.cpp"
+    "carolus_ws/src/libuvgs_astrobee/include/carolus_node/beacon_detector.hpp"
+    # 2026-08-18 (2): the new ROS2 wrapper package, added the moment it was
+    # created rather than after the fact -- same standing rule as above.
+    # 2026-08-19 : deplace carolus_ws/src/ -> racine du depot (un paquet
+    # ament dans un espace source catkin casse catkin_make pour tout le
+    # workspace, "non-homogeneous workspace").
+    # 2026-08-20 (2) : deplace une DEUXIEME fois, racine -> raspberry5-carolus-ros2/,
+    # et rendu autonome (le coeur C++ est copie ici, plus de reference
+    # relative vers carolus_ws/). Chaque deplacement casse silencieusement
+    # cette liste si elle n'est pas mise a jour le jour meme -- une entree
+    # pointant vers un fichier absent est copiee en rien du tout, la
+    # sauvegarde parait reussir. Troisieme occurrence du meme pattern.
+    "raspberry5-carolus-ros2/carolus_ros2/src/carolus_node_ros2.cpp"
+    "raspberry5-carolus-ros2/carolus_ros2/CMakeLists.txt"
+    "raspberry5-carolus-ros2/carolus_ros2/config/logitech_1080p.yaml"
+    "raspberry5-carolus-ros2/carolus_ros2/package.xml"
+    # 2026-08-20 (2) : le coeur copie dans raspberry5-carolus-ros2/ est un
+    # SNAPSHOT independant de carolus_ws/src/libuvgs_astrobee/ -- il peut
+    # diverger et doit etre sauvegarde separement, pas suppose synchronise.
+    "raspberry5-carolus-ros2/carolus_ros2/src/ceresP4P.cpp"
+    "raspberry5-carolus-ros2/carolus_ros2/src/pose_est.cpp"
+    "raspberry5-carolus-ros2/carolus_ros2/src/beacon_detector.cpp"
+    "raspberry5-carolus-ros2/carolus_ros2/src/pose_filter.cpp"
+    "raspberry5-carolus-ros2/carolus_ros2/include/carolus_node/beacon_detector.hpp"
+    "raspberry5-carolus-ros2/carolus_ros2/include/carolus_node/pose_filter.hpp"
+    "raspberry5-carolus-ros2/technical-ros2.tex"
+    "raspberry5-carolus-ros2/README.md"
+    "shortcuts/ros2_sync_check.sh"
+    # 2026-08-19 (2) : filtre FIFO extrait du noeud ROS1 vers carolus_core.
+    "carolus_ws/src/libuvgs_astrobee/src/pose_filter.cpp"
+    "carolus_ws/src/libuvgs_astrobee/include/carolus_node/pose_filter.hpp"
 )
 
 for f in "${FILES[@]}"; do

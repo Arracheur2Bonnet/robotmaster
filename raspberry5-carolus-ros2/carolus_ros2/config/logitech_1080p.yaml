@@ -1,0 +1,66 @@
+# Carolus ROS2 configuration profile -- Logitech 1080p USB webcam, ground-station PC.
+#
+# ROS2-format sibling of carolus_ws/src/carolus_node/config/logitech_1080p.yaml
+# (the ROS1 profile). Same physical camera and beacon, same numbers -- only the
+# file SHAPE changes, because ROS2 parameter files are nested under
+# ros__parameters and every value must be its real YAML type.
+#
+# ONE REAL DIFFERENCE, not cosmetic: known_points was a quoted, space-separated
+# STRING in the ROS1 file ("0.0825 0.0 0.0 ..."), parsed by rosparam's own
+# loader. rclcpp::Node::declare_parameter has no equivalent string-to-vector
+# parsing for a std::vector<double> default -- it needs an actual YAML list.
+# Converting the string to a list here is the fix; leaving it as a string would
+# either fail to load or silently mismatch the declared type, the ROS2-side
+# instance of the exact class of bug BUG-117 was on the ROS1 side.
+#
+# NOT carried over from the ROS1 profile: filter_size / translation_threshold /
+# rotation_threshold / fifo_on. The ROS2 wrapper (carolus_node_ros2.cpp) does
+# not yet call PoseFilter -- it publishes the raw per-frame solve, no FIFO
+# averaging or outlier rejection. That is a known, deliberate gap (round 14:
+# defer processBlobs/orchestration extraction), not an oversight -- do not add
+# these keys until the wrapper actually consumes them.
+
+/**:
+  ros__parameters:
+    # Camera intrinsics -- from Hector directly, 2026-08-17 (his email).
+    # His own words: "The camera should be calibrated again later, after we
+    # get it to work". Starting point to confirm detection runs, not a
+    # formally calibrated value.
+    fx: 570.6975
+    fy: 572.8081
+    cx: 322.6828
+    cy: 228.3519
+
+    # plumb_bob distortion: k1 k2 p1 p2.
+    distortion: [0.0223, -0.3088, -0.0048, -0.0018]
+
+    # Beacon geometry, metres -- same physical beacon as the RoboMaster's,
+    # UNVERIFIED for whichever beacon actually sits in front of this camera.
+    known_points: [0.0825, 0.0, 0.0, -0.0825, 0.0, 0.0, 0.0, 0.072, 0.0, 0.0, 0.0, 0.0555]
+
+    # Blob detection -- copied from the ROS1 profile as a starting point, will
+    # very likely need retuning against this camera's actual exposure/FOV.
+    min_circularity: 0.6
+    saturation_threshold: 80
+    min_area: 8.0
+    max_area: 1800.0
+    max_distance_lim: 1000.0
+
+    # Hue window, OpenCV's 0-180 scale (NOT 0-360). Blue LED beacon.
+    lb_hue: 90.0
+    ub_hue: 140.0
+
+    # Preprocessing
+    kernel_size_gaussian: 3
+    kernel_size_morph: 3
+    image_threshold: 190
+
+    # Topic name confirmed against the installed ros-humble-usb-cam package
+    # before first use, not assumed -- see the manual chapter for the checked
+    # value.
+    camera_topic: "/image_raw"
+
+    # QoS fixed 2026-08-19 (round 14, Q4b): best-effort connects to publishers
+    # of either kind, reliable does not. Kept explicit rather than relying on
+    # whatever usb_cam's own default happens to be.
+    qos_profile: "sensor_data"

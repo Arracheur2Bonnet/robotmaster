@@ -1,0 +1,234 @@
+// carolus_node_ros2.cpp
+//
+// Minimal ROS2 (rclcpp) wrapper around carolus_core, built 2026-08-18 to
+// test Hector's ROS-portability question directly rather than argue it:
+// does the same ROS-free detection/solver code, extracted from
+// CarolusRexNode the same day, actually compile and run under a different
+// middleware with no algorithm changes?
+//
+// Deliberately NOT a full port of CarolusRexNode. Scope, stated so nobody
+// mistakes this for production-ready: single camera topic, plumb_bob
+// (radtan) undistortion only (the FOV/Astrobee-specific undistortion path
+// stays in carolus_astrobee.cpp, orthogonal to what this proves), no FIFO
+// outlier filter, no ff_msgs (already dead weight per BUG-001), synchronous
+// callback instead of the ROS1 node's producer/consumer queue. What IS
+// exercised end to end: image -> BeaconDetector -> CobrasFumantes -> pose,
+// the exact chain the extraction was about.
+
+#include <memory>
+#include <string>
+#include <vector>
+
+#include <rclcpp/rclcpp.hpp>
+#include <image_transport/image_transport.hpp>
+// cv_bridge's header was renamed .h -> .hpp mid-transition across ROS2
+// distros (deprecated in 3.3.0, removed in 4.0.0) -- confirmed empirically
+// on this project's own two test targets, not assumed from a changelog:
+// this file's first build attempt used .hpp unconditionally because that is
+// what the Jazzy container (built first) actually has; it then failed on
+// Humble, which as installed here only ships .h. __has_include picks
+// whichever is present rather than hardcoding one distro's answer.
+#if __has_include(<cv_bridge/cv_bridge.hpp>)
+#include <cv_bridge/cv_bridge.hpp>
+#else
+#include <cv_bridge/cv_bridge.h>
+#endif
+#include <sensor_msgs/msg/image.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <opencv2/opencv.hpp>
+#include <Eigen/Dense>
+
+#include "carolus_node/beacon_detector.hpp"
+#include "carolus_node/pose_est.hpp"
+#include "carolus_node/ceresP4P.hpp"
+
+class CarolusRos2Node : public rclcpp::Node {
+public:
+    CarolusRos2Node() : Node("carolus_ros2") {
+        declare_parameter("fx", 546.1957);
+        declare_parameter("fy", 547.0838);
+        declare_parameter("cx", 575.6041);
+        declare_parameter("cy", 372.1876);
+        declare_parameter("distortion", std::vector<double>{-0.1479, 0.1452, -0.0023, 0.0025});
+        declare_parameter("known_points", std::vector<double>{
+            0.0825, 0.0, 0.0, -0.0825, 0.0, 0.0, 0.0, 0.072, 0.0, 0.0, 0.0, 0.0555});
+        declare_parameter("kernel_size_gaussian", 3);
+        declare_parameter("kernel_size_morph", 3);
+        declare_parameter("image_threshold", 190);
+        declare_parameter("min_area", 8.0);
+        declare_parameter("max_area", 1800.0);
+        declare_parameter("saturation_threshold", 80);
+        declare_parameter("lb_hue", 90.0);
+        declare_parameter("ub_hue", 140.0);
+        declare_parameter("max_distance_lim", 1000.0);
+        declare_parameter("min_circularity", 0.6);
+        declare_parameter("camera_topic", std::string("/camera/color/image_raw"));
+        declare_parameter("qos_profile", std::string("sensor_data"));
+
+        double fx = get_parameter("fx").as_double();
+        double fy = get_parameter("fy").as_double();
+        double cx = get_parameter("cx").as_double();
+        double cy = get_parameter("cy").as_double();
+        auto dist = get_parameter("distortion").as_double_array();
+        auto kp = get_parameter("known_points").as_double_array();
+        min_circularity_ = get_parameter("min_circularity").as_double();
+
+        camera_matrix_ = (cv::Mat_<double>(3, 3) << fx, 0, cx, 0, fy, cy, 0, 0, 1);
+        dist_coeffs_ = (cv::Mat_<double>(1, 4) << dist[0], dist[1], dist[2], dist[3]);
+        for (size_t i = 0; i + 2 < kp.size(); i += 3) {
+            known_points_.emplace_back(kp[i], kp[i + 1], kp[i + 2]);
+        }
+
+        detector_ = std::make_unique<BeaconDetector>(
+            get_parameter("kernel_size_gaussian").as_int(),
+            get_parameter("kernel_size_morph").as_int(),
+            get_parameter("image_threshold").as_int(),
+            get_parameter("min_area").as_double(),
+            get_parameter("max_area").as_double(),
+            get_parameter("saturation_threshold").as_int(),
+            get_parameter("lb_hue").as_double(),
+            get_parameter("ub_hue").as_double(),
+            get_parameter("max_distance_lim").as_double(),
+            [this](LogLevel level, const std::string& msg) {
+                switch (level) {
+                    case LogLevel::INFO:  RCLCPP_INFO(this->get_logger(), "%s", msg.c_str());  break;
+                    case LogLevel::WARN:  RCLCPP_WARN(this->get_logger(), "%s", msg.c_str());  break;
+                    case LogLevel::ERROR: RCLCPP_ERROR(this->get_logger(), "%s", msg.c_str()); break;
+                }
+            });
+
+        pose_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>("/pose", 10);
+
+        // image_transport::create_subscription needs a raw Node* (ROS2 API
+        // shape, confirmed against docs.ros.org/en/ros2_packages/humble/api/
+        // image_transport/ before writing this, not assumed from the ROS1
+        // shape) -- kept as a member so its callback can outlive this ctor.
+        //
+        // QoS is passed EXPLICITLY and is not left to the default. Unlike ROS1,
+        // a ROS2 subscription only connects if its profile is compatible with
+        // the publisher's; an incompatible pair delivers nothing at all, with
+        // no error and no warning -- the callback simply never fires and the
+        // node looks perfectly healthy. ROS2's default is RELIABLE, while
+        // camera drivers normally publish BEST_EFFORT (the sensor-data preset),
+        // and a RELIABLE subscriber cannot receive from a BEST_EFFORT publisher.
+        // BEST_EFFORT on this side is the strictly more compatible choice: it
+        // connects to publishers of either kind. Overridable so the other
+        // profile can actually be tested against a real driver rather than
+        // chosen from convention.
+        const std::string qos_name = get_parameter("qos_profile").as_string();
+        rmw_qos_profile_t qos = rmw_qos_profile_sensor_data;
+        if (qos_name == "default") {
+            qos = rmw_qos_profile_default;
+        } else if (qos_name != "sensor_data") {
+            RCLCPP_WARN(get_logger(),
+                        "unknown qos_profile '%s', falling back to sensor_data "
+                        "(accepted: sensor_data | default)", qos_name.c_str());
+        }
+        RCLCPP_INFO(get_logger(), "image subscription QoS profile: %s",
+                    (qos.reliability == RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT)
+                        ? "sensor_data (best effort)" : "default (reliable)");
+
+        image_sub_ = image_transport::create_subscription(
+            this, get_parameter("camera_topic").as_string(),
+            std::bind(&CarolusRos2Node::imageCallback, this, std::placeholders::_1),
+            "raw", qos);
+
+        RCLCPP_INFO(get_logger(), "carolus_ros2 up, camera_topic=%s",
+                    get_parameter("camera_topic").as_string().c_str());
+    }
+
+private:
+    void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg) {
+        // Request bgr8 EXPLICITLY rather than passing msg->encoding through.
+        // The original version of this callback did the latter, which matched
+        // the synthetic-beacon test (published as bgr8) but broke silently
+        // against a real driver: this project's live webcam publishes rgb8
+        // (found 2026-08-20, ros-humble-usb-cam + yuyv2rgb pixel_format), and
+        // cv::COLOR_BGR2HSV on RGB data swaps R and B -- it does not crash, it
+        // rotates every hue reading, which would have pushed a real blue beacon
+        // outside lb_hue/ub_hue silently. Exactly BUG-030's failure shape
+        // (runs fine, publishes nothing) on a new axis. Asking cv_bridge for
+        // bgr8 unconditionally makes the source encoding the driver's problem,
+        // not this callback's, and removes the channel-count branch below --
+        // toCvShare converts (Bayer/YUV/RGB/mono all handle it) whenever the
+        // source encoding differs from the target, or shares the buffer
+        // untouched when it's already bgr8.
+        cv_bridge::CvImageConstPtr cv_ptr;
+        try {
+            cv_ptr = cv_bridge::toCvShare(msg, "bgr8");
+        } catch (const cv_bridge::Exception& e) {
+            RCLCPP_ERROR(get_logger(), "cv_bridge exception (encoding=%s): %s",
+                         msg->encoding.c_str(), e.what());
+            return;
+        }
+
+        const cv::Mat& image = cv_ptr->image;
+        cv::Mat imageMono, imageHSV;
+        cv::cvtColor(image, imageMono, cv::COLOR_BGR2GRAY);
+        cv::cvtColor(image, imageHSV, cv::COLOR_BGR2HSV);
+
+        cv::Mat preprocessed = detector_->preprocessImage(imageMono);
+        auto blobsOpt = detector_->findAndCalcContours(preprocessed, imageHSV, 1);
+        if (!blobsOpt) {
+            return;
+        }
+        auto bestBlobs = detector_->selectBlobs(blobsOpt.value(), min_circularity_);
+        if (bestBlobs.size() != 4) {
+            return;
+        }
+
+        std::vector<cv::Point2f> distorted;
+        for (const auto& b : bestBlobs) distorted.emplace_back(b.blob.x, b.blob.y);
+        std::vector<cv::Point2f> undistorted;
+        cv::undistortPoints(distorted, undistorted, camera_matrix_, dist_coeffs_);
+
+        std::vector<Eigen::Vector3d> imagePoints;
+        for (const auto& p : undistorted) {
+            imagePoints.emplace_back(Eigen::Vector3d(p.x, p.y, 1.0).normalized());
+        }
+        std::vector<Eigen::Vector3d> sorted(4);
+        if (!SortTargetsUsingTetrahedronGeometry(imagePoints, sorted)) {
+            RCLCPP_ERROR(get_logger(), "Failed to sort targets using tetrahedron geometry.");
+            return;
+        }
+
+        CameraPose bestPose;
+        CobrasFumantes solver(camera_matrix_, 2);
+        solver.computeAndValidatePosesWithRefinement(sorted, known_points_, undistorted, bestPose);
+
+        if (!bestPose.R.allFinite() || !bestPose.t.allFinite()) {
+            RCLCPP_ERROR(get_logger(), "Pose solve produced non-finite result.");
+            return;
+        }
+
+        RCLCPP_INFO(get_logger(), "[P4P] final_cost=%.6g iterations=%d converged=%d",
+                    bestPose.solver_final_cost, bestPose.solver_iterations,
+                    static_cast<int>(bestPose.solver_converged));
+
+        Eigen::Quaterniond q(bestPose.R);
+        geometry_msgs::msg::PoseStamped out;
+        out.header = msg->header;
+        out.pose.position.x = bestPose.t(0);
+        out.pose.position.y = bestPose.t(1);
+        out.pose.position.z = bestPose.t(2);
+        out.pose.orientation.x = q.x();
+        out.pose.orientation.y = q.y();
+        out.pose.orientation.z = q.z();
+        out.pose.orientation.w = q.w();
+        pose_pub_->publish(out);
+    }
+
+    std::unique_ptr<BeaconDetector> detector_;
+    cv::Mat camera_matrix_, dist_coeffs_;
+    std::vector<Eigen::Vector3d> known_points_;
+    double min_circularity_;
+    std::shared_ptr<rclcpp::Publisher<geometry_msgs::msg::PoseStamped>> pose_pub_;
+    image_transport::Subscriber image_sub_;
+};
+
+int main(int argc, char** argv) {
+    rclcpp::init(argc, argv);
+    rclcpp::spin(std::make_shared<CarolusRos2Node>());
+    rclcpp::shutdown();
+    return 0;
+}
