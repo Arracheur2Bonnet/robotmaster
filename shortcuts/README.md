@@ -357,14 +357,20 @@ cp saves/2026-06-24-20-10/carolus_ws__src__robomaster_cam__scripts__rm_cam_beaco
 
 > **Why the omission keeps recurring:** every one of these additions was caught the same way — a file became the active target of real work while absent from `FILES`, so the backup gave a false sense of a safety net. A backup script that silently omits the file you are actually editing is worse than no script. **Rule, restated because it keeps needing restating: any source file under active modification must be in `FILES` before the work starts, not after it bites.**
 
-**Expected:** a `saves/YYYY-MM-DD-HH-MM/` folder created with 35 files + `NOTE.txt`.
+**Expected:** a `saves/YYYY-MM-DD-HH-MM/` folder created with **34** files + `NOTE.txt`. *(Corrected 2026-08-21: this line said 35. `FILES` holds 34 entries, all of which resolve, and the last two real saves — `2026-08-20-21-59` and `2026-08-20-22-11` — each contain exactly 34. An operator following the advice below and counting would have concluded a file was silently missing when none was.)*
 
-**2026-08-19 — two path changes worth knowing about.** The three `carolus_ros2`
-entries now point at `carolus_ros2/` at the repository root, not
-`carolus_ws/src/carolus_ros2/`: a ROS2 (ament) package inside a catkin source
-space makes `catkin_make` refuse to configure the *entire* workspace, so it had
-to move. `pose_filter.{hpp,cpp}` were added the moment they were created, when
-the FIFO outlier filter was extracted out of the ROS1 node into `carolus_core`.
+**The ROS2 package has moved three times; the list currently points at the third
+location.** `carolus_ws/src/carolus_ros2/` → repository root (2026-08-19: a ROS2
+(ament) package inside a catkin source space makes `catkin_make` refuse to
+configure the *entire* workspace) → **`raspberry5-carolus-ros2/carolus_ros2/`**
+(2026-08-20, made self-contained: the C++ core is copied in, no relative
+reference back into `carolus_ws/`). Those copies are an independent **snapshot**
+and are backed up as their own entries, not assumed to mirror
+`carolus_ws/src/libuvgs_astrobee/`. `pose_filter.{hpp,cpp}` were added the moment
+they were created, when the FIFO outlier filter was extracted out of the ROS1
+node into `carolus_core`. *(This paragraph was itself one move stale until
+2026-08-21 — it still described the root as the current location, two days after
+the second move; the script's own comments were correct throughout.)*
 Both matter here for the same reason: the copy loop skips any path that does not
 exist, so a stale entry produces a *silently smaller* backup rather than an
 error — the run still prints "Sauvegarde ->" and looks like it worked. If you
@@ -669,5 +675,45 @@ Live preview window. `s` saves the current frame as `checkerboard_NNN.png`; `q` 
 **Needs the robot powered on**, camera streaming, and a printed 25 mm checkerboard.
 
 **BUG-102, fixed 2026-08-11 (first real run crashed):** this lab PC has a numpy 2.2.6 install shadowing the system numpy `cv2` needs, and a system `cv_bridge` linked against a different OpenCV build than `cv2` itself (same defect class as BUG-101, same day) — both are corrected automatically by a self-re-exec guard at the top of the script; the plain command above is unaffected and needs no extra flags.
+
+---
+
+## `watch_windup.py`
+
+**What** — tails the T2 log during a long unattended run and raises an ALERT the moment BUG-116's uncommanded wheel motion starts, with a heartbeat every ~5 min so a quiet session is distinguishable from a dead watcher.
+
+**Why** — BUG-116 (wheels ramping up with no command sent) is intermittent and has never been caught in the act, so its cause is still unattributed. A fixed-magnitude trigger is useless here: the project's own logs show ±16 rpm of idle noise. This watches for the *sustained same-direction ramp* that is the actual documented signature (−3 → −84 rpm over ~90 s), on ≥3 of 4 wheels, and reports whether any `[MANUAL-DRIVE]` fired in the same window — which rules our own command loop in or out for that window rather than leaving it ambiguous.
+
+**Usage**
+```bash
+python3 shortcuts/watch_windup.py <t2_logfile> [uptime_zero_epoch] [t2_ssh_pid]
+```
+
+**Expected** — `HEARTBEAT` lines every ~5 min showing uptime, last ESC/POS reading, and whether the chassis was commanded; `ALERT` with the exact uptime if a ramp starts; `[CRITICAL]` if T2 dies, so a robot power-down is never mistaken for a quiet period.
+
+**Validated before use, not just written**: 0 false alerts over 20 simulated runs at 1 h/3 h/6 h/10 h against this project's own documented idle-noise band, while still catching the documented real signature. Run for real 2026-08-18: 2 h 22 min unattended, zero alerts, ended cleanly on the user's power-down.
+
+**Moved into `shortcuts/` on 2026-08-21** — it had been living in a session scratchpad, which is wiped between sessions, while the plan called for reusing it. That was a real risk of losing a validated tool.
+
+---
+
+## `beacon_hold.py` — superseded 2026-08-14, kept for `--status` and as a record
+
+**What** — a gimbal visual servo that held the beacon centred in the image by commanding gimbal velocity from the LED centroid. The chassis is never commanded; only the gimbal moves. `--status` reports detection stability and commands nothing.
+
+**Why it exists, and why it does not work.** Written 2026-08-14 to cancel the gimbal drift then attributed to BUG-111, which made any long measurement impossible (the beacon left the usable frame after ~4 min and Carolus logged "Not enough blobs < 4" 1120 times in a row). It was superseded the same day: it servos on **its own** blob detector, whose count swung between 4 and 13 as room reflections came and went, so the centroid jumped and the servo chased noise — it actively moved the gimbal *off* a good position the operator had just set. The real fix was the robot mode (`chassis_lead`), which removes the drift at source instead of correcting it downstream.
+
+**Usage**
+```bash
+python3 shortcuts/beacon_hold.py --status          # report only, commands nothing -- the one mode still worth running
+python3 shortcuts/beacon_hold.py                   # servo (superseded, do not use for measurements)
+python3 shortcuts/beacon_hold.py --duration 1800
+```
+
+**Expected** — from `--status`, a live readout of how many LEDs are actually detected and how much the centroid moves. Use it to check detection stability *before* trusting any servo or long run. A count that swings outside 4 means the scene, not the algorithm, needs fixing.
+
+**Retained deliberately, not by neglect** — the failure is instructive and cheap to repeat otherwise: a proxy detector that disagrees with the real one is worse than no detector. Full account in `journal.md` 2026-08-14 (13).
+
+**Documented here 2026-08-21** — the script had shipped on 2026-08-14 with an `00-index.md` row but no README section, the one combination the folder's own rule forbids.
 
 ---

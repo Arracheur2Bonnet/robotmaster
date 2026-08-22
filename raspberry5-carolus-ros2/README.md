@@ -51,11 +51,14 @@ manual — this assumes ROS2 is already present.
 A lit blue beacon can be invisible to the detector while looking perfectly
 fine on screen: its hue and saturation pass, but saturated blue converts to a
 *low* grayscale value. Symptom is `0 contours found` on every frame with the
-beacon plainly visible. Measured on this camera at grayscale 131, well under
-the ROS1 profile's inherited default of 190 — `image_threshold: 100` is now
-`logitech_1080p.yaml`'s own default, confirmed on both the lab PC and the
-Pi 5. A different camera or beacon still needs its own measurement — the
-manual explains how, rather than guessing a new number.
+beacon plainly visible — the brightness cut runs *before* any colour test, so
+the frame is already black by the time hue would be checked. Measured on this
+camera at grayscale 131, well under the RoboMaster profile's 190, which this
+file inherited unexamined when it was first copied. `image_threshold: 100` is
+now `logitech_1080p.yaml`'s own default, confirmed on both the lab PC and the
+Pi 5, and since 2026-08-21 the ROS1 webcam profile carries the same value for
+the same measured reason. A different camera or beacon still needs its own
+measurement — the manual explains how, rather than guessing a new number.
 
 ## Relationship to the ROS1 project
 

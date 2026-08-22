@@ -50,7 +50,41 @@ ub_hue: 140.0
 # --- Preprocessing -----------------------------------------------------------
 kernel_size_gaussian: 3
 kernel_size_morph: 3
-image_threshold: 190
+
+# 100, NOT the RoboMaster profile's 190 -- see BUG-130 (2026-08-21). This file
+# was created 2026-08-17 by copying robomaster_s1.yaml and replacing the
+# intrinsics; image_threshold came along unexamined and was never checked
+# against a webcam. It is the wrong value for a blue-LED beacon on this class
+# of camera, and it fails silently: preprocessImage() does
+#
+#     cv::threshold(blurred, thresholded, image_threshold, 255, THRESH_BINARY)
+#
+# so at 190 the whole frame goes black, findContours() returns nothing,
+# findAndCalcContours() logs "ERROR: 0 contours found" and returns nullopt.
+# The node runs, the topic list looks healthy, and no pose is ever published.
+#
+# The cause is physical and NOT specific to one camera unit: a saturated blue
+# pixel carries little weight in the standard 0.299R + 0.587G + 0.114B
+# grayscale conversion, so blue LEDs that are unambiguously bright to the eye
+# land low in grayscale. Measured on a Logitech C920 with the four-LED beacon
+# lit and in frame (2026-08-20, lab PC; reconfirmed 2026-08-21, Raspberry Pi 5):
+# hue 105-115 and saturation 200-255 -- both comfortably inside their windows --
+# but grayscale topping out at 131, i.e. below 190. Moving the beacon closer
+# with the threshold left at 190 still gave zero contours, which is what rules
+# out blob size and distance and leaves the luminance ceiling.
+#
+# 100 sits comfortably below the measured 131 and above the ambient background.
+# It is the value the ROS2 sibling of this file
+# (raspberry5-carolus-ros2/carolus_ros2/config/logitech_1080p.yaml) has carried
+# since 2026-08-20, verified on two machines.
+#
+# HONESTY MARKER: measured on THIS project's C920, not on the camera belonging
+# to the person this profile was written for -- that is a different physical
+# unit and its intrinsics here came from them, not from us. The mechanism is
+# general, the exact ceiling is per-unit. If detection still fails, measure
+# rather than guess: shortcuts/beacon_brightness_live.py reports the live
+# grayscale peak, and image_threshold must sit below it.
+image_threshold: 100
 
 # --- Outlier rejection (moving-window filter over successive poses) ----------
 filter_size: 7

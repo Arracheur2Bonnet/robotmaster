@@ -3309,7 +3309,35 @@ roslaunch carolus_node carolus_logitech.launch
 \end{lstlisting}
 
 \textbf{Verified 2026-08-17}: run against the live 30\,Hz feed above, no
-crash, every frame processed.
+crash, every frame processed. \textbf{That is a startup check, not a
+detection check} --- it says the node consumed frames, not that it found a
+beacon in any of them. See the warning below before concluding anything from
+a clean-looking run.
+
+\begin{warningbox}
+\textbf{\texttt{image\_threshold} must be 100 here, not the RoboMaster's 190
+--- corrected 2026-08-21.} This profile was written by copying
+\texttt{robomaster\_s1.yaml} and replacing the intrinsics;
+\texttt{image\_threshold} came along unexamined. At 190 a blue-LED beacon is
+\emph{never detected}, and nothing says so: \texttt{preprocessImage} applies
+\texttt{cv::threshold(\ldots, image\_threshold, 255, THRESH\_BINARY)} first,
+so the frame goes black before any colour test runs, \texttt{findContours}
+returns nothing, and the log reads \texttt{0 contours found}. The node stays
+up, the topics look healthy, and no pose is ever published.
+
+The cause is physical rather than a property of one camera: a saturated blue
+pixel carries little weight in the standard $0.299R + 0.587G + 0.114B$
+grayscale conversion, so blue LEDs that are plainly bright to the eye land
+low in grayscale. \textbf{Measured} on a Logitech C920 with the beacon lit
+and in frame (2026-08-20, lab PC; reconfirmed 2026-08-21, Raspberry Pi~5):
+hue 105--115 and saturation 200--255, both comfortably inside their windows,
+but grayscale peaking at \textbf{131}. Moving the beacon closer with the
+threshold left at 190 still gave zero contours --- which is what rules out
+blob size and distance and leaves the luminance ceiling.
+
+For a different camera or beacon, measure rather than copy: the threshold
+must sit below the observed grayscale peak.
+\end{warningbox}
 
 \section{Reading the result}
 
@@ -3318,11 +3346,31 @@ crash, every frame processed.
 that topic by itself does not mean anything is broken: it means no valid
 beacon has been found in any frame since the node started. Before
 suspecting a bug, confirm a lit beacon is actually in frame; then check the
-terminal running \texttt{carolus\_astrobee} for \texttt{Not enough blobs
-with required circularity} or \texttt{0 contours found} (a tuning problem
---- hue window, \texttt{min\_area}/\texttt{max\_area},
-\texttt{saturation\_threshold}, all in the config file above) versus no
-output at all or a crash (a different, deeper problem).
+terminal running \texttt{carolus\_astrobee}. The two failure messages are not
+interchangeable, and they point at different parameters:
+
+\begin{center}
+\begin{tabular}{@{}p{0.32\textwidth}p{0.60\textwidth}@{}}
+\toprule
+\textbf{Log line} & \textbf{What to check, in this order} \\
+\midrule
+\texttt{0 contours found} &
+Nothing survived the brightness cut, so no colour test ever ran.
+\texttt{image\_threshold} first --- it must sit \emph{below} the beacon's
+grayscale peak (see the warning in the config section; 190 finds nothing on
+a blue-LED beacon). Then exposure and whether the beacon is actually lit. \\
+\addlinespace
+\texttt{Not enough blobs with required circularity} &
+Contours were found and then rejected, so brightness is fine. Hue window
+(\texttt{lb\_hue}/\texttt{ub\_hue}, OpenCV's 0--180 scale),
+\texttt{min\_area}/\texttt{max\_area}, \texttt{saturation\_threshold},
+\texttt{min\_circularity}. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Either of those is a tuning problem. No output at all, or a crash, is a
+different and deeper problem.
 
 \texttt{carolus\_rviz.launch} (Chapter~\ref{ch:launcher} covers its
 counterpart on the robot) displays both the raw feed and the blob view side
