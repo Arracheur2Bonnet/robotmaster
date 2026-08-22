@@ -697,6 +697,43 @@ python3 shortcuts/watch_windup.py <t2_logfile> [uptime_zero_epoch] [t2_ssh_pid]
 
 ---
 
+## `bench_carolus_rate.py`
+
+**What** — measures Carolus-ROS2's maximum update rate by feeding it synthetic frames faster than any camera can, then comparing `/pose`'s output rate against the harness's own achieved rate.
+
+**Why** — Hector asked (2026-08-22) what Carolus's max rate is, whether the container costs performance, and what to expect on the Pi 5. None of it was answerable: the C920 offers only 10 FPS at 1280x720, so every run this project had ever done was input-bound and "10 Hz" measured the camera, not Carolus.
+
+**Usage**
+```bash
+# terminal 1
+ros2 run carolus_ros2 carolus_node --ros-args -p image_threshold:=150
+# terminal 2
+python3 shortcuts/bench_carolus_rate.py --mode beacon --duration 30 --label "what this run is"
+
+python3 shortcuts/bench_carolus_rate.py --selftest    # no ROS needed
+```
+
+`--mode beacon` projects four synthetic blobs and exercises the full path including the Ceres solve — this is the number that answers "Carolus's update rate". `--mode empty` sends a black frame, rejected at the contour stage; the gap between the two is the solver's share. `/pose` is never published in `empty` mode (correct behaviour), so that path is counted from the node's own `Time to find contours` log lines instead.
+
+**Expected** — a published rate, a `/pose` rate, and a verdict line. **The verdict is the point.** The obvious way to build this tool measures the *publisher* whenever the publisher is slower than the node, and reports a harness limit as if it were a Carolus limit. So the script measures its own rate too and **refuses to report a maximum** when `/pose` comes within 15 % of the input rate, printing `INPUT-BOUND ... this is a LOWER BOUND, not a maximum` instead. `--selftest` exercises that refusal on seven cases including both edges of the band, with no ROS involved.
+
+It earned its keep on first use: a run showed `/pose` at 238 Hz against 165 Hz of input and returned `IMPLAUSIBLE -- check for a second publisher`. A container from an earlier configuration was still running its own node, and DDS discovery was crossing Docker's default bridge. That number would otherwise have been recorded as a result.
+
+**Measured 2026-08-22**, 1280x720, beacon mode, 30 s after a 3 s discarded warm-up:
+
+| Configuration | `/pose` | Harness | Headroom |
+|---|---|---|---|
+| Lab PC, Humble **native**, x86\_64 | **264.9 Hz** | 657.6 Hz | 40 % |
+| Lab PC, Humble **in a container**, x86\_64 | **266.6 Hz** | 646.8 Hz | 41 % |
+| Lab PC, Jazzy **in a container**, x86\_64 | **275.9 Hz** | 690.6 Hz | 40 % |
+| Raspberry Pi 5, Jazzy native, aarch64 | not yet run | — | — |
+
+Same distro either side of the container boundary (rows 1 and 2, the only pair that isolates the variable): **+0.6 %, no measurable cost**. Detection-only throughput on the native host was 458.2 Hz, with contour finding at 0.258 ms mean over 400 samples — so the sort-plus-solve stage costs about 1.6 ms per frame.
+
+**Includes the BUG-102 guard** (`PYTHONNOUSERSITE`, self-re-exec), same trap `capture_checkerboard.py` hits: a pip-installed numpy 2.2.6 in `~/.local` shadows the system numpy that apt's `cv2` was built against. The `cv_bridge` half of that script's guard is deliberately not copied — it is ROS1-specific.
+
+---
+
 ## `beacon_hold.py` — superseded 2026-08-14, kept for `--status` and as a record
 
 **What** — a gimbal visual servo that held the beacon centred in the image by commanding gimbal velocity from the LED centroid. The chassis is never commanded; only the gimbal moves. `--status` reports detection stability and commands nothing.

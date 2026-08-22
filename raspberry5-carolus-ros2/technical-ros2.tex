@@ -726,6 +726,58 @@ dropped entirely rather than left unused --- absent from
 is Humble's own target) --- 16.8\,s / 17.8\,s real, 0 compiler warnings.
 Runtime not re-confirmed: no webcam was attached to the lab PC at the time.
 
+\section{Maximum update rate, measured}
+\label{sec:ros2-maxrate}
+
+Every rate this project had observed before 2026-08-22 was bounded by the
+camera, not by Carolus: the C920 offers only 10\,FPS at 1280x720. To measure
+the node itself the input has to stop being the limit, so
+\texttt{bench\_carolus\_rate.py} publishes synthetic four-blob frames as fast
+as it can and compares \texttt{/pose} against its own achieved rate.
+
+\textbf{Measured 2026-08-22}, 1280x720, full path including the Ceres solve,
+30\,s after a 3\,s discarded warm-up:
+
+\begin{center}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+\textbf{Configuration} & \textbf{\texttt{/pose}} & \textbf{Input} & \textbf{Headroom} \\
+\midrule
+Lab PC, Humble, native, x86\_64        & 264.9\,Hz & 657.6\,Hz & 40\,\% \\
+Lab PC, Humble, in a container, x86\_64 & 266.6\,Hz & 646.8\,Hz & 41\,\% \\
+Lab PC, Jazzy, in a container, x86\_64  & 275.9\,Hz & 690.6\,Hz & 40\,\% \\
+Raspberry Pi 5, Jazzy, native, aarch64 & \multicolumn{3}{l}{not yet run} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+So Carolus sustains roughly \textbf{265\,Hz} on this PC while the camera
+delivers 10 --- the observed rate is camera-bound by a factor of about 26,
+and no realistic camera would make the node the limit.
+
+Rows 1 and 2 are the only pair that isolates containerisation, being the same
+distribution either side of the boundary: \textbf{+0.6\,\%, no measurable
+cost}. Row 3 differs in two variables at once (distribution and container)
+and should not be read as a Jazzy-versus-Humble result.
+
+Detection alone, with no beacon in frame so the solver never runs, reached
+458.2\,Hz on the native host, with contour extraction at 0.258\,ms mean over
+400 samples. The gap puts the sort-plus-solve stage at roughly 1.6\,ms per
+frame --- which is where the time goes, and is unaffected by the middleware.
+
+\begin{warningbox}
+\textbf{A benchmark of this shape measures the publisher unless it proves
+otherwise.} If the harness cannot outrun the node, \texttt{/pose} simply
+matches the input and the harness's own rate gets recorded as though it were
+the node's ceiling. The script therefore measures its own rate as well and
+\emph{refuses} to report a maximum when the two come within 15\,\% of each
+other. On its first use it returned
+\texttt{IMPLAUSIBLE -- /pose (238.2\,Hz) exceeds input (165.3\,Hz)}: a
+container left running from an earlier configuration still had its own node
+publishing, with DDS discovery crossing Docker's default bridge. Without that
+guard the number would have been written down as a result.
+\end{warningbox}
+
 \textbf{Success criteria, both stages.}
 
 \begin{enumerate}
@@ -738,11 +790,8 @@ Runtime not re-confirmed: no webcam was attached to the lab PC at the time.
   \texttt{"Not enough blobs < 4"} or \texttt{"Not enough blobs with required
   circularity"} --- the correct result with no beacon in view, at roughly
   10\,Hz once warmed up. \textbf{That 10\,Hz is the camera's hardware
-  ceiling at 1280x720, not Carolus's} (Section~\ref{sec:ros2-realcam}); the
-  per-frame contour times above (1.3--90\,ms) are the only processing cost
-  measured so far, and the node has never been fed faster than its input
-  allows, so its actual maximum rate on either target is
-  \textbf{unmeasured}.
+  ceiling at 1280x720, not Carolus's} (Section~\ref{sec:ros2-realcam}) ---
+  see the measured maximum below.
   \item \textbf{Beacon in frame}: four blobs found, target sort succeeds,
   Ceres runs, \texttt{/pose} publishes. \textbf{Verified 2026-08-21}, a
   physical 4-LED beacon (the same one used in Section~\ref{sec:ros2-realcam})
