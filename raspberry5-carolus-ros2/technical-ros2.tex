@@ -297,6 +297,22 @@ test intentionally runs with no \texttt{--params-file}, so it must match
 what the node assumes without one) at a plausible working range, published
 on a loop to the node's subscribed topic:
 
+\begin{warningbox}
+\textbf{The four numbers on the next line are not a configuration file.}
+They are literals inside a throwaway Python script, and they are the
+\emph{RoboMaster S1's} intrinsics --- reproduced here only because they are
+also \texttt{carolus\_node\_ros2.cpp}'s \texttt{declare\_parameter} defaults
+(lines 57--60), which is what makes this test self-consistent when run with
+no parameter file. Do not copy them for a webcam.
+
+The actual parameter file is \texttt{logitech\_1080p.yaml} --- lowercase
+\texttt{l} --- and it appears in Section~\ref{sec:ros2-realcam}, not here.
+It carries entirely different values (\texttt{cx} 322.68 against 575.60,
+\texttt{cy} 228.35 against 372.19: a quarter of the frame apart). Running
+the real camera without it would silently produce badly wrong poses rather
+than an error.
+\end{warningbox}
+
 \begin{lstlisting}[style=code]
 import numpy as np, cv2
 fx, fy, cx, cy = 546.1957, 547.0838, 575.6041, 372.1876
@@ -316,7 +332,13 @@ for X, Y, _ in points_3d:
 cv2.imwrite('synth_beacon.png', img)
 \end{lstlisting}
 
-Publish it on \texttt{/camera/color/image\_raw}, looping, at 10\,Hz:
+Publish it on \texttt{/camera/color/image\_raw}, looping, at 10\,Hz
+(\texttt{create\_timer(0.1, \ldots)} below). \textbf{This 10\,Hz is an
+arbitrary choice for this test and measures nothing} --- it is not a
+Carolus limit, and it is unrelated to the separately-measured 10\,Hz in
+Section~\ref{sec:ros2-realcam}, which is the C920's own hardware ceiling at
+1280x720. The two figures coinciding is a coincidence, and a confusing one;
+raise this timer's rate freely if you want to push the node harder.
 
 \begin{lstlisting}[style=code]
 import rclpy, cv2
@@ -715,8 +737,12 @@ Runtime not re-confirmed: no webcam was attached to the lab PC at the time.
   each followed by
   \texttt{"Not enough blobs < 4"} or \texttt{"Not enough blobs with required
   circularity"} --- the correct result with no beacon in view, at roughly
-  10\,Hz once warmed up, matching this camera's own measured frame-rate
-  ceiling at this resolution (Section~\ref{sec:ros2-realcam}).
+  10\,Hz once warmed up. \textbf{That 10\,Hz is the camera's hardware
+  ceiling at 1280x720, not Carolus's} (Section~\ref{sec:ros2-realcam}); the
+  per-frame contour times above (1.3--90\,ms) are the only processing cost
+  measured so far, and the node has never been fed faster than its input
+  allows, so its actual maximum rate on either target is
+  \textbf{unmeasured}.
   \item \textbf{Beacon in frame}: four blobs found, target sort succeeds,
   Ceres runs, \texttt{/pose} publishes. \textbf{Verified 2026-08-21}, a
   physical 4-LED beacon (the same one used in Section~\ref{sec:ros2-realcam})
