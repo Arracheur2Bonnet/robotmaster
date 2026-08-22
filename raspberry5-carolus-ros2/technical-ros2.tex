@@ -4,7 +4,10 @@
 \usepackage{lmodern}
 \usepackage[english]{babel}
 \usepackage{graphicx}
-\usepackage{hyperref}
+% hidelinks: without it, hyperref draws a red rectangle around every internal
+% link -- every table-of-contents entry and every \ref. Cosmetic, but it makes
+% the compiled PDF look broken.
+\usepackage[hidelinks]{hyperref}
 \usepackage{amsmath}
 \usepackage{xcolor}
 \usepackage{listings}
@@ -14,14 +17,34 @@
 \geometry{margin=0.85in}
 \setlength{\parskip}{2pt}
 
+% In a T1 typewriter font, "--" is a ligature and renders as a single en-dash:
+% \texttt{--verbose} comes out looking like "-verbose". Every long-form command
+% flag in this document is affected, and a reader copying one out of the PDF
+% gets a command that does not work. Disabling the hyphen ligature for
+% typewriter families only fixes it globally.
+\usepackage{microtype}
+\DisableLigatures[-]{encoding = T1, family = tt*}
+
+% Long unbreakable \texttt tokens (paths, topic names) otherwise run past the
+% right margin rather than wrapping. This lets TeX stretch interword space in a
+% final pass instead, without inserting hyphens into command names.
+\setlength{\emergencystretch}{3em}
+
 % --- Code listing style ---------------------------------------------------
 \definecolor{codebg}{rgb}{0.96,0.96,0.96}
 \definecolor{codecomment}{rgb}{0.4,0.45,0.4}
 \definecolor{codestring}{rgb}{0.5,0.1,0.1}
+% showstringspaces=false is not optional here: listings' default marks every
+% space inside a quoted string with a visible open-box character, so a shell
+% line like echo "deb [arch=...]" renders as echo "deb[arch=..." with box
+% glyphs where the spaces should be -- unreadable, and wrong if copied.
 \lstdefinestyle{shell}{
     backgroundcolor=\color{codebg},
     basicstyle=\ttfamily\small,
     breaklines=true,
+    showstringspaces=false,
+    columns=fullflexible,
+    keepspaces=true,
     frame=single,
     numbers=none,
     language=bash,
@@ -34,6 +57,9 @@
     backgroundcolor=\color{codebg},
     basicstyle=\ttfamily\small,
     breaklines=true,
+    showstringspaces=false,
+    columns=fullflexible,
+    keepspaces=true,
     frame=single,
     numbers=left,
     numberstyle=\tiny\color{gray},
@@ -61,7 +87,7 @@
 
 
 \title{Carolus under ROS2 --- Lab PC and Raspberry Pi 5}
-\author{}
+\author{Nawfel Bouazza}
 \date{\today}
 
 \begin{document}
@@ -117,7 +143,7 @@ their \emph{bodies} called ROS logging macros directly, which is real
 coupling a signature alone does not show.
 
 That algorithm was extracted into a separate library, \texttt{carolus\_core}
-(\texttt{beacon\_detector.cpp} plus \texttt{ceresP4P.cpp}/\texttt{pose\_est.cpp}/
+(\texttt{beacon\_detector.cpp} plus \texttt{ceresP4P.cpp}/\texttt{pose\_est.cpp}/%
 \texttt{pose\_filter.cpp}), built with zero ROS headers and zero ROS linkage
 --- confirmed by an empty \texttt{NEEDED} list on the compiled library, not
 assumed from reading the source. The ROS1 node links against it instead of
@@ -353,8 +379,8 @@ every frame rather than negotiating something that still works.
 \textbf{This specific driver does not trigger that trap, measured directly
 rather than assumed:} \texttt{ros2 topic info /image\_raw --verbose} against
 \texttt{ros-humble-usb-cam} 0.8.1 shows \texttt{Reliability: RELIABLE} ---
-\emph{not} best effort. An earlier version of this section asserted "camera
-drivers normally publish best effort" as a general claim; it was never
+\emph{not} best effort. An earlier version of this section asserted ``camera
+drivers normally publish best effort'' as a general claim; it was never
 measured against this project's own driver, and the measurement contradicts
 it. Both QoS profiles below were tested against the live C920 feed and both
 received frames (\texttt{qos\_profile:=default}: 99 frames in 4\,s;
@@ -446,8 +472,8 @@ ros2 run carolus_ros2 carolus_node --ros-args \
 \texttt{logitech\_1080p.yaml} holds this camera's intrinsics
 (fx=570.6975, fy=572.8081, cx=322.6828, cy=228.3519, distortion
 [0.0223, -0.3088, -0.0048, -0.0018] --- a Logitech HD Pro Webcam C920, from
-Hector directly, 2026-08-17, approximate, "should be calibrated again
-later") and the same beacon geometry used elsewhere in this project.
+Hector directly, 2026-08-17, approximate, ``should be calibrated again
+later'') and the same beacon geometry used elsewhere in this project.
 \textbf{One field needs a real YAML list, not a string:}
 \texttt{known\_points} must be \texttt{[0.0825, 0.0, 0.0, ...]}, a literal
 list --- \texttt{declare\_parameter} has no string-to-vector parsing for a
@@ -456,7 +482,8 @@ load or silently mismatches the declared type.
 
 \begin{warningbox}
 \textbf{A second silent failure, this one undetectable from the log.}
-\texttt{cv\_bridge::toCvShare(msg, msg->encoding)} returns whatever encoding
+\texttt{cv\_bridge::\allowbreak toCvShare(msg,\allowbreak\ msg->encoding)}
+returns whatever encoding
 the source publishes --- against this driver, \texttt{rgb8}, not
 \texttt{bgr8}. Converting RGB data with \texttt{cv::COLOR\_BGR2HSV} swaps red
 and blue going into the hue calculation: no crash, no warning, every hue
@@ -478,7 +505,8 @@ processes every frame with no crash, and reports \texttt{"0 contours found"}
 with no beacon in view --- the correct result, not a failure.
 
 \textbf{With a lit beacon in frame, same session:} four blobs found,
-\texttt{SortTargetsUsingTetrahedronGeometry} succeeded, the Ceres solve ran,
+\texttt{SortTargets\allowbreak UsingTetrahedron\allowbreak Geometry}
+succeeded, the Ceres solve ran,
 and a \texttt{geometry\_msgs/msg/PoseStamped} was published on \texttt{/pose}
 with a correctly normalised quaternion. \textbf{One parameter change was
 required to get there}, and it is not optional on this camera:
@@ -611,7 +639,8 @@ section). \textbf{Not verified}: pose accuracy --- \texttt{converged=0}, same
 limitation as the lab PC.
 
 Same procedure as Section~\ref{sec:ros2-realcam}, same physical camera, same
-config file (\texttt{carolus\_ros2/config/logitech\_1080p.yaml}) --- the
+config file (\texttt{carolus\_ros2/\allowbreak config/\allowbreak
+logitech\_1080p.yaml}) --- the
 point of reusing it unmodified is that a difference in behaviour would then
 be attributable to the board, not to a re-tuned parameter.
 
@@ -658,9 +687,11 @@ effort)} and \texttt{carolus\_ros2 up, camera\_topic=/image\_raw} on startup.
 
 \begin{warningbox}
 \textbf{This node uses a plain \texttt{rclcpp} subscription, not
-\texttt{image\_transport}.} \texttt{image\_transport::create\_subscription}'s
+\texttt{image\_transport}.}
+\texttt{image\_transport::\allowbreak create\_subscription}'s
 ``raw'' transport plugin does not reliably deliver frames on this board ---
-verified against a plain \texttt{create\_subscription<sensor\_msgs::msg::Image>},
+verified against a plain
+\texttt{create\_subscription<\allowbreak sensor\_msgs::\allowbreak msg::\allowbreak Image>},
 which does. Since this node only ever used the ``raw'' transport (no
 compression, no other \texttt{image\_transport} feature), the dependency is
 dropped entirely rather than left unused --- absent from
@@ -680,7 +711,8 @@ Runtime not re-confirmed: no webcam was attached to the lab PC at the time.
   runs with no crash, logs \texttt{"Time to find contours"} at the camera's
   actual rate, reports contour/blob rejection with no beacon present.
   \textbf{Verified 2026-08-21}: sustained runs (6--30\,s, reproduced twice)
-  log \texttt{"Time to find contours: \textasciitilde0.0013--0.09\,s"} per frame followed by
+  log \texttt{"Time to find contours"} at roughly 0.0013--0.09\,s per frame,
+  each followed by
   \texttt{"Not enough blobs < 4"} or \texttt{"Not enough blobs with required
   circularity"} --- the correct result with no beacon in view, at roughly
   10\,Hz once warmed up, matching this camera's own measured frame-rate
@@ -707,13 +739,16 @@ Runtime not re-confirmed: no webcam was attached to the lab PC at the time.
 either.} This applies across the whole document, not just one chapter:
 
 \begin{center}
-\begin{tabular}{@{}lll@{}}
+\begin{tabular}{@{}p{0.30\textwidth}p{0.30\textwidth}p{0.30\textwidth}@{}}
 \toprule
  & \textbf{Lab PC (Humble)} & \textbf{Raspberry Pi 5 (Jazzy)} \\
 \midrule
 Beacon detected, \texttt{/pose} published & yes & yes \\
+\addlinespace
 Ceres \texttt{converged} & 0, every solve & 0, every solve \\
-Sign of inaccuracy & two visibly different beacon positions produced poses a few cm apart & --- \\
+\addlinespace
+Direct evidence of inaccuracy & yes --- two visibly different beacon
+positions gave poses a few cm apart & not tested \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -721,7 +756,7 @@ Sign of inaccuracy & two visibly different beacon positions produced poses a few
 \texttt{ceresP4P.cpp} hits \texttt{max\_num\_iterations=30} without
 converging on either target, and the pose is written \emph{unconditionally}
 --- a non-converged solve returns a finite, plausible-looking pose that is
-indistinguishable from a correct one unless \texttt{converged}/
+indistinguishable from a correct one unless \texttt{converged}/%
 \texttt{final\_cost}/\texttt{iterations} are read directly. The Pi 5's pose
 matches the lab PC's own recorded value to within a few centimetres, which
 confirms the two ports agree with \emph{each other} --- not that either is
