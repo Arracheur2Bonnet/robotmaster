@@ -1,4 +1,6 @@
-# Carolus ROS2 configuration profile -- Logitech 1080p USB webcam, ground-station PC.
+# Carolus ROS2 configuration profile -- Logitech 1080p USB webcam. Used
+# unmodified on both targets in this folder (lab PC and Raspberry Pi 5) --
+# the same physical camera moves between them, this file does not change.
 #
 # ROS2-format sibling of carolus_ws/src/carolus_node/config/logitech_1080p.yaml
 # (the ROS1 profile). Same physical camera and beacon, same numbers -- only the
@@ -9,16 +11,14 @@
 # STRING in the ROS1 file ("0.0825 0.0 0.0 ..."), parsed by rosparam's own
 # loader. rclcpp::Node::declare_parameter has no equivalent string-to-vector
 # parsing for a std::vector<double> default -- it needs an actual YAML list.
-# Converting the string to a list here is the fix; leaving it as a string would
-# either fail to load or silently mismatch the declared type, the ROS2-side
-# instance of the exact class of bug BUG-117 was on the ROS1 side.
+# Converting the string to a list here is the fix; leaving it as a string
+# would either fail to load or silently mismatch the declared type.
 #
 # NOT carried over from the ROS1 profile: filter_size / translation_threshold /
 # rotation_threshold / fifo_on. The ROS2 wrapper (carolus_node_ros2.cpp) does
 # not yet call PoseFilter -- it publishes the raw per-frame solve, no FIFO
-# averaging or outlier rejection. That is a known, deliberate gap (round 14:
-# defer processBlobs/orchestration extraction), not an oversight -- do not add
-# these keys until the wrapper actually consumes them.
+# averaging or outlier rejection. Deliberate scope limit, not an oversight --
+# do not add these keys until the wrapper actually consumes them.
 
 /**:
   ros__parameters:
@@ -53,14 +53,19 @@
     # Preprocessing
     kernel_size_gaussian: 3
     kernel_size_morph: 3
-    image_threshold: 190
+    # 100, not the ROS1 profile's 190: measured 2026-08-20 that this camera's
+    # LEDs top out at grayscale 131, under 190 -- 0 contours found. Confirmed
+    # again 2026-08-21 on the Pi 5, same physical camera. Baseline now, not a
+    # per-session override.
+    image_threshold: 100
 
-    # Topic name confirmed against the installed ros-humble-usb-cam package
-    # before first use, not assumed -- see the manual chapter for the checked
-    # value.
+    # Topic name confirmed against the installed usb_cam package before first
+    # use on each target (ros-humble-usb-cam, then ros-jazzy-usb-cam on the
+    # Pi 5), not assumed -- see the manual chapter for the checked value.
     camera_topic: "/image_raw"
 
-    # QoS fixed 2026-08-19 (round 14, Q4b): best-effort connects to publishers
-    # of either kind, reliable does not. Kept explicit rather than relying on
-    # whatever usb_cam's own default happens to be.
+    # Set explicitly rather than relying on whichever profile happens to be
+    # usb_cam's own default: best-effort connects to publishers of either
+    # kind, reliable does not (see the manual's QoS section for the measured
+    # proof).
     qos_profile: "sensor_data"

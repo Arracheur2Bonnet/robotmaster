@@ -29,7 +29,7 @@ says what is where.
 ```bash
 source /opt/ros/humble/setup.bash          # or /opt/ros/jazzy on the Pi 5
 mkdir -p ~/ros2_ws/src && cd ~/ros2_ws
-ln -s /path/to/raspberry5-carolus-ros2/carolus_ros2 src/carolus_ros2
+ln -s /path/to/raspberry5-carolus-ros2/carolus_ros2 src/carolus_ros2  # replace with this folder's actual path
 colcon build --packages-select carolus_ros2
 ```
 
@@ -40,20 +40,22 @@ manual — this assumes ROS2 is already present.
 
 | | |
 |---|---|
-| Builds on ROS2 Humble (x86_64) | verified 2026-08-20 |
+| Builds on ROS2 Humble (x86_64) | verified 2026-08-18; rebuilt clean 2026-08-21 after a Pi 5 fix to the shared source, runtime not re-tested that day (no webcam attached) |
 | Builds on ROS2 Jazzy (container) | verified 2026-08-18 |
-| Detects a real beacon, publishes `/pose` | verified 2026-08-20, lab PC + Logitech C920 |
-| Builds/runs on Raspberry Pi 5 (aarch64) | **not yet run** — ch. 2 is written but untested |
-| Pose values trustworthy | **no** — solver reports `converged=0`; see the manual's warningbox |
+| Detects a real beacon, publishes `/pose` | verified 2026-08-20, lab PC + Logitech C920; verified again 2026-08-21, Pi 5 + same beacon |
+| Builds/runs on Raspberry Pi 5 (aarch64, native) | verified 2026-08-21 — build and webcam confirmed; beacon detection in the row above |
+| Pose values trustworthy | **no** — solver reports `converged=0` on both targets; see the manual's warningbox |
 
 ## The one thing to know before running it
 
 A lit blue beacon can be invisible to the detector while looking perfectly
 fine on screen: its hue and saturation pass, but saturated blue converts to a
-*low* grayscale value, below the default `image_threshold` of 190. Symptom is
-`0 contours found` on every frame with the beacon plainly visible. Measured
-here at grayscale 131; `-p image_threshold:=100` fixed it. Per-setup value,
-not a universal one — the manual explains how to measure it rather than guess.
+*low* grayscale value. Symptom is `0 contours found` on every frame with the
+beacon plainly visible. Measured on this camera at grayscale 131, well under
+the ROS1 profile's inherited default of 190 — `image_threshold: 100` is now
+`logitech_1080p.yaml`'s own default, confirmed on both the lab PC and the
+Pi 5. A different camera or beacon still needs its own measurement — the
+manual explains how, rather than guessing a new number.
 
 ## Relationship to the ROS1 project
 

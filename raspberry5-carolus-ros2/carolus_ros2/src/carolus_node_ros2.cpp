@@ -10,7 +10,9 @@
 // mistakes this for production-ready: single camera topic, plumb_bob
 // (radtan) undistortion only (the FOV/Astrobee-specific undistortion path
 // stays in carolus_astrobee.cpp, orthogonal to what this proves), no FIFO
-// outlier filter, no ff_msgs (already dead weight per BUG-001), synchronous
+// outlier filter, no ff_msgs (dead even on the ROS1 side: that node
+// advertises an ff_msgs publisher, then overwrites it with the real /pose
+// publisher on the very next line, so nothing has ever consumed it), synchronous
 // callback instead of the ROS1 node's producer/consumer queue. What IS
 // exercised end to end: image -> BeaconDetector -> CobrasFumantes -> pose,
 // the exact chain the extraction was about.
@@ -20,7 +22,6 @@
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
-#include <image_transport/image_transport.hpp>
 // cv_bridge's header was renamed .h -> .hpp mid-transition across ROS2
 // distros (deprecated in 3.3.0, removed in 4.0.0) -- confirmed empirically
 // on this project's own two test targets, not assumed from a changelog:
@@ -45,6 +46,14 @@
 class CarolusRos2Node : public rclcpp::Node {
 public:
     CarolusRos2Node() : Node("carolus_ros2") {
+        // fx/fy/cx/cy/distortion/known_points below are what the synthetic-
+        // beacon test in technical-ros2.tex relies on (it passes no
+        // --params-file, so it needs these to already be right). Not this
+        // project's real camera values -- those come from
+        // config/logitech_1080p.yaml on every documented real-camera run.
+        // image_threshold's default (190) is never actually relied on
+        // anywhere in this document: every launch command, synthetic or
+        // real, passes its own -p image_threshold override.
         declare_parameter("fx", 546.1957);
         declare_parameter("fy", 547.0838);
         declare_parameter("cx", 575.6041);
@@ -99,10 +108,8 @@ public:
 
         pose_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>("/pose", 10);
 
-        // image_transport::create_subscription needs a raw Node* (ROS2 API
-        // shape, confirmed against docs.ros.org/en/ros2_packages/humble/api/
-        // image_transport/ before writing this, not assumed from the ROS1
-        // shape) -- kept as a member so its callback can outlive this ctor.
+        // Plain rclcpp subscription, not image_transport -- kept as a member so
+        // its callback can outlive this ctor.
         //
         // QoS is passed EXPLICITLY and is not left to the default. Unlike ROS1,
         // a ROS2 subscription only connects if its profile is compatible with
@@ -128,10 +135,17 @@ public:
                     (qos.reliability == RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT)
                         ? "sensor_data (best effort)" : "default (reliable)");
 
-        image_sub_ = image_transport::create_subscription(
-            this, get_parameter("camera_topic").as_string(),
-            std::bind(&CarolusRos2Node::imageCallback, this, std::placeholders::_1),
-            "raw", qos);
+        // Why plain rather than image_transport::create_subscription(...,
+        // "raw", qos), as an earlier version of this code did: on the Pi 5
+        // (Jazzy, aarch64) that plugin never delivered a frame to the
+        // callback, though the same code worked fine via image_transport on
+        // the lab PC (Humble, x86_64), not reproduced here. Nothing in this
+        // node used any image_transport feature beyond the "raw" transport
+        // it was hardcoded to anyway, so nothing is lost by not depending on it.
+        rclcpp::QoS ros_qos(rclcpp::QoSInitialization::from_rmw(qos), qos);
+        image_sub_ = create_subscription<sensor_msgs::msg::Image>(
+            get_parameter("camera_topic").as_string(), ros_qos,
+            std::bind(&CarolusRos2Node::imageCallback, this, std::placeholders::_1));
 
         RCLCPP_INFO(get_logger(), "carolus_ros2 up, camera_topic=%s",
                     get_parameter("camera_topic").as_string().c_str());
@@ -146,8 +160,8 @@ private:
         // (found 2026-08-20, ros-humble-usb-cam + yuyv2rgb pixel_format), and
         // cv::COLOR_BGR2HSV on RGB data swaps R and B -- it does not crash, it
         // rotates every hue reading, which would have pushed a real blue beacon
-        // outside lb_hue/ub_hue silently. Exactly BUG-030's failure shape
-        // (runs fine, publishes nothing) on a new axis. Asking cv_bridge for
+        // outside lb_hue/ub_hue silently -- the failure shape this project has
+        // hit repeatedly: runs fine, looks healthy, publishes nothing. Asking cv_bridge for
         // bgr8 unconditionally makes the source encoding the driver's problem,
         // not this callback's, and removes the channel-count branch below --
         // toCvShare converts (Bayer/YUV/RGB/mono all handle it) whenever the
@@ -193,6 +207,9 @@ private:
         }
 
         CameraPose bestPose;
+        // Second constructor arg is measType -- verified dead: stored as
+        // measType_ in ceresP4P.hpp but never read anywhere in ceresP4P.cpp.
+        // Value has no effect; kept only because the constructor requires one.
         CobrasFumantes solver(camera_matrix_, 2);
         solver.computeAndValidatePosesWithRefinement(sorted, known_points_, undistorted, bestPose);
 
@@ -223,7 +240,7 @@ private:
     std::vector<Eigen::Vector3d> known_points_;
     double min_circularity_;
     std::shared_ptr<rclcpp::Publisher<geometry_msgs::msg::PoseStamped>> pose_pub_;
-    image_transport::Subscriber image_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
 };
 
 int main(int argc, char** argv) {

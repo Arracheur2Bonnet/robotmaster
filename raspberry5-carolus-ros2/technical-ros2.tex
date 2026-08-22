@@ -180,6 +180,10 @@ docker exec carolus_jazzy apt-get install -y \
     libeigen3-dev libceres-dev libopencv-dev build-essential cmake
 \end{lstlisting}
 
+\texttt{/path/to/raspberry5-carolus-ros2} is a placeholder, here and
+everywhere else it appears in this document --- substitute this folder's
+actual absolute path on your machine.
+
 \section{The \texttt{carolus\_ros2} package}
 
 \texttt{carolus\_ros2/} is a minimal \texttt{rclcpp} wrapper --- \textbf{a
@@ -260,9 +264,12 @@ A synthetic beacon frame stands in for a live camera.
 sudo apt install -y python3-numpy python3-opencv
 \end{lstlisting}
 
-Four blobs, positioned by projecting the real beacon geometry through this
-project's own camera intrinsics at a plausible working range, published on a
-loop to the node's subscribed topic:
+Four blobs, positioned by projecting the real beacon geometry through
+\texttt{carolus\_node\_ros2.cpp}'s own compiled-in default intrinsics (not
+the C920's calibrated values from Section~\ref{sec:ros2-realcam} --- this
+test intentionally runs with no \texttt{--params-file}, so it must match
+what the node assumes without one) at a plausible working range, published
+on a loop to the node's subscribed topic:
 
 \begin{lstlisting}[style=code]
 import numpy as np, cv2
@@ -283,18 +290,48 @@ for X, Y, _ in points_3d:
 cv2.imwrite('synth_beacon.png', img)
 \end{lstlisting}
 
-Publish it on \texttt{/camera/color/image\_raw} (any small
-\texttt{rclpy} timer-based publisher using \texttt{cv\_bridge}), then:
+Publish it on \texttt{/camera/color/image\_raw}, looping, at 10\,Hz:
+
+\begin{lstlisting}[style=code]
+import rclpy, cv2
+from rclpy.node import Node
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+
+class SynthBeaconPublisher(Node):
+    def __init__(self):
+        super().__init__('synth_beacon_publisher')
+        self.pub = self.create_publisher(Image, '/camera/color/image_raw', 10)
+        self.bridge = CvBridge()
+        self.frame = cv2.imread('synth_beacon.png')
+        self.create_timer(0.1, self.tick)
+
+    def tick(self):
+        self.pub.publish(self.bridge.cv2_to_imgmsg(self.frame, encoding='bgr8'))
+
+rclpy.init()
+rclpy.spin(SynthBeaconPublisher())
+\end{lstlisting}
+
+Save as \texttt{publish\_synth\_beacon.py} in the same directory as
+\texttt{synth\_beacon.png}, then, in separate terminals:
 
 \begin{lstlisting}[style=shell]
+python3 publish_synth_beacon.py
 ros2 run carolus_ros2 carolus_node --ros-args -p image_threshold:=150
 ros2 topic echo /pose --once
 \end{lstlisting}
 
 \begin{warningbox}
 \texttt{image\_threshold:=150} is a test-only override for the synthetic
-image above, not this project's real value (190, tuned for the physical
-beacon). If a publisher process is already running, restarting the image
+image above, not this project's real value (100, tuned for the physical
+beacon --- see Section~\ref{sec:ros2-realcam}). Not arbitrary: the script's
+HSV colour (115, 90, 255) converts to grayscale $\approx$184 (BGR
+$(165,180,255)$, ITU-R BT.601 luma), so 150 clears the blob with margin while
+the pure-black background (grayscale 0) still fails it --- computed, not
+guessed, since the two targets need different thresholds for unrelated
+reasons (this one is a colour-space computation, the real camera's is a
+measured LED brightness). If a publisher process is already running, restarting the image
 generator alone does \textbf{not} update what it sends --- a script that
 loads the frame once at startup keeps serving the first version from memory
 no matter how many times the file on disk changes. Restart the publisher,
@@ -368,7 +405,15 @@ field).
 the synthetic test, what the camera actually sees is not known in advance.
 
 \begin{lstlisting}[style=shell]
-sudo apt install ros-humble-usb-cam ros-humble-rqt-image-view
+sudo apt install ros-humble-usb-cam ros-humble-rqt-image-view v4l-utils
+\end{lstlisting}
+
+Find the camera's actual device number first --- never assume it, a machine
+with more than one video device (this one included) will not always put the
+webcam at \texttt{/dev/video0}:
+
+\begin{lstlisting}[style=shell]
+v4l2-ctl --list-devices
 \end{lstlisting}
 
 \begin{lstlisting}[style=shell]
@@ -377,6 +422,9 @@ ros2 run usb_cam usb_cam_node_exe --ros-args \
     -p pixel_format:=yuyv2rgb
 ros2 run rqt_image_view rqt_image_view /image_raw
 \end{lstlisting}
+
+\texttt{/dev/video1} above is what \texttt{v4l2-ctl --list-devices} reported
+for this camera on this machine --- substitute whatever it reports on yours.
 
 \begin{warningbox}
 \texttt{pixel\_format:=yuyv2rgb} is not optional on a device whose target
@@ -456,8 +504,12 @@ beacon plainly visible in \texttt{rqt\_image\_view}.
 Do not guess a replacement value: grab one frame and measure. Moving the
 beacon closer does \emph{not} fix it (tested --- still zero contours at
 threshold 190), because the ceiling is luminance, not blob size.
-\texttt{image\_threshold:=100} worked for this camera, this beacon and this
-lighting; it is a per-setup value, not a new project default.
+\texttt{image\_threshold:=100} worked for this camera and this beacon,
+confirmed again on the Pi 5 (Chapter~\ref{ch:ros2-pi5}) against the same
+physical camera --- now \texttt{logitech\_1080p.yaml}'s baked-in default
+rather than a per-launch override, since both measurements agree. A
+different camera or beacon still needs its own measurement, not this value
+assumed.
 \end{warningbox}
 
 \begin{warningbox}
@@ -477,10 +529,13 @@ accuracy is not.
 \chapter{Carolus under ROS2 --- Raspberry Pi 5}
 \label{ch:ros2-pi5}
 
-\runson{a \textbf{Raspberry Pi 5}, no RoboMaster attached --- a plain USB
-webcam (the same Logitech C920 as Chapter~\ref{ch:ros2-labpc}) is the only
-sensor. \textbf{Everything below is planned, not yet verified on this board
---- see the status line at the start of each section.}}
+\runson{a \textbf{Raspberry Pi 5}, hostname \texttt{maglev-desktop}, no
+RoboMaster attached --- a plain USB webcam (the same Logitech C920 as
+Chapter~\ref{ch:ros2-labpc}) is the only sensor. \textbf{Verified 2026-08-21}:
+native aarch64 build, the webcam driver publishing real frames,
+\texttt{carolus\_node} processing every frame correctly, and a real 4-LED
+beacon detected with \texttt{/pose} published. \textbf{Not verified}: pose
+accuracy --- \texttt{converged=0}, same as the lab PC.}
 
 \section{Why a Pi 5, and why aarch64 matters here}
 
@@ -494,7 +549,12 @@ Jazzy's own native target.
 
 \section{Installing Ubuntu 24.04 and ROS2 Jazzy, natively}
 
-\textbf{Status: planned, not yet run on this board.}
+\textbf{Status: inherited, not executed by this project.} This board arrived
+with Ubuntu 24.04.4 LTS and ROS2 Jazzy already installed and sourced (a prior
+Carolus ROS2 attempt on this same Pi, confirmed by the board's owner --- see
+Section~\ref{sec:ros2-pi5-webcam}). The commands below are the from-scratch
+procedure for a blank board; only the package-install line was actually run
+here, to add what was missing.
 
 \begin{lstlisting}[style=shell]
 # Ubuntu Server 24.04 LTS for Raspberry Pi, flashed via Raspberry Pi Imager
@@ -511,22 +571,23 @@ echo "deb [arch=$(dpkg --print-architecture) \
 sudo apt update
 sudo apt install ros-jazzy-ros-base ros-jazzy-image-transport \
     ros-jazzy-cv-bridge ros-jazzy-usb-cam ros-jazzy-rqt-image-view \
-    python3-colcon-common-extensions -y
+    python3-colcon-common-extensions v4l-utils -y
 \end{lstlisting}
 
 \begin{warningbox}
-\textbf{Not yet confirmed for this exact board.} The lab-PC chapter found
-that \texttt{ros-*-ros-base} alone omits \texttt{image\_transport} and
-\texttt{cv\_bridge} on Humble; assumed to hold for Jazzy on aarch64 too,
-since it is the same buildfarm packaging convention, but not independently
-checked here yet. Verify with \texttt{ros2 pkg list | grep -E
-"image_transport|cv_bridge"} after install, before assuming the command
-above was sufficient.
+\textbf{The \texttt{image\_transport}/\texttt{cv\_bridge} question from the
+lab-PC chapter is not cleanly answered by this board.} Both were already
+present here (\textbf{Verified 2026-08-21}: \texttt{ros2 pkg list | grep -E
+"image\_transport|cv\_bridge"} lists both), but only because this Pi's
+pre-existing Carolus workspace had already pulled them in as a dependency ---
+this run does not test whether \texttt{ros-jazzy-ros-base} alone would have
+provided them on a genuinely blank board. Only \texttt{ros-jazzy-usb-cam} and
+\texttt{v4l-utils} were confirmed newly installed here.
 \end{warningbox}
 
 \section{Building \texttt{carolus\_ros2} on aarch64}
 
-\textbf{Status: planned, not yet run on this board.}
+\textbf{Status: Verified 2026-08-21.}
 
 \begin{lstlisting}[style=shell]
 source /opt/ros/jazzy/setup.bash
@@ -535,23 +596,31 @@ ln -s /path/to/raspberry5-carolus-ros2/carolus_ros2 src/carolus_ros2
 colcon build --packages-select carolus_ros2
 \end{lstlisting}
 
-Expected to build unmodified --- \texttt{carolus\_core\_ros2}'s dependencies
-(OpenCV, Eigen3, Ceres) are all available as \texttt{ros-jazzy-*}/plain
-\texttt{apt} packages for arm64, and nothing in the source
-(Chapter~\ref{ch:ros2-labpc}) uses an x86-specific intrinsic or a
-compiler flag that would not carry over. \textbf{This is a prediction, not a
-measurement} --- record the actual build time and any warning here once run,
-the same way Chapter~\ref{ch:ros2-labpc} recorded 7.45\,s (Humble) and
-11.3\,s (Jazzy) on the lab PC.
+Builds unmodified, confirming the source (Chapter~\ref{ch:ros2-labpc}) carries
+over to aarch64 with no x86-specific intrinsic or compiler flag. \textbf{Measured}:
+46.0\,s (colcon-reported) / 47.479\,s real, 0 compiler warnings ---
+alongside the lab PC's 7.45\,s (Humble) and 11.3\,s (Jazzy), and the first of
+the three on aarch64 rather than x86\_64.
 
 \section{Against the webcam}
+\label{sec:ros2-pi5-webcam}
 
-\textbf{Status: planned, not yet run on this board.}
+\textbf{Status: Verified 2026-08-21}, including a real beacon detected and
+\texttt{/pose} published (see the success criteria at the end of this
+section). \textbf{Not verified}: pose accuracy --- \texttt{converged=0}, same
+limitation as the lab PC.
 
 Same procedure as Section~\ref{sec:ros2-realcam}, same physical camera, same
 config file (\texttt{carolus\_ros2/config/logitech\_1080p.yaml}) --- the
 point of reusing it unmodified is that a difference in behaviour would then
 be attributable to the board, not to a re-tuned parameter.
+
+Find the camera's actual device number first --- do not assume it carries
+over from another machine:
+
+\begin{lstlisting}[style=shell]
+v4l2-ctl --list-devices
+\end{lstlisting}
 
 \begin{lstlisting}[style=shell]
 ros2 run usb_cam usb_cam_node_exe --ros-args \
@@ -563,37 +632,101 @@ ros2 run carolus_ros2 carolus_node --ros-args \
     -p image_threshold:=100
 \end{lstlisting}
 
+\texttt{/dev/video0} above is what \texttt{v4l2-ctl --list-devices} reports
+for the webcam on this Pi --- not the lab PC's \texttt{/dev/video1}, device
+enumeration is host-specific.
+
 \begin{warningbox}
-\texttt{video\_device} is written as \texttt{/dev/video0} above, not the
-lab PC's \texttt{/dev/video1} --- device enumeration is host-specific
-(driven by what else is attached and in what order), never assume the same
-device path carries over between machines. Confirm with
-\texttt{v4l2-ctl --list-devices} (or, if unavailable,
-\texttt{ls /dev/video*} plus \texttt{udevadm info}) before launching.
+This Pi's own ISP (\texttt{pispbe}/\texttt{rpivid}) occupies
+\texttt{/dev/video19-37} --- a plain \texttt{ls /dev/video*} lists 21
+devices, and the webcam is easy to misidentify among them without running
+\texttt{v4l2-ctl --list-devices} to see which one is actually named
+``HD Pro Webcam C920''.
 \end{warningbox}
 
 \texttt{image\_threshold:=100} is carried over from the lab PC (see
 Section~\ref{sec:ros2-realcam}'s first warningbox for why the default 190
-finds nothing on this camera). It is a per-setup value --- if the Pi 5 run
-finds nothing, re-measure on a frame from \emph{that} board's own feed rather
-than assuming 100 transfers.
+finds nothing on this camera) --- not independently re-derived from a pixel
+measurement on this board, but confirmed to work: detection succeeded with
+this value unchanged, see the success criteria at the end of this section.
 
-\textbf{Success criteria, not yet measured on this board.} Two stages, in
-order --- do not conflate them:
+\textbf{Verified 2026-08-21}: \texttt{usb\_cam\_node\_exe} publishes real
+1280x720 \texttt{rgb8} frames on \texttt{/image\_raw} (confirmed with
+\texttt{ros2 topic echo /image\_raw --once}, live pixel data, not just topic
+presence), logging \texttt{image subscription QoS profile: sensor\_data (best
+effort)} and \texttt{carolus\_ros2 up, camera\_topic=/image\_raw} on startup.
+
+\begin{warningbox}
+\textbf{This node uses a plain \texttt{rclcpp} subscription, not
+\texttt{image\_transport}.} \texttt{image\_transport::create\_subscription}'s
+``raw'' transport plugin does not reliably deliver frames on this board ---
+verified against a plain \texttt{create\_subscription<sensor\_msgs::msg::Image>},
+which does. Since this node only ever used the ``raw'' transport (no
+compression, no other \texttt{image\_transport} feature), the dependency is
+dropped entirely rather than left unused --- absent from
+\texttt{CMakeLists.txt} and \texttt{package.xml}.
+\end{warningbox}
+
+\textbf{Re-verified on the lab PC (Humble, Chapter~\ref{ch:ros2-labpc})}:
+\texttt{colcon build --packages-select carolus\_ros2} against
+\texttt{/opt/ros/humble} (native, no container needed there --- Ubuntu 22.04
+is Humble's own target) --- 16.8\,s / 17.8\,s real, 0 compiler warnings.
+Runtime not re-confirmed: no webcam was attached to the lab PC at the time.
+
+\textbf{Success criteria, both stages.}
 
 \begin{enumerate}
   \item \textbf{Pipeline healthy, no beacon in frame}: \texttt{carolus\_node}
   runs with no crash, logs \texttt{"Time to find contours"} at the camera's
-  actual rate, reports \texttt{"0 contours found"}. Record the measured rate.
+  actual rate, reports contour/blob rejection with no beacon present.
+  \textbf{Verified 2026-08-21}: sustained runs (6--30\,s, reproduced twice)
+  log \texttt{"Time to find contours: \textasciitilde0.0013--0.09\,s"} per frame followed by
+  \texttt{"Not enough blobs < 4"} or \texttt{"Not enough blobs with required
+  circularity"} --- the correct result with no beacon in view, at roughly
+  10\,Hz once warmed up, matching this camera's own measured frame-rate
+  ceiling at this resolution (Section~\ref{sec:ros2-realcam}).
   \item \textbf{Beacon in frame}: four blobs found, target sort succeeds,
-  Ceres runs, \texttt{/pose} publishes. Record \texttt{final\_cost} and
-  whether \texttt{converged} is 0 or 1 --- on the lab PC it was consistently
-  0, and whether the Pi 5 behaves the same is one of the more interesting
-  things this chapter can establish.
+  Ceres runs, \texttt{/pose} publishes. \textbf{Verified 2026-08-21}, a
+  physical 4-LED beacon (the same one used in Section~\ref{sec:ros2-realcam})
+  placed in front of this Pi's webcam: target sort succeeded
+  (\texttt{max distance = 193.37}), the Ceres solve ran
+  (\texttt{final\_cost=23.19}, \texttt{iterations=31}, \texttt{converged=0}
+  --- consistent with the lab PC's own result, not a new problem), and
+  \texttt{/pose} published
+  \texttt{position=(4.246, 2.974, -7.478)},
+  \texttt{orientation=(-0.650, -0.240, 0.491, 0.528)} (normalised). These
+  numbers match the lab PC's own recorded pose to within a few centimetres
+  --- the same beacon and a similar camera placement, not a coincidence, and
+  a useful cross-check that the two ports agree.
 \end{enumerate}
 
-Both stages passed on the lab PC (Section~\ref{sec:ros2-realcam}). Matching
-stage 1 but failing stage 2 would point at the camera/lighting/threshold;
-failing stage 1 would point at the board, the driver or the build.
+\chapter*{Known Limitations}
+\addcontentsline{toc}{chapter}{Known Limitations}
+
+\textbf{Detection is proven on both targets. Pose accuracy is not, on
+either.} This applies across the whole document, not just one chapter:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+ & \textbf{Lab PC (Humble)} & \textbf{Raspberry Pi 5 (Jazzy)} \\
+\midrule
+Beacon detected, \texttt{/pose} published & yes & yes \\
+Ceres \texttt{converged} & 0, every solve & 0, every solve \\
+Sign of inaccuracy & two visibly different beacon positions produced poses a few cm apart & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\texttt{ceresP4P.cpp} hits \texttt{max\_num\_iterations=30} without
+converging on either target, and the pose is written \emph{unconditionally}
+--- a non-converged solve returns a finite, plausible-looking pose that is
+indistinguishable from a correct one unless \texttt{converged}/
+\texttt{final\_cost}/\texttt{iterations} are read directly. The Pi 5's pose
+matches the lab PC's own recorded value to within a few centimetres, which
+confirms the two ports agree with \emph{each other} --- not that either is
+numerically correct, since nothing in this document establishes ground
+truth. \textbf{Do not report a pose from either target as accurate without
+independently measuring it against a known position first.}
 
 \end{document}
