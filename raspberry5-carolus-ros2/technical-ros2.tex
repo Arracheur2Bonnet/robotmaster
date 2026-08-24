@@ -746,14 +746,23 @@ as it can and compares \texttt{/pose} against its own achieved rate.
 Lab PC, Humble, native, x86\_64        & 264.9\,Hz & 657.6\,Hz & 40\,\% \\
 Lab PC, Humble, in a container, x86\_64 & 266.6\,Hz & 646.8\,Hz & 41\,\% \\
 Lab PC, Jazzy, in a container, x86\_64  & 275.9\,Hz & 690.6\,Hz & 40\,\% \\
-Raspberry Pi 5, Jazzy, native, aarch64 & \multicolumn{3}{l}{not yet run} \\
+Raspberry Pi 5, Jazzy, native, aarch64 & \textbf{52.8\,Hz} & 103.1\,Hz & 51\,\% \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-So Carolus sustains roughly \textbf{265\,Hz} on this PC while the camera
+So Carolus sustains roughly \textbf{265\,Hz} on the lab PC while the camera
 delivers 10 --- the observed rate is camera-bound by a factor of about 26,
-and no realistic camera would make the node the limit.
+and no realistic camera would make the node the limit. \textbf{The Pi 5 row,
+measured 2026-08-22}, is genuinely lower: 52.8\,Hz, still with 51\,\%
+headroom over its own harness so the number is real, not an artefact of a
+Python publisher too slow to say otherwise (this board's 4-core Cortex-A76 is
+the harness's own bottleneck too, at roughly 103\,Hz rather than the lab PC's
+~650\,Hz --- the two are not on the same footing, and the lab PC's 40\,\%
+headroom was measured against a considerably faster harness). A 5x gap
+between a quad-core ARM board and an x86\_64 desktop for a Ceres-solve-bound
+workload is unsurprising and still leaves the Pi 5 roughly 5x faster than the
+10\,Hz the camera ever delivers.
 
 Rows 1 and 2 are the only pair that isolates containerisation, being the same
 distribution either side of the boundary: \textbf{+0.6\,\%, no measurable
@@ -761,9 +770,15 @@ cost}. Row 3 differs in two variables at once (distribution and container)
 and should not be read as a Jazzy-versus-Humble result.
 
 Detection alone, with no beacon in frame so the solver never runs, reached
-458.2\,Hz on the native host, with contour extraction at 0.258\,ms mean over
-400 samples. The gap puts the sort-plus-solve stage at roughly 1.6\,ms per
-frame --- which is where the time goes, and is unaffected by the middleware.
+458.2\,Hz on the lab PC (native), with contour extraction at 0.258\,ms mean
+over 400 samples; on the Pi 5, roughly 57.5\,Hz by counting processed-frame
+log lines rather than the script's own instrumented method (\texttt{/pose}
+never publishes with no beacon, so there is nothing for the built-in
+headroom check to compare against). The lab PC's gap between detection-only
+and full-solve is a clean 1.7x; the Pi 5's is only about 1.1x, which is more
+consistent with the weaker board's own Python-harness ceiling limiting the
+detection-only figure than with the solve itself costing less there --- this
+number is reported with that caveat, not as clean as the lab PC's.
 
 \begin{warningbox}
 \textbf{A benchmark of this shape measures the publisher unless it proves
@@ -823,7 +838,7 @@ Beacon detected, \texttt{/pose} published & yes & yes \\
 Ceres \texttt{converged} & 0, every solve & 0, every solve \\
 \addlinespace
 Direct evidence of inaccuracy & yes --- two visibly different beacon
-positions gave poses a few cm apart & not tested \\
+positions gave poses a few cm apart & \textbf{yes, see below} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -836,7 +851,32 @@ indistinguishable from a correct one unless \texttt{converged}/%
 matches the lab PC's own recorded value to within a few centimetres, which
 confirms the two ports agree with \emph{each other} --- not that either is
 numerically correct, since nothing in this document establishes ground
-truth. \textbf{Do not report a pose from either target as accurate without
-independently measuring it against a known position first.}
+truth.
+
+\textbf{Measured 2026-08-22, Pi 5, 38 consecutive \texttt{/pose} samples over
+a few seconds, beacon not deliberately moved during the capture:} the
+readings do not sit at one value with sensor noise around it. They cycle
+through roughly five distinct clusters, several centimetres apart,
+repeatedly returning to the same clusters rather than drifting --- e.g.\
+$(4.247, 2.975, -7.491)$, $(4.217, 2.953, -7.459)$, $(4.210, 2.949, -7.451)$,
+$(4.260, 2.990, -7.501)$, interleaved frame to frame with no beacon movement
+to explain the jumps. \texttt{max distance} (the point-correspondence sort's
+own diagnostic) alternated between approximately 98 and 353 across
+consecutive frames while \texttt{final\_cost} stayed in a narrow 21--24 band
+--- the signature of the sort landing on a different correspondence each
+time rather than of a single stable fit degrading. This is new evidence for
+the same conclusion the lab PC's 20 August displacement test already
+pointed to, from an independent angle: \textbf{a solver or correspondence
+instability, not a calibration bias}, since a miscalibrated-but-stable
+camera would not produce discrete jumps with the target undisturbed. Also
+worth noting plainly: $z\approx-7.5\,$m is not a physically plausible depth
+for an indoor desk setup, which is a further sign that these numbers are not
+close to correct regardless of cause.
+
+\textbf{Do not report a pose from either target as accurate without
+independently measuring it against a known position first, and do not expect
+camera recalibration alone to fix the above} --- nothing here rules out
+calibration as \emph{a} problem, but the discrete-jump pattern is not what a
+calibration error produces on its own.
 
 \end{document}
