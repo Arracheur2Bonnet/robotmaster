@@ -726,9 +726,12 @@ It earned its keep on first use: a run showed `/pose` at 238 Hz against 165 Hz o
 | Lab PC, Humble **native**, x86\_64 | **264.9 Hz** | 657.6 Hz | 40 % |
 | Lab PC, Humble **in a container**, x86\_64 | **266.6 Hz** | 646.8 Hz | 41 % |
 | Lab PC, Jazzy **in a container**, x86\_64 | **275.9 Hz** | 690.6 Hz | 40 % |
-| Raspberry Pi 5, Jazzy native, aarch64 | not yet run | — | — |
+| Raspberry Pi 5, Jazzy **native**, aarch64 | **52.8 Hz** | 103.1 Hz | 51 % |
+| Lab PC, Jazzy **native (QEMU/KVM VM)**, x86\_64 | 204.1 Hz | 664.9 Hz | 31 % |
 
 Same distro either side of the container boundary (rows 1 and 2, the only pair that isolates the variable): **+0.6 %, no measurable cost**. Detection-only throughput on the native host was 458.2 Hz, with contour finding at 0.258 ms mean over 400 samples — so the sort-plus-solve stage costs about 1.6 ms per frame.
+
+**Row 5 (the VM) is not a clean comparison against row 3** — no spare bare-metal 24.04 x86\_64 machine was available, so it ran under QEMU/KVM while the host carried unrelated concurrent load (uptime load average 1.53). The gap to row 3's 275.9 Hz is far more likely virtualisation + host contention than a real Jazzy-native-vs-container difference. Row 4 (Pi 5) is a clean, real result: 51 % headroom over its own harness, ~5× slower than the lab PC and still ~5× faster than any camera used so far.
 
 **Includes the BUG-102 guard** (`PYTHONNOUSERSITE`, self-re-exec), same trap `capture_checkerboard.py` hits: a pip-installed numpy 2.2.6 in `~/.local` shadows the system numpy that apt's `cv2` was built against. The `cv_bridge` half of that script's guard is deliberately not copied — it is ROS1-specific.
 
