@@ -761,10 +761,26 @@ as it can and compares \texttt{/pose} against its own achieved rate.
 Lab PC, Humble, native, x86\_64        & 264.9\,Hz & 657.6\,Hz & 40\,\% \\
 Lab PC, Humble, in a container, x86\_64 & 266.6\,Hz & 646.8\,Hz & 41\,\% \\
 Lab PC, Jazzy, in a container, x86\_64  & 275.9\,Hz & 690.6\,Hz & 40\,\% \\
+Lab PC, Jazzy, native, x86\_64 (VM)$^\dagger$ & 204.1\,Hz & 664.9\,Hz & 31\,\% \\
 Raspberry Pi 5, Jazzy, native, aarch64 & \textbf{52.8\,Hz} & 103.1\,Hz & 51\,\% \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+\begin{warningbox}
+\textbf{$^\dagger$ Row 4 is not bare metal, and reads lower for a reason
+that has nothing to do with Jazzy, Humble, or containers.} No spare 24.04
+x86\_64 hardware was available, so this row comes from Ubuntu 24.04 +
+ROS2 Jazzy installed with no container inside a QEMU/KVM virtual machine on
+the same lab PC, measured while the host itself carried a load average of
+1.53 from unrelated work running concurrently. A hypervisor adds real
+overhead beyond a container's near-zero one (trap-and-emulate, virtio I/O),
+and a shared, non-idle host compounds it. \textbf{Do not read row 4 against
+row 3 as "native is slower than a container"} --- the 71.8\,Hz gap is far
+more plausibly virtualisation and host contention than architecture. This
+row is the best proxy available without dedicated 24.04 hardware; a
+bare-metal run should replace it if such a machine becomes available.
+\end{warningbox}
 
 So Carolus sustains roughly \textbf{265\,Hz} on the lab PC while the camera
 delivers 10 --- the observed rate is camera-bound by a factor of about 26,
@@ -782,7 +798,10 @@ workload is unsurprising and still leaves the Pi 5 roughly 5x faster than the
 Rows 1 and 2 are the only pair that isolates containerisation, being the same
 distribution either side of the boundary: \textbf{+0.6\,\%, no measurable
 cost}. Row 3 differs in two variables at once (distribution and container)
-and should not be read as a Jazzy-versus-Humble result.
+and should not be read as a Jazzy-versus-Humble result. Row 4 differs in
+three (distribution, container-vs-VM, and host load) and should not be read
+against either row 1 or row 3 as a clean comparison --- see the warning
+above.
 
 Detection alone, with no beacon in frame so the solver never runs, reached
 458.2\,Hz on the lab PC (native), with contour extraction at 0.258\,ms mean
