@@ -167,17 +167,24 @@ echo "deb [arch=$(dpkg --print-architecture) \
     http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
     | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
 sudo apt update
-sudo apt install ros-humble-ros-base ros-humble-image-transport \
-    ros-humble-cv-bridge python3-colcon-common-extensions \
+sudo apt install ros-humble-ros-base ros-humble-cv-bridge \
+    python3-colcon-common-extensions \
     libeigen3-dev libceres-dev libopencv-dev build-essential cmake -y
 \end{lstlisting}
 
 \begin{warningbox}
 \texttt{ros-humble-ros-base} alone does \textbf{not} include
-\texttt{image\_transport} or \texttt{cv\_bridge} --- the same gap exists on
-the ROS1 side of this project (\texttt{ros-noetic-ros-base} vs.
-\texttt{ros-noetic-desktop-full}), and skipping either package here
-reproduces the same broken-build failure on ROS2. The four packages after
+\texttt{cv\_bridge} --- the same gap exists on the ROS1 side of this project
+(\texttt{ros-noetic-ros-base} vs. \texttt{ros-noetic-desktop-full}), and
+skipping it here reproduces the same broken-build failure on ROS2.
+\texttt{image\_transport} is deliberately \textbf{not} in this list ---
+\texttt{carolus\_ros2}'s \texttt{package.xml} and \texttt{CMakeLists.txt}
+declare no dependency on it (checked directly, not inferred), a direct
+consequence of BUG-127 (Chapter~\ref{ch:ros2-pi5}) replacing
+\texttt{image\_transport::create\_subscription} with a plain
+\texttt{rclcpp::create\_subscription}. An earlier revision of this
+install command listed it anyway, left over from before that fix; installing
+it does no harm, but nothing here needs it. The four packages after
 \texttt{python3-colcon-common-extensions} are not ROS packages at all ---
 they are \texttt{carolus\_core\_ros2}'s own C++ dependencies
 (\texttt{find\_package(Eigen3/Ceres/OpenCV)} in its \texttt{CMakeLists.txt}),
@@ -201,7 +208,7 @@ docker run -d --name carolus_jazzy \
     ros:jazzy-ros-base sleep infinity
 docker exec carolus_jazzy apt-get update
 docker exec carolus_jazzy apt-get install -y \
-    ros-jazzy-image-transport ros-jazzy-cv-bridge \
+    ros-jazzy-cv-bridge \
     python3-colcon-common-extensions \
     libeigen3-dev libceres-dev libopencv-dev build-essential cmake
 \end{lstlisting}
@@ -619,20 +626,28 @@ echo "deb [arch=$(dpkg --print-architecture) \
     http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
     | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
 sudo apt update
-sudo apt install ros-jazzy-ros-base ros-jazzy-image-transport \
-    ros-jazzy-cv-bridge ros-jazzy-usb-cam ros-jazzy-rqt-image-view \
+sudo apt install ros-jazzy-ros-base ros-jazzy-cv-bridge \
+    ros-jazzy-usb-cam ros-jazzy-rqt-image-view \
     python3-colcon-common-extensions v4l-utils -y
 \end{lstlisting}
 
 \begin{warningbox}
-\textbf{The \texttt{image\_transport}/\texttt{cv\_bridge} question from the
-lab-PC chapter is not cleanly answered by this board.} Both were already
-present here (\textbf{Verified 2026-08-21}: \texttt{ros2 pkg list | grep -E
-"image\_transport|cv\_bridge"} lists both), but only because this Pi's
-pre-existing Carolus workspace had already pulled them in as a dependency ---
-this run does not test whether \texttt{ros-jazzy-ros-base} alone would have
-provided them on a genuinely blank board. Only \texttt{ros-jazzy-usb-cam} and
-\texttt{v4l-utils} were confirmed newly installed here.
+\textbf{\texttt{image\_transport} is deliberately absent from this list, and
+was not always.} An earlier revision installed
+\texttt{ros-jazzy-image-transport} here too, and a 2026-08-21 check found it
+already present regardless (\texttt{ros2 pkg list | grep -E
+"image\_transport|cv\_bridge"} lists both) --- but only because this Pi's
+pre-existing Carolus workspace had already pulled it in as a dependency of
+something else, not because this install command provided it. Since
+BUG-127 (Chapter~\ref{ch:ros2-pi5}) removed \texttt{image\_transport} from
+\texttt{carolus\_ros2}'s own manifest, that earlier finding was answering a
+question this package no longer asks. \texttt{cv\_bridge} is the one
+genuinely declared dependency, and \texttt{ros-jazzy-ros-base} alone does
+\textbf{not} include it --- confirmed on a genuinely blank
+\texttt{ros:jazzy-ros-base} container (Section~\ref{sec:ros2-maxrate}'s
+benchmark setup, 2026-08-22: \texttt{ros-jazzy-cv-bridge} had to be
+installed explicitly), not on this Pi, whose pre-existing workspace cannot
+answer the question either way.
 \end{warningbox}
 
 \section{Building \texttt{carolus\_ros2} on aarch64}
@@ -873,10 +888,43 @@ worth noting plainly: $z\approx-7.5\,$m is not a physically plausible depth
 for an indoor desk setup, which is a further sign that these numbers are not
 close to correct regardless of cause.
 
+\textbf{Measured 2026-08-22, Pi 5, a real controlled displacement --- the
+decisive test.} The physical beacon was measured with a ruler at
+89\,cm (its off-plane LED) / 94\,cm (the other three) from the camera;
+\texttt{/pose} was captured over several seconds and found rock-stable
+($x{=}4.2507$, $y{=}2.9736$, $z{=}-7.4884$, agreeing to five decimal places
+across 44 samples --- a different behaviour from the discrete jumps above,
+noted rather than reconciled: two distinct instability symptoms have now
+been observed on two occasions, not one explained mechanism). The beacon was
+then moved straight back by a further \textbf{measured 30\,cm} with the
+camera untouched. \texttt{/pose} was captured again, equally stable at its
+new value ($x{=}4.2528$, $y{=}2.9750$, $z{=}-7.4919$, 5 samples). The
+resulting change:
+
+\begin{center}
+\begin{tabular}{@{}lr@{}}
+\toprule
+Real physical displacement (measured) & 300\,mm \\
+\texttt{/pose} displacement (computed from the two means) & 4.28\,mm \\
+Fraction of the real displacement reflected & \textbf{1.43\,\%} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A camera that is merely miscalibrated still responds to a real 300\,mm move
+--- wrong scale, wrong sign, offset, but a response of the right order of
+magnitude. \textbf{A response of 1.43\,\% is not a calibration error; it is
+the absence of a response.} This settles the question directly rather than
+by inference: recalibrating this camera cannot be expected to fix pose
+accuracy on its own, because the pose is not meaningfully reacting to the
+beacon's real position in the first place. Whatever combination of
+correspondence sorting and solver behaviour produces this needs to be found
+before calibration is worth spending a session on.
+
 \textbf{Do not report a pose from either target as accurate without
-independently measuring it against a known position first, and do not expect
-camera recalibration alone to fix the above} --- nothing here rules out
-calibration as \emph{a} problem, but the discrete-jump pattern is not what a
-calibration error produces on its own.
+independently measuring it against a known position first.} Nothing here
+rules out calibration as \emph{a} contributing problem, but the 1.43\,\%
+displacement test above is the reason it should not be the \emph{first}
+thing fixed.
 
 \end{document}
