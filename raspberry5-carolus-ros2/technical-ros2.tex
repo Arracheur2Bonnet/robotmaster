@@ -195,6 +195,7 @@ until a genuinely blank machine tries to build it.
 \end{warningbox}
 
 \section{Installing ROS2 Jazzy, in a container}
+\label{sec:ros2-jazzy-container}
 
 Jazzy targets Ubuntu 24.04, not 22.04 --- installing its packages natively on
 a 22.04 host risks library-version ABI mismatches between what Jazzy expects
@@ -216,6 +217,53 @@ docker exec carolus_jazzy apt-get install -y \
 \texttt{/path/to/raspberry5-carolus-ros2} is a placeholder, here and
 everywhere else it appears in this document --- substitute this folder's
 actual absolute path on your machine.
+
+\section{Installing ROS2 Jazzy, natively (no container) --- on an actual 24.04 machine}
+\label{sec:ros2-jazzy-native-pc}
+
+The container above exists for one reason only: this document was written
+on a 22.04 machine, and Jazzy targets 24.04. \textbf{If your machine
+genuinely runs Ubuntu 24.04, skip the container entirely} --- the
+mismatch Section~\ref{sec:ros2-jazzy-container} exists to sidestep is gone,
+and native install is simpler:
+
+\begin{lstlisting}[style=shell]
+sudo apt install software-properties-common curl -y
+sudo add-apt-repository universe -y
+sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+    -o /usr/share/keyrings/ros-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) \
+    signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+    http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+    | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+sudo apt update
+sudo apt install ros-jazzy-ros-base ros-jazzy-cv-bridge \
+    python3-colcon-common-extensions \
+    libeigen3-dev libceres-dev libopencv-dev build-essential cmake -y
+\end{lstlisting}
+
+Identical in shape to Section~\ref{sec:ros2-jazzy-container}'s container
+install and to the Pi 5's own native install
+(Chapter~\ref{ch:ros2-pi5}) --- same packages, same reasoning for each
+one (\texttt{ros-jazzy-ros-base} alone omits \texttt{cv\_bridge};
+\texttt{image\_transport} is deliberately absent, unneeded since BUG-127).
+The only thing that changes between all three paths is whether a container
+sits underneath.
+
+\begin{warningbox}
+\textbf{Status, 2026-08-22: measured only inside a QEMU/KVM virtual machine
+on the lab PC, not yet on bare-metal x86\_64 hardware.} No spare 24.04 PC
+was available when this section was written. The VM result
+(Section~\ref{sec:ros2-maxrate}, row 4) is a real native-Jazzy-no-container
+measurement in every sense except one: it ran under a hypervisor, sharing
+the host's physical cores with unrelated concurrent load, so its number is
+explicitly caveated rather than trusted as clean. \textbf{This section's
+own commands were exercised end-to-end in that VM} (repo added, packages
+installed, \texttt{carolus\_ros2} built, benchmarked) --- so the
+\emph{procedure} is verified, even though the \emph{hardware} it ran on
+was not bare metal. Update this box and Section~\ref{sec:ros2-maxrate}'s
+table together the day a genuine 24.04 PC runs this.
+\end{warningbox}
 
 \section{The \texttt{carolus\_ros2} package}
 
