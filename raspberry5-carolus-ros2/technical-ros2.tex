@@ -1082,8 +1082,18 @@ outputs cluster similarly --- so this observation is
 displacement test above, whose conclusion does not depend on
 \texttt{known\_points} being correct: a geometry mismatch predicts a pose
 at the wrong scale, not one that fails to respond to a real 300\,mm move
-at all. \textbf{The genuinely missing measurement:} nobody has yet put a
-ruler to any of the three physical beacons used so far and checked the
-result against \texttt{known\_points}.
+at all.
+
+\textbf{That measurement was taken the same day, on today's beacon
+specifically.} All six pairwise LED-to-LED distances were measured with a
+tape measure and checked against what \texttt{known\_points} predicts
+(side-to-side 16.50\,cm, each side to the top LED 10.95\,cm, each side to
+the off-plane LED 9.94\,cm, top to off-plane 9.09\,cm) --- \textbf{matched
+to within 0.1--0.2\,cm}, the tape measure's own resolution limit rather
+than a real discrepancy. \texttt{known\_points} is confirmed correct for
+\emph{this} beacon, which rules out a geometry mismatch as the explanation
+for what was observed on it. \textbf{Not yet done:} the same check on the
+Pi 5's own beacon and the RoboMaster's --- different physical units, not
+covered by this result.
 
 \end{document}
