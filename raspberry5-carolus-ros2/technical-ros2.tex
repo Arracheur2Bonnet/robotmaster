@@ -549,6 +549,15 @@ the synthetic test, what the camera actually sees is not known in advance.
 sudo apt install ros-humble-usb-cam ros-humble-rqt-image-view v4l-utils
 \end{lstlisting}
 
+\textbf{Written for Humble only, same gap as the build recipes above ---
+found again 2026-08-24.} On a native Jazzy host, substitute
+\texttt{ros-jazzy-usb-cam ros-jazzy-rqt-image-view v4l-utils}; installed
+and confirmed this way on the second bare-metal 24.04 machine (Chapter
+reference: Section~\ref{sec:ros2-jazzy-native-pc}). The Pi 5 chapter
+already bundles its Jazzy equivalent into one command
+(Chapter~\ref{ch:ros2-pi5}); this section never had one for a Jazzy host
+that isn't the Pi 5.
+
 Find the camera's actual device number first --- never assume it, a machine
 with more than one video device (this one included) will not always put the
 webcam at \texttt{/dev/video0}:
@@ -1057,5 +1066,24 @@ independently measuring it against a known position first.} Nothing here
 rules out calibration as \emph{a} contributing problem, but the 1.43\,\%
 displacement test above is the reason it should not be the \emph{first}
 thing fixed.
+
+\textbf{Reproduced 2026-08-24 on a third machine, third physical beacon,
+third camera unit, real distance 60\,cm} --- the discrete-jump symptom
+again (12 samples, several clusters, \texttt{max distance} again
+alternating between multiple values with outright sort failures
+interleaved), landing suspiciously close to the Pi 5's own numbers despite
+nothing physical matching between the two setups. \textbf{Checked before
+being written up as independent confirmation:} \texttt{known\_points} is
+the identical, shared, already-flagged-unverified beacon geometry on every
+machine tested against a real camera so far. An identical wrong geometry
+applied identically everywhere is a live, undismissed explanation for why
+outputs cluster similarly --- so this observation is
+\textbf{corroborating, not independently decisive}, unlike the 30\,cm
+displacement test above, whose conclusion does not depend on
+\texttt{known\_points} being correct: a geometry mismatch predicts a pose
+at the wrong scale, not one that fails to respond to a real 300\,mm move
+at all. \textbf{The genuinely missing measurement:} nobody has yet put a
+ruler to any of the three physical beacons used so far and checked the
+result against \texttt{known\_points}.
 
 \end{document}
