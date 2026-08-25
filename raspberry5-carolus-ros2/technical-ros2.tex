@@ -1096,4 +1096,49 @@ for what was observed on it. \textbf{Not yet done:} the same check on the
 Pi 5's own beacon and the RoboMaster's --- different physical units, not
 covered by this result.
 
+\subsection{The mechanism, identified by reading the code}
+
+Two facts, each confirmed by reading the relevant source in full rather
+than inferred: \texttt{ceresP4P.cpp} solves \emph{every} frame from the
+identical fixed starting vector
+\texttt{\{0.000, 0.000, -0.001, 0.0, 0.0, 0.7\}} --- no warm start from the
+previous pose, nothing carries state between frames. And
+\texttt{pose\_est.cpp}'s target-correspondence sort, which decides which
+detected blob maps to which of the beacon's four known points, picks its
+reference edge by comparing \textbf{unit bearing vectors}
+(\texttt{carolus\_node\_ros2.cpp}: each point is built as
+\texttt{Eigen::Vector3d(p.x, p.y, 1.0).normalized()}) --- an angular
+comparison as seen from the camera, not the beacon's fixed real-world
+dimensions. The beacon's true longest edge has no guaranteed angular
+advantage at an arbitrary viewing angle, so ordinary measurement noise on
+the blob centroids can flip which edge looks longest and change the whole
+point assignment fed to the solver.
+
+\textbf{Together, these predict every symptom observed so far, on two
+boards and three physical beacons, without a second explanation needed for
+any of them:} a correspondence assignment that flips between a small
+number of discrete states under ordinary noise, each solved from the same
+fixed start with no memory of the last good solve, each settling into its
+own repeatable wrong local minimum --- discrete pose clusters rather than
+continuous jitter, a \texttt{max distance} diagnostic cycling through a
+small repeating set of values, near-zero response to a real displacement,
+and outright sort failures when the angular near-tie is too close to
+resolve.
+
+\begin{warningbox}
+\textbf{This mechanism was already half on record.} A dated comment in
+\texttt{ceresP4P.cpp} (2026-08-13) names the fixed-initial-guess risk
+directly and cites an independent report of the identical line producing
+curved tracks in a different integration of this same inherited node ---
+and this project's own bug log had already filed it, unconfirmed, in
+2026-07-31, waiting on exactly the diagnostics this investigation has now
+produced. \textbf{This is reasoning from code that fits every observation,
+not a controlled experiment.} The concrete next step: instrument the
+correspondence sort to log which edge it selects alongside the resulting
+pose, frame by frame --- on a real beacon, or, without needing hardware at
+all, a synthetic geometry deliberately built to sit at the angular
+near-tie this mechanism depends on. No change has been made to the solver
+or the sort pending that verification.
+\end{warningbox}
+
 \end{document}
