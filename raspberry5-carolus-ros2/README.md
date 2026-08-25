@@ -44,7 +44,8 @@ manual — this assumes ROS2 is already present.
 | Builds on ROS2 Jazzy (container) | verified 2026-08-18 |
 | Detects a real beacon, publishes `/pose` | verified 2026-08-20, lab PC + Logitech C920; verified again 2026-08-21, Pi 5 + same beacon |
 | Builds/runs on Raspberry Pi 5 (aarch64, native) | verified 2026-08-21 — build and webcam confirmed; beacon detection in the row above |
-| Maximum update rate | **measured 2026-08-22:** ~265 Hz lab PC (native or container, ±0.6%), 52.8 Hz Pi 5 — all far above the 10 FPS camera ceiling; see the manual's "Maximum update rate" section |
+| Maximum update rate | **measured 2026-08-22, confirmed on real bare-metal 24.04 hardware 2026-08-24:** ~265 Hz lab PC (native or container, ±0.6%), 52.8 Hz Pi 5, 203.7 Hz on a second dedicated 24.04 machine — all far above the 10 FPS camera ceiling; see the manual's "Maximum update rate" section |
+| Guide load-tested end to end | **2026-08-24, second blank 24.04 machine, followed literally** — found 3 real gaps (no clone instructions, a missing Jazzy-host build recipe, a DDS-discovery timing note), all fixed in the manual the same day |
 | Pose values trustworthy | **no, and it's not a calibration problem** — a real, ruler-measured 30 cm beacon displacement moved `/pose` by only 4.28 mm (**1.43%**, measured 2026-08-22, BUG-131). Recalibrating first would measure a target that isn't being tracked; see the manual's Known Limitations chapter |
 
 ## The one thing to know before running it

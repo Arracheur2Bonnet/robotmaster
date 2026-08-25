@@ -152,6 +152,24 @@ second and third time, under different toolchains and middlewares, as the
 actual test of that claim --- not that the code compiles, but that it
 produces the same numbers.
 
+\section{Getting this folder onto a blank machine}
+
+Every command in this document assumes \texttt{raspberry5-carolus-ros2/}
+already exists somewhere on disk. On a genuinely blank machine it does not
+yet, and getting it there needs \texttt{git} first --- not installed by
+default on a minimal Ubuntu image:
+
+\begin{lstlisting}[style=shell]
+sudo apt install -y git
+git clone -b nawfel-legacy https://github.com/Arracheur2Bonnet/robotmaster.git
+\end{lstlisting}
+
+The folder this document refers to as \texttt{raspberry5-carolus-ros2/} is
+then \texttt{robotmaster/\allowbreak raspberry5-carolus-ros2/} inside that clone.
+\textbf{Found missing 2026-08-24}, following this document literally on a
+second, genuinely blank 24.04 machine: nothing above this point mentioned
+either step, despite every later command assuming both were already done.
+
 \section{Installing ROS2 Humble}
 
 Ubuntu 22.04 is Humble's own native target, so it installs from the official
@@ -251,18 +269,13 @@ The only thing that changes between all three paths is whether a container
 sits underneath.
 
 \begin{warningbox}
-\textbf{Status, 2026-08-22: measured only inside a QEMU/KVM virtual machine
-on the lab PC, not yet on bare-metal x86\_64 hardware.} No spare 24.04 PC
-was available when this section was written. The VM result
-(Section~\ref{sec:ros2-maxrate}, row 4) is a real native-Jazzy-no-container
-measurement in every sense except one: it ran under a hypervisor, sharing
-the host's physical cores with unrelated concurrent load, so its number is
-explicitly caveated rather than trusted as clean. \textbf{This section's
-own commands were exercised end-to-end in that VM} (repo added, packages
-installed, \texttt{carolus\_ros2} built, benchmarked) --- so the
-\emph{procedure} is verified, even though the \emph{hardware} it ran on
-was not bare metal. Update this box and Section~\ref{sec:ros2-maxrate}'s
-table together the day a genuine 24.04 PC runs this.
+\textbf{Verified on genuine bare metal 2026-08-24} --- a second, dedicated
+24.04 machine (\texttt{systemd-detect-virt} confirms \texttt{none}), this
+section's own commands followed literally, no container, no VM. Confirms
+Hector's Q1/Q2 directly: this install path works, unmodified, on real
+24.04 hardware. See Section~\ref{sec:ros2-maxrate} row 5 for the throughput
+result and why it is \emph{not} a clean architecture comparison against the
+other rows despite being the cleanest \emph{install-path} confirmation yet.
 \end{warningbox}
 
 \section{The \texttt{carolus\_ros2} package}
@@ -304,12 +317,24 @@ mkdir -p ~/humble_ws/src && cd ~/humble_ws
 ln -s /path/to/raspberry5-carolus-ros2/carolus_ros2 src/carolus_ros2
 colcon build --packages-select carolus_ros2
 
+# Host, Jazzy (no container --- Section~\ref{sec:ros2-jazzy-native-pc}'s case):
+source /opt/ros/jazzy/setup.bash
+mkdir -p ~/jazzy_ws/src && cd ~/jazzy_ws
+ln -s /path/to/raspberry5-carolus-ros2/carolus_ros2 src/carolus_ros2
+colcon build --packages-select carolus_ros2
+
 # Inside the container (Jazzy), with this folder mounted at /carolus_ros2_ws:
 source /opt/ros/jazzy/setup.bash
 mkdir -p /colcon_ws/src
 ln -s /carolus_ros2_ws/carolus_ros2 /colcon_ws/src/carolus_ros2
 cd /colcon_ws && colcon build --packages-select carolus_ros2
 \end{lstlisting}
+
+\textbf{The middle block was missing until 2026-08-24} --- this section
+showed the Humble-host and Jazzy-container recipes but never the
+Jazzy-host one, even after Section~\ref{sec:ros2-jazzy-native-pc} started
+covering that install path. A reader would have had to build it by analogy
+from the Humble block; the pattern is identical, but nothing said so.
 
 \textbf{Verified 2026-08-18, Jazzy}: clean build, 11.3\,s, zero warnings
 attributable to the new code. \texttt{ldd} on the resulting binary, run with
@@ -424,6 +449,19 @@ python3 publish_synth_beacon.py
 ros2 run carolus_ros2 carolus_node --ros-args -p image_threshold:=150
 ros2 topic echo /pose --once
 \end{lstlisting}
+
+\begin{warningbox}
+\textbf{The last command can fail on its very first try, seconds after
+starting the other two --- found 2026-08-24.} \texttt{ros2 topic echo /pose
+--once} run immediately after launching the publisher and the node
+returned \texttt{WARNING: topic [/pose] does not appear to be published
+yet}, even though the node's own log already showed solves running. This
+is DDS discovery, not a real failure: \texttt{ros2 topic list} moments
+later showed \texttt{/pose} present, and re-running the exact same
+\texttt{echo --once} command then worked. If this happens, wait a couple of
+seconds and retry --- it is not the QoS trap described next, which fails
+\emph{every} time, not just the first.
+\end{warningbox}
 
 \begin{warningbox}
 \texttt{image\_threshold:=150} is a test-only override for the synthetic
@@ -811,6 +849,7 @@ Lab PC, Humble, in a container, x86\_64 & 266.6\,Hz & 646.8\,Hz & 41\,\% \\
 Lab PC, Jazzy, in a container, x86\_64  & 275.9\,Hz & 690.6\,Hz & 40\,\% \\
 Lab PC, Jazzy, native, x86\_64 (VM)$^\dagger$ & 204.1\,Hz & 664.9\,Hz & 31\,\% \\
 Raspberry Pi 5, Jazzy, native, aarch64 & \textbf{52.8\,Hz} & 103.1\,Hz & 51\,\% \\
+Second PC, Jazzy, native, x86\_64 (bare metal)$^\ddagger$ & 203.7\,Hz & 679.2\,Hz & 30\,\% \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -828,6 +867,22 @@ row 3 as "native is slower than a container"} --- the 71.8\,Hz gap is far
 more plausibly virtualisation and host contention than architecture. This
 row is the best proxy available without dedicated 24.04 hardware; a
 bare-metal run should replace it if such a machine becomes available.
+
+\textbf{$^\ddagger$ Row 5, measured 2026-08-24, is genuine bare metal
+(\texttt{systemd-detect-virt} confirms \texttt{none})} --- a second,
+dedicated 24.04 machine (Dell, Intel Core i5-7500 @ 3.40\,GHz, 4 cores),
+this section's install and build followed literally, no container, no VM.
+It settles Hector's Q1/Q2 as cleanly as this project can: native install on
+real 24.04 hardware works, unmodified. \textbf{It is still not a clean
+architecture comparison against rows 1--3}, for reasons that have nothing
+to do with virtualisation this time: the CPU is a 2017-era part, markedly
+older than whatever powers row 1--3's machine, and \texttt{uptime} showed a
+load average of 1.49 with four other users logged in during the
+measurement --- real, understood confounds, not a mystery. What the
+near-identical number to row 4's 204.1\,Hz shows is that the VM caveat in
+row 4 was the right call: two completely different confounds (hypervisor
+overhead vs.\ an older, shared CPU) landing on nearly the same figure is
+coincidence, not evidence that either confound was actually negligible.
 \end{warningbox}
 
 So Carolus sustains roughly \textbf{265\,Hz} on the lab PC while the camera
@@ -846,10 +901,13 @@ workload is unsurprising and still leaves the Pi 5 roughly 5x faster than the
 Rows 1 and 2 are the only pair that isolates containerisation, being the same
 distribution either side of the boundary: \textbf{+0.6\,\%, no measurable
 cost}. Row 3 differs in two variables at once (distribution and container)
-and should not be read as a Jazzy-versus-Humble result. Row 4 differs in
-three (distribution, container-vs-VM, and host load) and should not be read
-against either row 1 or row 3 as a clean comparison --- see the warning
-above.
+and should not be read as a Jazzy-versus-Humble result. Rows 4 and 5 each
+differ from rows 1--3 in ways that have nothing to do with the middleware
+(hypervisor overhead for row 4; a markedly older, shared CPU for row 5 ---
+see both warnings above) and should not be read against rows 1--3 as a
+clean performance comparison. What rows 4 and 5 \emph{do} establish
+cleanly, each on its own terms, is that native install works: row 4
+end-to-end inside a VM, row 5 on genuine bare metal.
 
 Detection alone, with no beacon in frame so the solver never runs, reached
 458.2\,Hz on the lab PC (native), with contour extraction at 0.258\,ms mean
@@ -860,7 +918,13 @@ headroom check to compare against). The lab PC's gap between detection-only
 and full-solve is a clean 1.7x; the Pi 5's is only about 1.1x, which is more
 consistent with the weaker board's own Python-harness ceiling limiting the
 detection-only figure than with the solve itself costing less there --- this
-number is reported with that caveat, not as clean as the lab PC's.
+number is reported with that caveat, not as clean as the lab PC's. The
+second PC's own detection-only figure, measured the same way as the Pi 5's
+(log-line counting, since \texttt{/pose} again never publishes), reached
+354.1\,Hz against a 203.7\,Hz full-solve --- a clean 1.74x ratio, consistent
+with row 1's 1.7x despite the very different hardware, which is a useful
+cross-check that the underlying cost structure (solve dominates, detection
+is cheap) holds regardless of which machine is doing the work.
 
 \begin{warningbox}
 \textbf{A benchmark of this shape measures the publisher unless it proves
