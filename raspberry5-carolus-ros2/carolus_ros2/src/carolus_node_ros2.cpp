@@ -17,8 +17,10 @@
 // exercised end to end: image -> BeaconDetector -> CobrasFumantes -> pose,
 // the exact chain the extraction was about.
 
+#include <limits>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
@@ -54,6 +56,27 @@ public:
         // image_threshold's default (190) is never actually relied on
         // anywhere in this document: every launch command, synthetic or
         // real, passes its own -p image_threshold override.
+        // BUG-088 (2026-08-25) -- warm-start the solver from the previous
+        // converged pose instead of the same fixed vector every frame.
+        // Parameterised (not hardcoded on) so the exact same binary can A/B
+        // it: relaunch with -p warm_start:=false to reproduce the old,
+        // always-fixed-start behaviour for comparison.
+        declare_parameter("warm_start", true);
+        warm_start_ = get_parameter("warm_start").as_bool();
+
+        // BUG-131 (2026-08-25) -- try all 6 possible point-pair labelings and
+        // keep whichever the solver itself fits best, instead of trusting
+        // SortTargetsUsingTetrahedronGeometry's single argmax-angular-
+        // separation guess (which is confirmed unstable near real and
+        // apparent ties, both synthetically and on real hardware the same
+        // day). OFF by default: verified synthetically only so far
+        // (test/instrument_multi_hypothesis_sort.cpp -- worst-case error
+        // 37.4cm -> 5.8cm at a near-tie, cost +0.22ms/frame, negligible
+        // against this camera's ~10-30 Hz), NOT yet hardware-tested, so it
+        // does not change default behaviour until it has been.
+        declare_parameter("multi_hypothesis_sort", false);
+        multi_hypothesis_sort_ = get_parameter("multi_hypothesis_sort").as_bool();
+
         declare_parameter("fx", 546.1957);
         declare_parameter("fy", 547.0838);
         declare_parameter("cx", 575.6041);
@@ -200,27 +223,74 @@ private:
         for (const auto& p : undistorted) {
             imagePoints.emplace_back(Eigen::Vector3d(p.x, p.y, 1.0).normalized());
         }
-        std::vector<Eigen::Vector3d> sorted(4);
-        if (!SortTargetsUsingTetrahedronGeometry(imagePoints, sorted)) {
-            RCLCPP_ERROR(get_logger(), "Failed to sort targets using tetrahedron geometry.");
-            return;
-        }
-
+        const double* prior = (warm_start_ && has_prior_) ? prior_params_ : nullptr;
         CameraPose bestPose;
-        // Second constructor arg is measType -- verified dead: stored as
-        // measType_ in ceresP4P.hpp but never read anywhere in ceresP4P.cpp.
-        // Value has no effect; kept only because the constructor requires one.
-        CobrasFumantes solver(camera_matrix_, 2);
-        solver.computeAndValidatePosesWithRefinement(sorted, known_points_, undistorted, bestPose);
+        int winningCandidate = -1;  // -1 = the single-guess path; 0..5 under multi-hypothesis
+
+        if (multi_hypothesis_sort_) {
+            if (!solveMultiHypothesis(imagePoints, undistorted, prior, bestPose, winningCandidate)) {
+                RCLCPP_ERROR(get_logger(), "multi_hypothesis_sort: all 6 candidate labelings failed.");
+                return;
+            }
+        } else {
+            std::vector<Eigen::Vector3d> sorted(4);
+            if (!SortTargetsUsingTetrahedronGeometry(imagePoints, sorted)) {
+                RCLCPP_ERROR(get_logger(), "Failed to sort targets using tetrahedron geometry.");
+                return;
+            }
+
+            // BUG-132 (2026-08-25) — push the sorted points back into PIXEL
+            // space before handing them to the solver. This step existed in
+            // the ROS1 node all along (carolus_astrobee.cpp, under the
+            // comment "UNDISTORTED POINTS ARE NORMALIZED, CONVERT BACK TO
+            // ORIGINAL IMAGE SPACE") and was lost in the ROS2 port, because
+            // there it sat inside a loop whose other job was filling the
+            // Astrobee ff_msgs landmark array -- which this node correctly
+            // does not need, so the whole loop went, coordinate conversion
+            // included.
+            //
+            // Why it matters: ReprojectionErrorWithAnalyticDiff computes
+            // `predicted_point = xp*fx + cx` (pixels, dominated by
+            // cx~576/cy~372) and subtracts `observed_point_` from it.
+            // Without this loop observed_point_ is a UNIT BEARING VECTOR
+            // component, magnitude ~0.1 -- so the residual at the TRUE pose
+            // was ~372-640 instead of ~0, and minimising it drove the pose
+            // toward cancelling cx/cy rather than toward matching the
+            // beacon. Measured, synthetic harness, 1000 trials
+            // (test/instrument_p4p_sort.cpp): solved |t| = 11.4 m against a
+            // true 0.700 m before this loop; 0.6977 m (0.33% error) after it.
+            pixelSpaceConvert(sorted);
+
+            // Second constructor arg is measType -- verified dead: stored as
+            // measType_ in ceresP4P.hpp but never read anywhere in
+            // ceresP4P.cpp. Value has no effect; kept only because the
+            // constructor requires one.
+            CobrasFumantes solver(camera_matrix_, 2);
+            // BUG-088 (2026-08-25) -- warm-start from the last CONVERGED
+            // solve rather than the same fixed vector every frame.
+            // `has_prior_` starts false (first frame, and any frame after a
+            // stretch with no prior convergence, falls back to the original
+            // fixed default via nullptr) -- never warm-starts from a guess
+            // we have no evidence is good. The prior is only updated below
+            // on solver_converged==true, so a bad solve can't poison the
+            // next attempt.
+            solver.computeAndValidatePosesWithRefinement(sorted, known_points_, undistorted, bestPose, prior);
+        }
 
         if (!bestPose.R.allFinite() || !bestPose.t.allFinite()) {
             RCLCPP_ERROR(get_logger(), "Pose solve produced non-finite result.");
             return;
         }
 
-        RCLCPP_INFO(get_logger(), "[P4P] final_cost=%.6g iterations=%d converged=%d",
+        if (bestPose.solver_converged) {
+            for (int i = 0; i < 6; ++i) prior_params_[i] = bestPose.solved_params[i];
+            has_prior_ = true;
+        }
+
+        RCLCPP_INFO(get_logger(), "[P4P] final_cost=%.6g iterations=%d converged=%d warm_start=%s candidate=%d",
                     bestPose.solver_final_cost, bestPose.solver_iterations,
-                    static_cast<int>(bestPose.solver_converged));
+                    static_cast<int>(bestPose.solver_converged),
+                    (warm_start_ && has_prior_) ? "prior" : "fixed", winningCandidate);
 
         Eigen::Quaterniond q(bestPose.R);
         geometry_msgs::msg::PoseStamped out;
@@ -235,12 +305,106 @@ private:
         pose_pub_->publish(out);
     }
 
+    // BUG-132's conversion, factored out so both the single-guess path and
+    // solveMultiHypothesis (which needs it once per candidate) call the
+    // identical logic rather than a second copy that could drift.
+    void pixelSpaceConvert(std::vector<Eigen::Vector3d>& pts) const {
+        const double k_fx = camera_matrix_.at<double>(0, 0);
+        const double k_fy = camera_matrix_.at<double>(1, 1);
+        const double k_cx = camera_matrix_.at<double>(0, 2);
+        const double k_cy = camera_matrix_.at<double>(1, 2);
+        for (auto& p : pts) {
+            p(0) = p(0) * k_fx + k_cx;
+            p(1) = p(1) * k_fy + k_cy;
+        }
+    }
+
+    // BUG-131 (2026-08-25). Direct reimplementation of
+    // SortTargetsUsingTetrahedronGeometry's own labeling steps (FindMidpoint
+    // / Midpoint2P3P4 inlined here since they are pose_est.cpp-local; the
+    // disambiguation step, FindP1P2Indices, is the project's own unchanged
+    // function, now declared in pose_est.hpp), parameterised by a FORCED
+    // p1p2 pair instead of always picking the max-angular-separation one.
+    // Verified synthetically against this exact algorithm in
+    // test/instrument_multi_hypothesis_sort.cpp before being wired in here.
+    static bool labelForCandidate(const std::vector<Eigen::Vector3d>& pts, int candidateIdx,
+                                  std::vector<Eigen::Vector3d>& out) {
+        static const std::pair<int, int> kPairTable[6] = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
+        static const std::pair<int, int> kNotPairTable[6] = {{2, 3}, {1, 3}, {1, 2}, {0, 3}, {0, 2}, {0, 1}};
+        auto p1p2 = kPairTable[candidateIdx];
+        auto p3p4 = kNotPairTable[candidateIdx];
+        Eigen::Vector3d midpoint = (pts[p1p2.first] + pts[p1p2.second]) / 2.0;
+        double d0 = (midpoint - pts[p3p4.first]).norm();
+        double d1 = (midpoint - pts[p3p4.second]).norm();
+        int p3 = (d0 < d1) ? p3p4.first : p3p4.second;
+        int p4 = (d0 < d1) ? p3p4.second : p3p4.first;
+
+        double v_p3p4[3] = {pts[p3].x() - pts[p4].x(), pts[p3].y() - pts[p4].y(), 0.0};
+        double v_p3pa[3] = {pts[p3].x() - pts[p1p2.first].x(), pts[p3].y() - pts[p1p2.first].y(), 0.0};
+        double v_p3pb[3] = {pts[p3].x() - pts[p1p2.second].x(), pts[p3].y() - pts[p1p2.second].y(), 0.0};
+        uint8_t p1p2_arr[2] = {static_cast<uint8_t>(p1p2.first), static_cast<uint8_t>(p1p2.second)};
+        uint8_t p1, p2;
+        if (!FindP1P2Indices(v_p3p4, v_p3pa, v_p3pb, p1p2_arr, &p1, &p2)) return false;
+
+        out.resize(4);
+        out[0] = pts[p1];
+        out[1] = pts[p2];
+        out[2] = pts[p3];
+        out[3] = pts[p4];
+        return true;
+    }
+
+    // Tries all 6 candidate labelings of `imagePoints` (unit bearing
+    // vectors, same input SortTargetsUsingTetrahedronGeometry itself takes),
+    // solving the REAL production CobrasFumantes for each (same warm-start
+    // prior offered to every candidate, since they all explain the same
+    // frame), and keeps whichever has the lowest final_cost -- exactly the
+    // criterion verified in test/instrument_multi_hypothesis_sort.cpp
+    // (worst-case error 37.4cm -> 5.8cm at a synthetic near-tie; ~0.3ms/frame
+    // for up to 6 solves, negligible against this camera's frame budget).
+    // Returns false only if every one of the 6 candidates fails to label
+    // (the FindP1P2Indices disambiguation itself hits its own 2D near-tie) --
+    // a stricter failure condition than the single-guess path, by design.
+    bool solveMultiHypothesis(const std::vector<Eigen::Vector3d>& imagePoints,
+                              const std::vector<cv::Point2f>& undistorted, const double* prior,
+                              CameraPose& bestPose, int& winningCandidate) const {
+        bestPose.solver_final_cost = -1.0;
+        double bestCost = std::numeric_limits<double>::infinity();
+        winningCandidate = -1;
+        for (int c = 0; c < 6; ++c) {
+            std::vector<Eigen::Vector3d> candidate;
+            if (!labelForCandidate(imagePoints, c, candidate)) continue;
+            pixelSpaceConvert(candidate);
+            CameraPose trial;
+            CobrasFumantes solver(camera_matrix_, 2);
+            solver.computeAndValidatePosesWithRefinement(candidate, known_points_, undistorted, trial, prior);
+            if (!trial.R.allFinite() || !trial.t.allFinite()) continue;
+            if (trial.solver_final_cost < bestCost) {
+                bestCost = trial.solver_final_cost;
+                bestPose = trial;
+                winningCandidate = c;
+            }
+        }
+        return winningCandidate != -1;
+    }
+
     std::unique_ptr<BeaconDetector> detector_;
     cv::Mat camera_matrix_, dist_coeffs_;
     std::vector<Eigen::Vector3d> known_points_;
     double min_circularity_;
     std::shared_ptr<rclcpp::Publisher<geometry_msgs::msg::PoseStamped>> pose_pub_;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
+
+    // BUG-088 warm-start state. has_prior_ starts false; prior_params_'s
+    // initial value is never read while that holds, but is set to the same
+    // constant the solver has always started from, in case that ever changes.
+    bool warm_start_ = true;
+    bool has_prior_ = false;
+    double prior_params_[6] = {0.0, 0.0, -0.001, 0.0, 0.0, 0.7};
+
+    // BUG-131 (2026-08-25) -- see the constructor's declare_parameter for
+    // scope/status. Off by default, not yet hardware-validated.
+    bool multi_hypothesis_sort_ = false;
 };
 
 int main(int argc, char** argv) {

@@ -18,7 +18,8 @@ void CobrasFumantes::computeAndValidatePosesWithRefinement(
     const std::vector<Eigen::Vector3d>& sortedImagePoints,
     const std::vector<Eigen::Vector3d>& knownPoints,
     const std::vector<cv::Point2f>& undistortedPoints,
-    CameraPose& bestPose) const
+    CameraPose& bestPose,
+    const double* initial_guess) const
 {
     // SET UP CERES PROBLEM
     ceres::Problem problem;
@@ -54,7 +55,16 @@ void CobrasFumantes::computeAndValidatePosesWithRefinement(
     // kind of unverified edit this project's rules exist to prevent. It is
     // recorded here so the knob is known, and is a candidate explanation for
     // BUG-088 (pose jump from a fixed initial guess with no warm start).
+    //
+    // 2026-08-25 -- `initial_guess`, when the caller supplies one, REPLACES
+    // this fixed vector rather than only seeding it, so a warm-starting
+    // caller (the ROS2 node) fully controls the starting point instead of
+    // averaging with a stale default. Existing callers that pass nullptr
+    // (every one before today) get byte-identical behaviour to before.
     double camera_params[6] = {0.000, 0.000, -0.001, 0.0, 0.0, 0.7};  // Changed size to 6, as we are using only 6 parameters
+    if (initial_guess != nullptr) {
+        for (int i = 0; i < 6; ++i) camera_params[i] = initial_guess[i];
+    }
 
     double focalX_length = cameraMatrix_.at<double>(0, 0);  // FX
     double focalY_length = cameraMatrix_.at<double>(1, 1);  // FY
@@ -89,6 +99,7 @@ void CobrasFumantes::computeAndValidatePosesWithRefinement(
     // UPDATE BEST POSE
     bestPose.R = computeRotationMatrix(camera_params[3], camera_params[4], camera_params[5]);
     bestPose.t = Eigen::Vector3d(camera_params[0], camera_params[1], camera_params[2]);
+    for (int i = 0; i < 6; ++i) bestPose.solved_params[i] = camera_params[i];
 
     // BUG-087 (2026-08-03) — surface what Ceres already told us.
     // `summary` was filled on every solve and never read, so a run that hit

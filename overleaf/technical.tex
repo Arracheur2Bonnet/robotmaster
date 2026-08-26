@@ -1962,7 +1962,7 @@ ICU          & 66 + 70           & 67 (native)       & real 1.67 \texttt{.so} fi
 \textbf{The same \texttt{liblog4cxx} 10-vs-12 collision behind Fix~5 recurs
 elsewhere on this machine} whenever a C++ node built here loads ROS's
 prebuilt console backend --- MINS hit it independently under a different
-build system (Chapter~\ref{ch:mins-ground-station}'s BUG-107), fixed at the CMake level
+build system (Chapter~\ref{ch:mins-ground-station}, Fix~4), fixed at the CMake level
 there rather than with \texttt{LD\_PRELOAD}. Same root cause, two valid
 fixes depending on whether the build system is yours to patch.
 
@@ -2115,9 +2115,10 @@ fy: 547.0838
 cx: 575.6041
 cy: 372.1876
 distortion: [-0.1479, 0.1452, -0.0023, 0.0025]   # k1 k2 p1 p2, a real YAML
-                                                   # list -- a quoted string
-                                                   # here silently fails to
-                                                   # load, see BUG-117
+                                                   # list. A quoted string
+                                                   # here silently loads a
+                                                   # hardcoded placeholder
+                                                   # instead, with no warning.
 
 # --- Beacon geometry (MEASURE THIS FOR YOUR OWN BEACON) ---
 # Four LED positions in metres, Carolus's left-handed frame. One point is
@@ -2554,6 +2555,78 @@ inverting once on the way in.
 
 \section{Step 3 --- the change of basis, and why it is proper}
 
+\subsection{Carolus's camera frame, stated definitively}
+\label{sec:carolus-frame}
+
+Carolus's axes are \textbf{$X$ right, $Y$ down, $Z$ forward} (out of the
+lens). This is not a convention chosen for this document: it follows from
+the projection equations of Step~1, where $u = f_x p_{c,x}/p_{c,z} + c_x$
+grows with $X$ toward increasing pixel columns (rightward) and
+$v = f_y p_{c,y}/p_{c,z} + c_y$ grows with $Y$ toward increasing pixel rows
+(downward), with $p_{c,z}$ the depth in front of the camera.
+
+\textbf{It is also, exactly, the convention ROS itself specifies for camera
+frames.} REP-103, \emph{Standard Units of Measure and Coordinate
+Conventions}, §``Suffix Frames'':
+
+\begin{quote}
+``In the case of cameras, there is often a second frame defined with a
+`\_optical' suffix. This uses a slightly different convention: z forward,
+x right, y down.''
+\end{quote}
+
+So a Carolus pose is already in a standard ROS optical frame, and the
+correct TF frame name for it ends in \texttt{\_optical}. Everything below
+converts from that to REP-103's \emph{body} convention ($X$ forward,
+$Y$ left, $Z$ up), which is what the rest of the ROS stack expects.
+
+\subsection{Carolus is NOT the Intel D455 convention, and NOT the SVGS one}
+\label{sec:frame-comparison}
+
+Two other diagrams circulate for this hardware, and \textbf{neither matches
+Carolus}. Copying rotations between them without converting silently
+inverts axes.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/carolus-frames.pdf}
+\caption{Carolus's camera frame (left) against the two conventions most
+often confused with it. Only the left-hand frame is what \texttt{/pose}
+uses.}
+\label{fig:frames}
+\end{figure}
+
+\begin{center}
+\begin{tabular}{@{}llll@{}}
+\toprule
+Frame & $X$ & $Y$ & $Z$ \\
+\midrule
+\textbf{Carolus} (= REP-103 \texttt{\_optical}) & right & \textbf{down} & \textbf{forward} \\
+Intel D455 datasheet diagram & right & \textbf{up} & \textbf{backward} \\
+SVGS (original NASA figure) & \textbf{left} & down & --- \\
+REP-103 \emph{body} (the TF target) & forward & left & up \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The D455 diagram differs from Carolus by a $180^\circ$ rotation about $X$
+($Y$ and $Z$ both negated); the SVGS figure differs by a $180^\circ$
+rotation about $Y$ ($X$ and $Z$ both negated). Both are proper rotations,
+so both are legitimate right-handed frames --- they are simply not this one.
+
+\begin{warningbox}
+\textbf{Roll, pitch and yaw are named after axes, so they do not survive a
+frame change either.} The D455 diagram labels roll about $X$, pitch about
+$Y$, yaw about $Z$ --- the same \emph{names} as REP-103 uses, attached to
+\emph{different physical directions}, because its $Y$ points up where
+Carolus's points down. A ``yaw'' from one frame is not a ``yaw'' in the
+other. This is why Section~\ref{sec:rpy} insists the conversion be applied
+to $q_{\text{ROS}}$ and never to the raw \texttt{/pose} quaternion: the
+angles are only meaningful once the frame is.
+\end{warningbox}
+
+\subsection{The change-of-basis matrix}
+
 The remaining task is to re-express that rotation from Carolus's camera axes
 ($X$ right, $Y$ down, $Z$ forward) in ROS's body axes ($X$ forward, $Y$ left,
 $Z$ up). Writing the correspondence as a matrix acting on coordinate columns:
@@ -2615,6 +2688,157 @@ multiplication:
 
 In the broadcaster this is a few lines: build $b$ once from $B$ at import
 time, invert the incoming quaternion, conjugate, normalise, publish.
+
+\subsection{The numeric value of $b$, and how it is obtained}
+\label{sec:b-value}
+
+$b$ is a constant. For the $B$ of Step~3 it is, in $(w,x,y,z)$ order:
+
+\[
+b \;=\; \left(-\tfrac{1}{2},\; \tfrac{1}{2},\; \tfrac{1}{2},\; -\tfrac{1}{2}\right)
+\]
+
+exactly --- every component is $\pm\tfrac{1}{2}$, and $\lVert b\rVert = 1$.
+Geometrically it is a rotation of exactly $120^\circ$ about the axis
+$\tfrac{1}{\sqrt{3}}(-1,-1,1)$. \textbf{Verified} by computing it from $B$
+with the algorithm below and independently with
+\texttt{scipy.spatial.transform.Rotation.from\_matrix(B)}: both give the same
+value. Note $-b$ describes the same rotation, so a library returning
+$(\tfrac{1}{2}, -\tfrac{1}{2}, -\tfrac{1}{2}, \tfrac{1}{2})$ is not
+disagreeing.
+
+Because every component is $\pm\tfrac12$, the trace of $B$ is $0$ and the
+naive $w = \tfrac12\sqrt{1+\operatorname{tr}B}$ shortcut divides by zero at
+the next step. The general method that handles this is \textbf{Shepperd's}:
+compute the trace, and if it is not positive, branch on the largest diagonal
+element instead.
+
+\begin{lstlisting}[style=code]
+import numpy as np
+
+def matrix_to_quaternion(R):
+    """Shepperd's method. Returns (w, x, y, z), norm 1.
+    Branching on the largest diagonal element is what makes this
+    safe for matrices like B whose trace is 0 or negative."""
+    t = np.trace(R)
+    if t > 0:
+        w = 0.5 * np.sqrt(1.0 + t)
+        s = 1.0 / (4.0 * w)
+        x, y, z = (R[2,1]-R[1,2])*s, (R[0,2]-R[2,0])*s, (R[1,0]-R[0,1])*s
+    else:
+        i = int(np.argmax(np.diag(R)))
+        if i == 0:
+            x = 0.5 * np.sqrt(1.0 + R[0,0] - R[1,1] - R[2,2]); s = 1.0/(4.0*x)
+            w, y, z = (R[2,1]-R[1,2])*s, (R[0,1]+R[1,0])*s, (R[0,2]+R[2,0])*s
+        elif i == 1:
+            y = 0.5 * np.sqrt(1.0 - R[0,0] + R[1,1] - R[2,2]); s = 1.0/(4.0*y)
+            w, x, z = (R[0,2]-R[2,0])*s, (R[0,1]+R[1,0])*s, (R[1,2]+R[2,1])*s
+        else:
+            z = 0.5 * np.sqrt(1.0 - R[0,0] - R[1,1] + R[2,2]); s = 1.0/(4.0*z)
+            w, x, y = (R[1,0]-R[0,1])*s, (R[0,2]+R[2,0])*s, (R[1,2]+R[2,1])*s
+    return np.array([w, x, y, z])
+
+B = np.array([[0, 0, -1],
+              [1, 0,  0],
+              [0, -1, 0]], dtype=float)
+assert np.isclose(np.linalg.det(B), 1.0)      # proper rotation, Step 3
+b = matrix_to_quaternion(B)                    # -> [-0.5, 0.5, 0.5, -0.5]
+\end{lstlisting}
+
+\textbf{You do not have to trust the derivation.} $B$ is a constant, so $b$
+can simply be hardcoded --- but check it, in whichever order your library
+uses. In \texttt{tf.transformations} and \texttt{geometry\_msgs} the order is
+$(x,y,z,w)$, so the same value is written \texttt{[0.5, 0.5, -0.5, -0.5]}.
+Getting the order wrong produces a perfectly valid unit quaternion
+describing a different rotation, with nothing to signal it --- the failure
+mode this whole chapter exists to prevent.
+
+\subsection{Converting the result to roll, pitch and yaw}
+\label{sec:rpy}
+
+\begin{warningbox}
+Apply this to $q_{\text{ROS}}$, never to the raw \texttt{/pose} quaternion.
+Roll/pitch/yaw are only meaningful once the rotation is expressed in ROS
+body axes; running the conversion on the camera-frame quaternion produces
+three numbers that look reasonable and mean nothing.
+\end{warningbox}
+
+REP-103 specifies \textbf{fixed-axis roll, pitch, yaw about $X$, $Y$, $Z$}
+respectively --- equivalently intrinsic $Z$--$Y$--$X$, which is the same
+thing read in the other direction. With $q_{\text{ROS}} = (w,x,y,z)$:
+
+\[
+\begin{aligned}
+\phi \;(\text{roll})  &= \operatorname{atan2}\!\big(2(wx + yz),\; 1 - 2(x^2 + y^2)\big) \\[2pt]
+\theta \;(\text{pitch}) &= \arcsin\!\big(2(wy - zx)\big) \\[2pt]
+\psi \;(\text{yaw})   &= \operatorname{atan2}\!\big(2(wz + xy),\; 1 - 2(y^2 + z^2)\big)
+\end{aligned}
+\]
+
+Clamp the $\arcsin$ argument to $[-1,1]$ before the call: round-off can
+push it just past $1$ and return \texttt{nan}. At
+$\theta = \pm 90^\circ$ the decomposition is singular (gimbal lock) --- roll
+and yaw stop being separable and only their sum is defined. The code below
+handles both.
+
+\begin{lstlisting}[style=code]
+import numpy as np
+
+def quaternion_to_rpy(q_wxyz):
+    """REP-103 fixed-axis roll/pitch/yaw, radians.
+    Input MUST already be q_ROS, not the raw /pose quaternion."""
+    w, x, y, z = np.asarray(q_wxyz, float) / np.linalg.norm(q_wxyz)
+    sin_pitch = np.clip(2.0*(w*y - z*x), -1.0, 1.0)
+    if abs(sin_pitch) >= 0.99999:                  # gimbal lock
+        pitch = np.copysign(np.pi/2, sin_pitch)
+        roll  = 0.0                                # only roll+yaw is defined;
+                                                   # convention: fold into yaw
+        yaw   = np.arctan2(2.0*(w*z - x*y), 1.0 - 2.0*(x*x + z*z))
+    else:
+        pitch = np.arcsin(sin_pitch)
+        roll  = np.arctan2(2*(w*x + y*z), 1 - 2*(x*x + y*y))
+        yaw   = np.arctan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))
+    return roll, pitch, yaw
+\end{lstlisting}
+
+\begin{warningbox}
+\textbf{The gimbal-lock branch is not the general formula with $\theta$
+substituted, and getting it wrong is easy to miss.} Its $\operatorname{atan2}$
+arguments are $2(wz - xy)$ and $1 - 2(x^2 + z^2)$ --- note the \emph{minus},
+and $x^2 + z^2$ rather than $y^2 + z^2$. Both differ from the general yaw
+expression above. A first draft of this section used
+$2\operatorname{atan2}(x,w)$ here; it is wrong, and it is wrong only within
+about $0.3^\circ$ of $\theta = \pm 90^\circ$, so casual testing will not
+catch it.
+\end{warningbox}
+
+If \texttt{tf.transformations} is already imported, it ships the same
+conversion and is the shorter route --- note the argument order is
+$(x,y,z,w)$ and the return order is $(\text{roll},\text{pitch},\text{yaw})$:
+
+\begin{lstlisting}[style=code]
+from tf.transformations import euler_from_quaternion
+roll, pitch, yaw = euler_from_quaternion([x, y, z, w])   # xyzw in, rpy out
+\end{lstlisting}
+
+\textbf{Verified, 2026-08-25}, by reconstructing a rotation matrix from the
+returned angles and comparing it against the original:
+
+\begin{center}
+\begin{tabular}{@{}lr@{}}
+\toprule
+Check & Max.\ matrix difference \\
+\midrule
+5000 random rotations, general branch & $1.2\times10^{-14}$ \\
+1250 gimbal-lock cases, both signs & $5.6\times10^{-16}$ \\
+$q_{\text{ROS}}$ chain vs $B\,R^{\top}B^{-1}$, 2000 quaternions & $6.7\times10^{-16}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Within the lock band the reconstruction differs by $O(\varepsilon)$, where
+$\varepsilon$ is the angular distance from exactly $90^\circ$ --- that is the
+decomposition's own ambiguity, not an error in the code.
 
 \section{Cross-checking the result against an independent implementation}
 
@@ -2888,10 +3112,14 @@ can kill that shell before it reaches the real target, non-deterministically
 and with nothing reported.
 \end{warningbox}
 
-\section{Beacon docking --- removed from the launcher}
+\section{Motion commands from Carolus readings: beacon docking (removed from the launcher)}
 \label{sec:docking}
 
-\textbf{Not reachable from the GUI since 2026-08-14.} The docking behaviour
+\textbf{This is the project's motion-command-generation code}, in case you
+are searching for it by that description rather than by ``docking'' ---
+it drives the chassis and gimbal from Carolus's own \texttt{/pose} readings,
+which is exactly what that phrase means. \textbf{Not reachable from the GUI
+since 2026-08-14.} The docking behaviour
 had its own launcher tab and control panel; both were removed at the
 project's request, along with the \texttt{/carolus/dock} relay in
 \texttt{cam\_view\_helper.py} that carried its commands. \textbf{The script
@@ -2965,6 +3193,7 @@ natively, ROS Noetic's actual target, so none of this class of bug is
 expected to recur there} (checked directly for the log4cxx case: only one
 version installed on the Pi).
 
+\begingroup\sloppy
 \begin{enumerate}
   \item Clone the workspace's three source trees into
   \texttt{mins\_sandbox/catkin\_ws/src/}: \texttt{mins}
@@ -2979,7 +3208,7 @@ version installed on the Pi).
   --heads} rather than assumed, \texttt{vision\_opencv}'s branch name does
   not carry over).
 
-  \item \textbf{Fix 1 --- \texttt{cv\_bridge}/OpenCV ABI mixing (BUG-101).}
+  \item \textbf{Fix 1 --- \texttt{cv\_bridge}/OpenCV ABI mixing.}
   The Debian-packaged \texttt{ros-noetic-cv-bridge} links against OpenCV
   4.2; this workspace's own code resolves to the one real OpenCV install on
   this machine, 4.5.4. Mixing the two crashes at process exit inside
@@ -3012,7 +3241,7 @@ version installed on the Pi).
   \texttt{cmake/ROS1.cmake} to drop any entry that is an absolute path to a
   file that does not exist on disk.
 
-  \item \textbf{Fix 4 --- \texttt{liblog4cxx} 10-vs-12 collision (BUG-107).}
+  \item \textbf{Fix 4 --- \texttt{liblog4cxx} 10-vs-12 collision.}
   \texttt{mins\_lib.so} ended up linked against both
   \texttt{liblog4cxx.so.10} (via ROS's own prebuilt
   \texttt{librosconsole\_log4cxx.so}, a hardcoded \texttt{NEEDED} entry) and
@@ -3026,8 +3255,8 @@ version installed on the Pi).
   leaving \texttt{.so.10} to arrive exactly once, transitively, via
   \texttt{roscpp}.
 
-  \item \textbf{Fix 5 --- \texttt{compressed\_image\_transport} ABI mixing
-  (BUG-108).} A second, later \texttt{SIGSEGV} in \texttt{libproj}, this
+  \item \textbf{Fix 5 --- \texttt{compressed\_image\_transport} ABI
+  mixing.} A second, later \texttt{SIGSEGV} in \texttt{libproj}, this
   time invisible to a static \texttt{ldd} walk of the built executable ---
   it comes from a \texttt{pluginlib}/\texttt{dlopen} load at runtime, not a
   link-time dependency. The prebuilt Noetic \texttt{.deb} for
@@ -3050,9 +3279,10 @@ version installed on the Pi).
   contains three binaries --- \texttt{simulation}, \texttt{bag}, and
   \texttt{subscribe}.
 \end{enumerate}
+\endgroup
 
 \begin{warningbox}
-\textbf{Known non-blocking issue: BUG-109.} After Fix~5, a different
+\textbf{Known non-blocking issue.} After Fix~5, a different
 exception appears at process teardown --- \texttt{terminate called after
 throwing an instance of 'class\_loader::LibraryUnloadException'} --- thrown
 from \texttt{class\_loader}'s own bookkeeping while unloading the locally
@@ -3090,8 +3320,8 @@ per pose, \texttt{timestamp x y z qx qy qz qw} --- with full covariance),
 \texttt{0/imu\_gt.txt}/\texttt{imu\_est.txt}/\texttt{imu\_std.txt}
 (ground-truth vs.\ estimated vs.\ propagated-uncertainty IMU-frame pose),
 and \texttt{0.time} (the run's own wall-clock duration). \textbf{Check these
-files exist and look physically plausible before trusting a run} --- BUG-109
-above means the process can exit with a visible exception even on a
+files exist and look physically plausible before trusting a run} --- the
+teardown exception noted above means the process can exit with a visible exception even on a
 successful estimation.
 
 \section{Config and launch file reference}

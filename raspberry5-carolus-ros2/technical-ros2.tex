@@ -363,6 +363,7 @@ package directly on the target machine first.
 \end{warningbox}
 
 \section{Testing it, without a robot}
+\label{sec:ros2-synthetic}
 
 A synthetic beacon frame stands in for a live camera.
 
@@ -673,9 +674,12 @@ pose that is indistinguishable from a good one unless the diagnostic fields
 are read. Two \texttt{/pose} reads taken at two visibly different beacon
 positions returned translations a few centimetres apart
 (\texttt{(4.232, 2.957, -7.476)} then \texttt{(4.201, 2.939, -7.444)}), which
-is not what a solver tracking a moved target produces. Treat the pose values
-from this setup as unvalidated: the detection path is confirmed, the pose
-accuracy is not.
+is not what a solver tracking a moved target produces.
+
+\textbf{The cause was found and fixed on 2026-08-25} ---
+Section~\ref{sec:bug132}. The readings above are kept as the dated record of
+what this test showed \emph{before} that fix; do not use them as current
+values. \texttt{converged=1} after it.
 \end{warningbox}
 
 \chapter{Carolus under ROS2 --- Raspberry Pi 5}
@@ -687,7 +691,8 @@ Chapter~\ref{ch:ros2-labpc}) is the only sensor. \textbf{Verified 2026-08-21}:
 native aarch64 build, the webcam driver publishing real frames,
 \texttt{carolus\_node} processing every frame correctly, and a real 4-LED
 beacon detected with \texttt{/pose} published. \textbf{Not verified}: pose
-accuracy --- \texttt{converged=0}, same as the lab PC.}
+accuracy on this board since the 2026-08-25 solver fix
+(Section~\ref{sec:bug132}) --- every reading in this chapter predates it.}
 
 \section{Why a Pi 5, and why aarch64 matters here}
 
@@ -767,8 +772,9 @@ the three on aarch64 rather than x86\_64.
 
 \textbf{Status: Verified 2026-08-21}, including a real beacon detected and
 \texttt{/pose} published (see the success criteria at the end of this
-section). \textbf{Not verified}: pose accuracy --- \texttt{converged=0}, same
-limitation as the lab PC.
+section). \textbf{Not verified}: pose accuracy on this board since the
+2026-08-25 solver fix (Section~\ref{sec:bug132}) --- the pose values quoted
+below predate it and are kept as a dated record, not as current values.
 
 Same procedure as Section~\ref{sec:ros2-realcam}, same physical camera, same
 config file (\texttt{carolus\_ros2/\allowbreak config/\allowbreak
@@ -968,7 +974,7 @@ guard the number would have been written down as a result.
   placed in front of this Pi's webcam: target sort succeeded
   (\texttt{max distance = 193.37}), the Ceres solve ran
   (\texttt{final\_cost=23.19}, \texttt{iterations=31}, \texttt{converged=0}
-  --- consistent with the lab PC's own result, not a new problem), and
+  --- the pre-fix signature, explained in Section~\ref{sec:bug132}), and
   \texttt{/pose} published
   \texttt{position=(4.246, 2.974, -7.478)},
   \texttt{orientation=(-0.650, -0.240, 0.491, 0.528)} (normalised). These
@@ -1057,15 +1063,14 @@ magnitude. \textbf{A response of 1.43\,\% is not a calibration error; it is
 the absence of a response.} This settles the question directly rather than
 by inference: recalibrating this camera cannot be expected to fix pose
 accuracy on its own, because the pose is not meaningfully reacting to the
-beacon's real position in the first place. Whatever combination of
-correspondence sorting and solver behaviour produces this needs to be found
-before calibration is worth spending a session on.
+beacon's real position in the first place.
 
-\textbf{Do not report a pose from either target as accurate without
-independently measuring it against a known position first.} Nothing here
-rules out calibration as \emph{a} contributing problem, but the 1.43\,\%
-displacement test above is the reason it should not be the \emph{first}
-thing fixed.
+\textbf{The cause was found on 2026-08-25 and is fixed
+(Section~\ref{sec:bug132}): a missing normalized-to-pixel conversion, not
+calibration.} Everything above is the dated record of the measurement that
+led there. \textbf{Do not report a pose as accurate until this exact test is
+re-run with the fixed binary} --- the fix is verified against a synthetic
+image only.
 
 \textbf{Reproduced 2026-08-24 on a third machine, third physical beacon,
 third camera unit, real distance 60\,cm} --- the discrete-jump symptom
@@ -1096,7 +1101,300 @@ for what was observed on it. \textbf{Not yet done:} the same check on the
 Pi 5's own beacon and the RoboMaster's --- different physical units, not
 covered by this result.
 
-\subsection{The mechanism, identified by reading the code}
+\subsection{Root cause found and fixed --- 2026-08-25}
+\label{sec:bug132}
+
+\textbf{The pose error above was one missing loop.} After sorting, the four
+points must be pushed back into \textbf{pixel} space before the solver sees
+them. The ROS1 node does this; the ROS2 node did not, so
+\texttt{ReprojectionErrorWithAnalyticDiff} was subtracting a \emph{unit
+bearing vector} component (magnitude ${\sim}0.1$) from a \emph{pixel}
+prediction (\texttt{xp*fx + cx}, dominated by $c_x{\approx}576$,
+$c_y{\approx}372$). \textbf{Measured} at the exact true pose: residuals of
+372--640 instead of ${\sim}0$. Minimising that drives the pose toward
+cancelling $c_x$/$c_y$ --- values shared by all four points and independent
+of where the beacon is --- which is why \texttt{/pose} barely moved when the
+beacon did.
+
+The fix, in \texttt{carolus\_node\_ros2.cpp} immediately after the sort:
+
+\begin{lstlisting}[style=code]
+const double k_fx = camera_matrix_.at<double>(0, 0);
+const double k_fy = camera_matrix_.at<double>(1, 1);
+const double k_cx = camera_matrix_.at<double>(0, 2);
+const double k_cy = camera_matrix_.at<double>(1, 2);
+for (auto& p : sorted) {
+    p(0) = p(0) * k_fx + k_cx;
+    p(1) = p(1) * k_fy + k_cy;
+}
+\end{lstlisting}
+
+\textbf{Measured, before and after, on this node against the identical
+synthetic beacon} (Section~\ref{sec:ros2-synthetic}; ground truth
+$(0,0,0.700)$, pre-fix state recovered by rebuilding the previous source,
+not recalled):
+
+\begin{center}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+ & pre-fix & post-fix & truth \\
+\midrule
+\texttt{/pose} $x$ & 7.4003 & 0.0008 & 0.000 \\
+\texttt{/pose} $y$ & 4.7602 & $-0.0041$ & 0.000 \\
+\texttt{/pose} $z$ & $-6.9921$ & $-0.6794$ & $\pm0.700$ \\
+$|t|$ & \textbf{11.40\,m} & \textbf{0.679\,m} & 0.700\,m \\
+\texttt{final\_cost} & 27.5911 & 50.3195 & --- \\
+\texttt{iterations} & 31 & 18 & --- \\
+\texttt{converged} & \textbf{0} & \textbf{1} & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The residual 2.9\,\% is the synthetic image's own quantisation --- it draws
+blobs at \texttt{int(fx*X/Z + cx)}, so up to half a pixel of error is in the
+input before Carolus sees it.
+
+\begin{warningbox}
+\textbf{\texttt{final\_cost} went UP while the pose became correct}
+(27.6 $\rightarrow$ 50.3). Do not use it as a quality gate. Relatedly, the
+\texttt{converged=0} that every run of this node had ever reported was a
+\emph{symptom} of this bug, not a separate solver-tuning problem: a residual
+that cannot reach zero hits the 30-iteration cap by construction.
+\end{warningbox}
+
+\subsection{Hardware validation, and a second real defect found in the process --- 2026-08-25}
+\label{sec:bug088}
+
+The 30\,cm displacement test was re-run the same day, second 24.04 PC, real
+beacon. \textbf{It did not initially confirm the fix} --- and the reason why
+is itself worth documenting, since the next person to run this test will hit
+the same trap if they don't know about it.
+
+\textbf{Attempt 1, independent restarts at each distance:} beacon at 60\,cm,
+20 samples, mean $(-0.2739,-0.2887,-0.8726)$; moved a real 30\,cm, node
+restarted, 20 more samples, mean $(-0.3696,-0.2176,-0.7574)$.
+$|\Delta t| = 165.8$\,mm of 300\,mm (55.3\,\%) --- but $z$ moved the
+\textbf{wrong direction} (magnitude \emph{decreased} as the beacon moved
+farther away), which is not what a scale error looks like.
+
+\textbf{Checking each point's own stability found why.} A new tool,
+\texttt{capture\_pose\_stats.py --cluster}, groups samples into clusters
+over time. 40 stationary samples at 60\,cm gave \textbf{8 distinct
+clusters}, two dominant (19 and 12 of 40) alternating almost every 1--3
+frames --- \textbf{BUG-131's correspondence-sort instability, reproduced
+live}, and shown to be \textbf{geometry-dependent rather than a narrow
+edge case}: the same rig at 90\,cm and 120\,cm was rock-stable (std under
+0.6\,mm), each in its \emph{own} disconnected local minimum. Two
+independently-stable readings 30\,cm apart still disagreed by 135\,mm with
+$z$ backwards.
+
+\begin{warningbox}
+\textbf{A before/after pair proves nothing unless both readings are
+confirmed to be in the same correspondence-sort regime.} Cluster-check each
+position first. An arbitrarily-chosen real distance (60\,cm here, no special
+reason) can land inside an unstable zone with no warning besides the check
+itself.
+\end{warningbox}
+
+\textbf{Root cause: BUG-088, implemented the same session.}
+\texttt{ceresP4P.cpp} solves every frame from the identical fixed starting
+vector, no memory of the previous frame --- so a different starting geometry
+is free to fall into a different, unrelated local minimum. Fixed by warm-
+starting from the last \textbf{converged} solve:
+\texttt{computeAndValidatePosesWithRefinement} gained a trailing
+\textbf{optional} \texttt{initial\_guess} parameter (existing callers passing
+none keep the old fixed-start behaviour, verified unchanged); the ROS2 node
+gained a \texttt{warm\_start} parameter (default \texttt{true};
+\texttt{-p warm\_start:=false} for a direct A/B on the same binary).
+
+\begin{warningbox}
+\textbf{A units mismatch was found while wiring this up, independent of
+whether the fix is correct.} \texttt{bestPose.R} is computed from
+\texttt{camera\_params[3..5]} via \texttt{computeRotationMatrix}, which
+treats them as \textbf{Euler angles}. Ceres's own cost function treats the
+\emph{identical} three numbers as an \textbf{AngleAxis} vector. Sidestepped,
+not fixed: the raw solved vector is now stored directly
+(\texttt{CameraPose::solved\_params}) instead of being re-derived from $R$.
+\end{warningbox}
+
+\textbf{Verified synthetically first}, same discipline as BUG-132: stationary
+target, first frame unchanged (\texttt{iterations=18}, no prior yet), every
+frame after \textbf{\texttt{iterations=1, converged=1}}, identical
+\texttt{final\_cost} and \texttt{/pose} to the bit. Warm-starting from an
+already-correct answer costs nothing.
+
+\textbf{Verified live: a cold restart still lands on the same answer as
+before the change} (120\,cm, 30 samples: $(-0.3375,-0.1935,-0.6253)$ against
+the pre-fix $(-0.3388,-0.1939,-0.6280)$, agreement to 2.7\,mm) ---
+warm-starting changes nothing about \emph{where} an independent solve
+converges, only what happens after.
+
+\textbf{The decisive test: the beacon moved without restarting the node.}
+90\,cm, node left running from the 120\,cm state, 30 samples, \textbf{29 of
+30 in one cluster}: mean $(-0.3844,-0.2450,-0.8284)$.
+$|\Delta t| = 213.7$\,mm of 300\,mm = \textbf{71.2\,\%}, and, for the first
+time this session, \textbf{$z$ moved in the physically correct direction}
+(the beacon moved closer; $|z|$ increased).
+
+\begin{center}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+ & independent restarts & warm-started, no restart & \\
+\midrule
+$|\Delta t|$ for a real 300\,mm move & 135--166\,mm & \textbf{213.7\,mm} & \\
+$z$ direction & wrong & \textbf{correct} & \\
+Response & 45--55\,\% & \textbf{71.2\,\%} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Read precisely, not rounded up.} 71.2\,\% is real and correctly
+signed, not 100\,\%. The remaining gap is not mysterious: this camera's own
+intrinsics have been on record as ``approximate\ldots should be calibrated
+again later'' since Section~\ref{sec:ros2-realcam} was written, and
+calibrating a target that wasn't being tracked at all would have been
+pointless until today. That reason no longer holds.
+
+\subsection{Correspondence-sort instability --- confirmed, still open}
+
+Separately confirmed by the same instrumentation and \textbf{deliberately not
+fixed in the same change}: the target sort picks its reference edge by
+comparing \textbf{unit bearing vectors} --- an angular comparison as seen
+from the camera, not the beacon's fixed real-world dimensions. A synthetic
+geometry placed at the exact angular near-tie ($\theta^*=58.95^\circ$, located
+by bisection, the two separations equal to $-1.4\times10^{-17}$) and run for
+1000 trials at $\pm1$\,px of noise selected \textbf{five distinct point-pair
+groups} and produced \textbf{134 outright sort failures} --- the synthetic
+reproduction of the \texttt{Failed to sort targets using tetrahedron
+geometry} messages seen on real frames, and of the 8-cluster result measured
+live above. Its effect on the pose, at the specific synthetic near-tie
+tested, is \textbf{centimetres}, against the metres BUG-132 caused --- but
+the live 60\,cm result above shows the \emph{practical} unstable zone is
+wider than that one synthetic point, wide enough to catch an arbitrarily
+chosen real measurement distance. \textbf{Warm-starting (above) mitigates
+this for continuous tracking} (a solve seeded from a good neighbour is far
+less likely to jump to a different assignment's basin than one starting
+fixed every frame) \textbf{but this is inference from the mechanism, not
+measured directly} --- the sort itself is unchanged, and re-acquiring a lost
+beacon with no prior available is still exposed to it.
+
+This harness produced the synthetic numbers above:
+
+\texttt{carolus\_ros2/test/instrument\_p4p\_sort.cpp}
+
+It needs no ROS, no \texttt{colcon}, no camera and no beacon:
+
+\begin{lstlisting}[style=shell]
+g++ -std=c++17 -O2 -I carolus_ros2/include \
+    $(pkg-config --cflags eigen3 opencv4) \
+    carolus_ros2/test/instrument_p4p_sort.cpp \
+    carolus_ros2/src/pose_est.cpp carolus_ros2/src/ceresP4P.cpp \
+    -lceres -lglog $(pkg-config --libs opencv4) -o /tmp/instrument_p4p_sort
+\end{lstlisting}
+
+\subsection{A candidate fix --- and why it is NOT recommended yet}
+\label{sec:multihyp}
+
+\texttt{SortTargetsUsingTetrahedronGeometry} never sees \texttt{known\_points}
+--- it picks its P1/P2 pair by the single \textbf{largest} pairwise
+separation among the four candidates, whatever space it's given (angular,
+for the production caller). \textbf{The candidate fix: stop guessing, let
+the solver decide.} Generate all 6 possible labelings, solve the real P4P
+cost function for each, keep whichever has the lowest \texttt{final\_cost}.
+
+\textbf{Verified synthetically at the identical near-tie geometry, 1000
+trials:}
+
+\begin{center}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+ & baseline (today's heuristic) & multi-hypothesis (all 6) \\
+\midrule
+Outright failures & 134 / 1000 & \textbf{0 / 1000} \\
+Mean $|$solved $-$ truth$|$ & 2.85\,cm & 3.19\,cm \\
+\textbf{Max} $|$solved $-$ truth$|$ & \textbf{37.4\,cm} & \textbf{5.8\,cm} \\
+Time per trial & 0.116\,ms (1 solve) & 0.340\,ms ($\le$6 solves, 2.93$\times$) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{warningbox}
+\textbf{This table is one point, and testing only one point turned out to be
+misleading.} A wider sweep (below) found this near-tie sits right at the
+boundary of a genuine regression band --- the improvement above does not
+generalise the way it looks here.
+\end{warningbox}
+
+\textbf{A sweep across viewing angle, 5\textdegree--85\textdegree{} in
+5\textdegree{} steps, 200 trials each, found three regimes, not one:}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Range & Baseline vs multi-hypothesis & \\
+\midrule
+5\textdegree--40\textdegree & Identical --- no ambiguity present & \\
+\textbf{45\textdegree--55\textdegree} & \textbf{Multi-hypothesis WORSE}, both mean and max error & \\
+60\textdegree--85\textdegree & Multi-hypothesis better; baseline fails outright \textbf{48--53\,\%} of trials & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+At 55\textdegree, max error goes from 3.7\,cm (baseline) to 8.1\,cm
+(multi-hypothesis) --- more than double, a genuine regression, not noise.
+The 58.95\textdegree{} point tested above sits right at the edge between the
+regression and the win, which is why it looked like a clean improvement.
+
+\begin{warningbox}
+\textbf{Do not enable \texttt{multi\_hypothesis\_sort} broadly.} It is not a
+strict improvement. Either the 45\textdegree--55\textdegree{} regression
+needs understanding and fixing first (candidate cause, not yet checked: the
+classical P4P ``twisted pair'' near-planar ambiguity, where a genuinely
+different wrong pose can have \emph{lower} cost than the true one at
+specific geometries), or the feature needs gating by viewing angle rather
+than applied unconditionally.
+\end{warningbox}
+
+\textbf{The 60\textdegree--85\textdegree{} finding stands on its own,
+independent of the fix.} Baseline --- current production, even with
+BUG-088 and BUG-132 both fixed --- drops roughly half its frames outright at
+steep viewing angles. This may explain some of the \texttt{Failed to sort
+targets using tetrahedron geometry} messages seen interleaved with
+successful detections across every real-hardware session to date.
+
+Wired in as \texttt{-p multi\_hypothesis\_sort:=true}, \textbf{default
+\texttt{false}}. \texttt{pose\_est.cpp} itself is untouched; the alternative
+labeling and 6-way solve live entirely in \texttt{carolus\_node\_ros2.cpp},
+reusing \texttt{FindP1P2Indices} (now declared in \texttt{pose\_est.hpp}, a
+zero-behaviour-change addition) rather than reimplementing it.
+
+\textbf{Next step is code, not hardware:} understand or fix the
+45\textdegree--55\textdegree{} regression before scheduling any hardware
+test of this flag.
+
+Two harnesses produced the results above, both in
+\texttt{carolus\_ros2/test/}:
+
+\begin{itemize}
+\item \texttt{instrument\_multi\_hypothesis\_sort.cpp} --- the single-point table
+\item \texttt{instrument\_multi\_hypothesis\_sweep.cpp} --- the angle sweep
+\end{itemize}
+
+Same build recipe as \texttt{instrument\_p4p\_sort.cpp} above, substituting
+the filename and dropping \texttt{ceresP4P.cpp} from the sources --- neither
+harness needs it, since both implement their own corrected cost function
+directly.
+
+The live hardware measurements above used
+\texttt{carolus\_ros2/test/capture\_pose\_stats.py} (\texttt{/pose} capture
+with cluster grouping) and, for beacon LED intensity tuning on a
+not-previously-characterised rig,
+\texttt{carolus\_ros2/test/beacon\_brightness\_live\_ros2.py} --- deliberately
+without a fixed saturated-pixel target band, since that number does not
+transfer between different beacons/cameras (this rig runs healthily at
+\emph{zero} saturated pixels, tuned instead by watching the detection rate).
+
+\subsection{The mechanism, as first identified by reading the code}
 
 Two facts, each confirmed by reading the relevant source in full rather
 than inferred: \texttt{ceresP4P.cpp} solves \emph{every} frame from the
@@ -1126,19 +1424,20 @@ and outright sort failures when the angular near-tie is too close to
 resolve.
 
 \begin{warningbox}
-\textbf{This mechanism was already half on record.} A dated comment in
-\texttt{ceresP4P.cpp} (2026-08-13) names the fixed-initial-guess risk
-directly and cites an independent report of the identical line producing
-curved tracks in a different integration of this same inherited node ---
-and this project's own bug log had already filed it, unconfirmed, in
-2026-07-31, waiting on exactly the diagnostics this investigation has now
-produced. \textbf{This is reasoning from code that fits every observation,
-not a controlled experiment.} The concrete next step: instrument the
-correspondence sort to log which edge it selects alongside the resulting
-pose, frame by frame --- on a real beacon, or, without needing hardware at
-all, a synthetic geometry deliberately built to sit at the angular
-near-tie this mechanism depends on. No change has been made to the solver
-or the sort pending that verification.
+\textbf{This mechanism was already half on record}, in a dated 2026-08-13
+comment in \texttt{ceresP4P.cpp} naming the fixed-initial-guess risk and
+citing an independent report of the identical line producing curved tracks
+in another integration of this same inherited node.
+
+\textbf{The instrumentation it called for was then built and run
+(Section~\ref{sec:bug132}), and it changed the conclusion.} The sort flip is
+real and confirmed --- but it costs centimetres, and the fixed initial guess
+was not what made the pose useless. Holding both unchanged and fixing only
+the residual's units took the solved pose from 11.40\,m of error to 0.021\,m.
+Kept here because the reasoning above is sound and the two defects it names
+are both genuine; corrected here because it identified the wrong one as
+dominant. Warm-starting the solver remains a worthwhile, separate change
+with its own before/after measurement still owed.
 \end{warningbox}
 
 \end{document}

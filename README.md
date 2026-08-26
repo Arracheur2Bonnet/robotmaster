@@ -93,9 +93,24 @@ handed over and built on its own. See its
 
 Verified: the same detection/solver sources build under ROS Noetic, ROS2
 Humble and ROS2 Jazzy, and the ROS2 wrapper detects a real beacon and
-publishes a pose. Pose *accuracy* under ROS2 is not yet validated — the
-solver reports `converged=0` and the ROS2 manual says so where a reader
-will see it.
+publishes a pose.
+
+Pose *accuracy* under ROS2 had two real defects, found and fixed on
+2026-08-25. First, the ROS2 wrapper never converted the sorted image points
+back into pixel space before the solver, so the reprojection residual
+compared a pixel-space prediction against a unit bearing vector — on a
+synthetic input the solved distance went from 11.40 m to 0.679 m against a
+true 0.700 m after the fix. Second, on real hardware the fixed solver still
+solved every frame from an identical fixed starting point with no memory of
+the last frame, so an independently-restarted reading could land in its own
+disconnected local minimum — measured directly: two individually rock-stable
+readings 30 cm apart disagreed by 135–166 mm with the depth axis moving the
+*wrong* direction. Fixed by warm-starting from the last converged solve.
+**With both fixes, and the node left running through a real 30 cm move: 71.2%
+response, correct direction** (up from 1.43% before either fix). Not 100% —
+this camera's own intrinsics have never been properly calibrated, which is
+now a fair question to ask since the pose is actually tracking. The ROS2
+manual has the full account where a reader will see it.
 
 ## Running Carolus on a different robot
 

@@ -126,11 +126,20 @@ public:
     CobrasFumantes(const cv::Mat& cameraMatrix, const int& measType)
         : cameraMatrix_(cameraMatrix), measType_(measType) {}
 
+    // BUG-088 (2026-08-25) -- `initial_guess`, added as a trailing OPTIONAL
+    // parameter so every existing call site (ROS1's carolus_astrobee.cpp,
+    // 4 positional args) keeps compiling and behaving exactly as before with
+    // no changes there. When null (the old default), the solve starts from
+    // the same fixed {0,0,-0.001,0,0,0.7} it always has. When a caller
+    // passes the PREVIOUS frame's converged camera_params here (6 doubles:
+    // tx,ty,tz, then the AngleAxis rotation rx,ry,rz), the solve warm-starts
+    // from there instead -- see the ROS2 node for the one caller that does.
     void computeAndValidatePosesWithRefinement(
             const std::vector<Eigen::Vector3d>& sortedImagePoints,
             const std::vector<Eigen::Vector3d>& knownPoints,
             const std::vector<cv::Point2f>& undistortedPoints,
-            CameraPose& bestPose) const;
+            CameraPose& bestPose,
+            const double* initial_guess = nullptr) const;
 
 private:
     cv::Mat cameraMatrix_;
