@@ -69,14 +69,26 @@ __pycache__/
 *.key
 *.pem
 
-# overleaf/ ships only the self-sufficient technical manual. main.tex (the
-# supervisor progress report, still a skeleton) and README.md (editorial
-# notes about that draft) both point at research-log/, which is not
-# published -- both would be dead references to a reader.
-overleaf/main.tex
+# overleaf/README.md (editorial notes about the main.tex draft) points at
+# research-log/, which is not published -- it would be a dead reference to a
+# reader. main.tex itself was in this same block until 2026-08-27, when the
+# user explicitly chose to track it despite the same issue (CLAUDE.md, "Two
+# LaTeX documents" section) -- that decision is deliberate, do not re-add it
+# here to "fix" it back.
 overleaf/README.md
 
-# LaTeX intermediates: keep .tex sources and the built .pdf, drop the rest
+# No compiled PDF is tracked for any of the three LaTeX documents -- user
+# decision, 2026-08-27. A reader with the repo compiles their own.
+# overleaf/technical.pdf was tracked before this date; it was untracked
+# (git rm --cached), not deleted. Named explicitly rather than a blanket
+# *.pdf, which would also catch overleaf/figures/carolus-frames.pdf -- a
+# source asset \includegraphics-ed into technical.tex, not a compiled
+# output, and it must stay tracked for the manual to compile at all.
+overleaf/technical.pdf
+overleaf/main.pdf
+raspberry5-carolus-ros2/technical-ros2.pdf
+
+# LaTeX intermediates: keep .tex sources, drop the rest
 *.aux
 *.log
 *.out

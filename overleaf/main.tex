@@ -1,0 +1,985 @@
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{amsmath}
+% Added 2026-08-25: the report already used \toprule/\midrule/\bottomrule
+% without this, which produced three "Undefined control sequence" errors on
+% every compile and a table rendered without its rules.
+\usepackage{booktabs}
+
+\title{Carolus: Vision-Based Relative Navigation for a Rooted RoboMaster S1}
+\author{} % TODO: author name(s)
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This report documents the integration of Carolus/uVGS-2 -- a monocular,
+4-LED-beacon pose estimation system derived from NASA's SVGS and originally
+developed for the Astrobee free-flyer -- onto a rooted RoboMaster S1 ground
+robot, with the longer-term goal of relocalization by fusing Carolus with
+the MINS (Multi-sensor-aided Inertial Navigation System) framework in place
+of MINS's GPS channel.
+
+The principal result is a derived and hardware-validated conversion from
+Carolus's pose convention to the ROS frame. Two prior integrations of
+Carolus onto other platforms had found their conversion by trial and error,
+and for this robot it had never been found at all. We derive it from the
+solver's own cost function rather than from documentation, correcting two
+independent errors in the inherited implementation --- a wrong determinant
+claim and, underneath it, a wrong direction --- and validate it on hardware
+by rotating the beacon about each camera axis in turn: \textbf{zero axes
+inverted}, with each expected sign stated before its measurement. The
+derived operator agrees to $3.6\times10^{-16}$ with the constant a parallel
+integration had arrived at empirically, which explains that result rather
+than merely matching it.
+
+We also report a working autonomous approach pipeline validated end to end
+on hardware; a lightweight EKF fusing wheel odometry with Carolus absolute
+pose, validated as a wiring sanity check rather than an accuracy claim; a
+5.95$\times$ throughput improvement from relocating the vision node; and a
+diagnosis of the platform's attitude estimate as an uncorrected
+gyro-integration artefact, closed against a calibrated optical reference.
+Full MINS integration and a Carolus-versus-AprilTag orientation comparison
+remain open, staged deliberately behind the lower-risk items.
+
+A recurring methodological theme is documented alongside the technical
+results, because it shaped them: a substantial fraction of the time lost on
+this project went to instruments that reported success by being structurally
+incapable of reporting failure.
+\end{abstract}
+
+\section{Introduction and Setup}
+
+\subsection{Hardware}
+The platform is a RoboMaster S1, rooted via \texttt{s1\_sdk\_hack\_v0.0.5},
+which exposes the RoboMaster EP SDK (chassis drive, gimbal control, onboard
+camera, wheel odometry, and IMU-derived attitude) over a local API. A
+Raspberry Pi 4B is mounted at the turret position and connects to the robot
+over USB/RNDIS at a fixed address. The Pi runs the vision and control nodes;
+a separate lab PC runs the operator GUI and the localization back end.
+
+\subsection{Carolus / uVGS-2}
+Carolus is a 4-LED beacon detection and P4P (Perspective-4-Point) pose
+solver, implemented with Ceres, inherited from prior work at FIT and derived
+from the original NASA SVGS system used on Astrobee. It publishes a 6-DOF
+pose (camera frame) whenever the beacon is visible. It runs on the Pi, at
+roughly 13\,Hz with a beacon in view. It originally ran on the lab PC at
+2.5\,Hz, consuming frames streamed from the robot; that gap was image
+transport rather than computation, and relocating the node closed it (see
+Results).
+
+\subsection{Software Stack}
+ROS Noetic, run on Ubuntu 22.04 on the lab PC (not the officially supported
+target for either ROS Noetic or several dependencies used here, which
+required local build workarounds -- see the repository's \texttt{cmake\_shims/}).
+A Tkinter GUI (\texttt{shortcuts/carolus\_launcher.py}) provides manual
+teleoperation, a live telemetry dashboard, and sequential launch of the ROS
+stack --- see Section~\ref{sec:launcher}.
+
+\section{Project History and Continuity with Prior Work}
+\label{sec:history}
+
+Per the project supervisor's explicit guidance,\footnote{Email correspondence,
+2026-07-03: ``For the documentation it seems the best would be to use
+Overleaf. We can start with the documents left by Quentin, eliminate the
+portions that are wrong, and document the new solutions you are
+implementing.''} this section documents what was inherited from the
+project's prior iteration, keeps what was correctly worked out, and states
+explicitly which parts were found not to work and why -- rather than
+silently discarding that history.
+
+\subsection{Prior Architecture (Quentin, March 2026)}
+The hardware identification (rooted S1, Pi 4B at the turret, RNDIS link),
+the Carolus/UVGS-2 lineage from NASA's Astrobee SVGS system, and the general
+shape of the pipeline (beacon detection $\to$ pose $\to$ motion command)
+were correctly established by the previous iteration of the project and
+carried forward unchanged.\footnote{Supervisor's own assessment, email
+2026-07-03: ``the hardware identification, the Astrobee/UVGS-2 lineage, and
+the general pipeline shape were all correctly worked out and saved me real
+time.''} The control layer itself, however, was substantially different
+from the current one and was not carried forward. Quentin's tutorial
+(\emph{Carolus Robot -- Full Operation Tutorial}, March 2026) documents a
+five-pane \texttt{tmux} launcher (\texttt{run\_stack.sh}) starting, in
+order, \texttt{roscore} with the Pi's \texttt{eth1} interface brought up
+manually, a camera-capture script, \texttt{rm\_cam\_ros.py}, a
+\texttt{rosbridge\_websocket} server, and \texttt{testcarolus.launch}
+(Source: Carolus Tutorial.pdf, \S3, p.2--3). The control script itself
+(\texttt{testco6.py}) ran in a separate Python 3.7 virtual environment and
+communicated with ROS over \texttt{roslibpy}/rosbridge rather than a direct
+\texttt{rospy} import -- a workaround for a Python-version mismatch between
+that environment and the SDK (Source: Carolus Tutorial.pdf, \S4--5,
+p.3--6). It implemented a single reactive control law, not a state machine:
+a PID controller on the beacon bearing (\texttt{bearing = atan2(x, -z)}
+computed from \texttt{/pose}) drove the chassis to rotate in place until
+aligned within a deadband, then to advance at a fixed forward speed until
+within a target stopping distance, with the gimbal centered
+(\texttt{gimbal.set\_mode(0)}, i.e.\ free-coupling mode, then
+\texttt{moveto(pitch=0, yaw=0)}) and left fixed for the whole
+maneuver (Source: Carolus Tutorial.pdf, \S4 and \S7, p.3--8). The tutorial
+also documents an IMU recalibration procedure via the RoboMaster mobile app,
+to be run if motion appears unstable (Source: Carolus Tutorial.pdf, \S6,
+p.7).
+
+\subsection{Errors Identified in the Prior Iteration}
+\label{sec:prior-bugs}
+The supervisor's own review of the roughly fifteen control-script
+iterations left in the repository (beyond the specific version documented
+in the tutorial above) identified a chain of compounding bugs, communicated
+directly and quoted here rather than paraphrased, since the exact wording
+carries the diagnosis:\footnote{All four items and the quoted text in this
+subsection: email correspondence with the project supervisor, 2026-07-03.}
+
+\begin{enumerate}
+  \item \textbf{A duplicated topic advertisement in the C++ pose node.}
+  ``The C++ pose estimation node had a topic that got declared twice in the
+  code, so the second declaration silently overwrote the first and one of
+  the two topics it was supposed to publish on never actually went out. Most
+  of the control script iterations subscribed to exactly that dead topic.''
+  This traces to \texttt{carolus\_astrobee.cpp}, where the node
+  advertises a parameterized \texttt{pose\_topic\_} (intended as
+  \texttt{ff\_msgs::VisualLandmarks}) immediately before unconditionally
+  advertising \texttt{/pose} (\texttt{geometry\_msgs::PoseStamped}); if the
+  two names coincide, only one type survives and the other silently never
+  publishes. The current codebase avoids the collision by keeping
+  \texttt{pose\_topic} set to its own distinct (if otherwise unused) name
+  and treating \texttt{/pose} as the single source of truth, rather than by
+  fixing the underlying double-advertisement in the inherited C++ file.
+  \item \textbf{A constructor typo in the specific script matching the
+  tutorial.} ``The specific script matching Quentin's tutorial had a typo
+  in its constructor (it was declared as \texttt{init} instead of
+  \texttt{\_\_init\_\_}), so it never actually initialized itself when
+  run.'' This was identified by the supervisor in the deployed script file
+  itself, not independently re-verified in the present report against the
+  copy of the code printed in the tutorial PDF (which shows a correctly
+  double-underscored constructor); the two need not be the same revision of
+  the file.
+  \item \textbf{An earlier EKF attempt that diverged and was never
+  resolved.} ``There was also an attempt earlier in that period to fuse IMU
+  and wheel odometry with an EKF node, which is a reasonable thing to try,
+  but the logs show it diverged (NaN and denormalized quaternion errors)
+  and was never resolved.'' This is a distinct issue from the current
+  project's own \texttt{robot\_localization} EKF (Section~\ref{sec:f3}),
+  which is a fresh implementation rather than a continuation of this
+  earlier, abandoned one; the earlier attempt's divergence is recorded here
+  as motivation for validating the current EKF carefully (an unrelated
+  frame-assumption bug was in fact later found and fixed in the current
+  implementation, Section~\ref{sec:lessons}) rather than assuming a
+  from-scratch EKF is automatically safe from this class of failure.
+  \item \textbf{Simultaneous SDK connections silently blocking motion.}
+  ``Two of the ROS nodes were opening simultaneous connections to the
+  robot's SDK, which I later confirmed silently blocks movement commands
+  after a few calls, something that would have made any of that control
+  code unreliable even if the topic and constructor issues had been
+  fixed.'' The supervisor further notes that this was already suspected in
+  the prior iteration but not resolved there: ``Quentin found this problem
+  but he was not able to fix it: used rosbridge to transfer Carolus data,
+  but then he was unable to send motion commands'' -- which explains the
+  rosbridge/Python-3.7-venv split architecture described above as an
+  unsuccessful workaround attempt, not an arbitrary design choice. The
+  current architecture avoids the failure mode directly, by design, with a
+  single shared SDK connection rather than a fix layered on top of multiple
+  connections (Section~\ref{sec:lessons}).
+\end{enumerate}
+
+None of the four issues above are present in the current implementation:
+the first is sidestepped by topic-naming discipline, the second and third
+do not apply to it (built from scratch, not a continuation of either
+buggy file), and the fourth is avoided architecturally rather than patched.
+This distinction -- avoided by a different design versus actively
+fixed -- is kept explicit throughout this report rather than collapsed into
+a single ``resolved'' status, per the supervisor's own request to document
+changes to both the code and the reasoning behind them.
+
+\section{System Architecture}
+
+\subsection{Autonomous State Machine}
+The core autonomy behavior is a state machine with four states:
+\textbf{SEARCH} (gimbal sweeps to look for the beacon without moving the
+chassis; a 6-heading ``fan search'' pattern rotates the chassis through
+successive headings if the beacon is not found from the starting
+orientation), \textbf{ALIGN} (chassis rotates in place to face the beacon
+once detected), \textbf{APPROACH} (visual servoing: the gimbal tracks the
+beacon while the chassis closes distance along the same heading), and
+\textbf{STOP} (triggered within a target stopping distance). SEARCH through
+APPROACH through STOP was validated end to end on hardware; LOCATE (a mode
+for calibrating beacon position live on an operator-drawn 2D map) and the
+fan-search coverage pattern were added and validated afterward. A structural
+bug in ALIGN (a pose buffer cleared immediately before the state needed to
+read it, preventing the state from ever completing) was identified and
+fixed.
+
+\subsection{Safety and Operator Tooling}
+All hardware sessions are driven from a single operator GUI
+(\texttt{carolus\_launcher.py}), described in Section~\ref{sec:launcher}.
+Beyond launching the stack it provides manual piloting, a live telemetry
+dashboard, and the safety interlocks the autonomous modes depend on --- a
+deadman timeout on both chassis and gimbal, and a forward-motion block on
+the time-of-flight sensor.
+
+\section{The Carolus-to-ROS Orientation Conversion}
+\label{sec:quaternion}
+
+This section is the project's principal result. The supervisor's framing was
+that both prior integrations of Carolus onto other platforms had found their
+coordinate conversion \emph{by trial and error}, and that for the RoboMaster
+``the quaternion solution was never found'' --- so what was wanted was not a
+working constant but a derivation, with the method shown.
+
+\subsection{Two artefacts that could not both be right}
+
+The starting point was a contradiction between two documents this project
+had inherited and was about to reproduce. The technical manual stated that
+Carolus's native frame is left-handed and that conversion to the ROS
+convention (REP-103) is therefore \emph{improper}, with determinant $-1$.
+The TF broadcaster actually running on the robot used a matrix whose
+determinant is $+1$ --- a proper rotation. One of the two was false and had
+already been published.
+
+Resolving it turned out to matter more than expected, because underneath the
+determinant question sat a second and independent error in the conversion's
+\emph{direction}.
+
+\subsection{Derivation from the solver's own cost function}
+
+Rather than infer the convention from documentation, it was read out of the
+code that computes the pose. Carolus's P4P residual
+(\texttt{ceresP4P.hpp}) evaluates
+\[
+p_{\text{camera}} = \mathcal{R}(\texttt{camera\_R})\, p_{\text{beacon}} + t,
+\]
+the standard PnP extrinsic convention, so the solver's rotation is
+$R_{\text{beacon}\rightarrow\text{camera}}$. The node then transposes it
+before publishing, so the pose on \texttt{/pose} carries
+$R_{\text{camera}\rightarrow\text{beacon}}$. The TF edge
+\texttt{camera\_link} $\rightarrow$ \texttt{beacon\_observed} requires the
+opposite direction, by TF2's parent-child convention --- the inverse of what
+is published. The inherited formula never inverted anything.
+
+Combined with the determinant question, the conversion is a similarity
+transform, not a component permutation:
+\[
+\boxed{\;q_{\text{ROS}} = r \otimes q_{\text{cam}}^{-1} \otimes r^{-1}\;}
+\]
+with the position remap $(x,y,z)_{\text{ROS}} = (-z,\, x,\, -y)_{\text{cam}}$.
+
+Two supporting results are worth recording. First, a dispatched research
+round returned four independent derivations that all reached $\det = +1$
+from REP-103's own declaration that both frames are right-handed --- a
+proper change of basis between two same-handedness frames is $\det=+1$ by
+definition, not by convergent opinion. The manual's claim was retracted with
+a visible correction rather than a silent edit. Second, the new formula was
+checked against the constant that the Limo integration had found empirically
+by trial and error: over eight random unit quaternions the two agree to
+$3.6\times10^{-16}$, while the old formula differs by $0.97$ to $1.28$ on
+every trial. That the two independent routes --- our derivation and their
+guessing --- land on the same operator is the strongest desk-level evidence
+available, and it explains their result rather than merely matching it.
+
+\subsection{Two properties that constrain how it can be tested}
+
+Both emerged from the same research round and both changed the experimental
+protocol before it was run.
+
+Conjugation is \emph{blind to the sign} of the change-of-basis matrix:
+$(-B)R(-B)^{-1} \equiv BRB^{-1}$, since $\det(-B) = -\det(B)$ in odd
+dimensions. A hardware test comparing our matrix against its own negation
+would therefore learn nothing, however carefully executed. Any discriminating
+test must use a genuinely different improper candidate --- a single-axis
+flip.
+
+And $180^\circ$ test rotations are \emph{degenerate}: proper and improper
+conjugation coincide exactly there. The protocol's own draft had specified
+$90^\circ$ rotations on all three axes and had to be corrected before use:
+a full $90^\circ$ tilt or pan turns the flat four-LED array edge-on to the
+camera and loses detection at precisely the orientation being measured. The
+tested angles were reduced to roughly $30^\circ$, comfortably clear of both
+$0^\circ$ and $180^\circ$.
+
+\subsection{What made the measurement possible}
+
+The hardware validation was attempted across several sessions before it
+succeeded, and none of the obstacles were in the mathematics.
+
+The first was ours. The TF broadcaster republished the transform only when
+the pose had changed by more than $10^{-3}$ --- a bandwidth optimisation
+that is wrong for TF specifically, because \texttt{tf2} expires buffer
+entries after about ten seconds. A transform that stops being republished
+stops \emph{existing}: \texttt{tf\_echo} reports ``frame does not exist''
+rather than ``stale''. With the robot and the beacon both stationary ---
+exactly the rig this measurement requires, and exactly the case where the
+pose legitimately does not change --- the frame silently vanished. The more
+stable the setup, the less the measurement existed.
+
+The second was the rig. Every hand-held attempt translated the beacon while
+rotating it, so the reading mixed a rotation with a displacement and could
+not be read for sign. Mounting the beacon on a rigid tripod removed that
+degree of freedom, and the improvement is visible in the data: the fraction
+of samples landing on the P4P solver's alternate near-planar solution fell
+from 3.6--12\% to \textbf{0.0\%}, and the interquartile spread of the
+readings from 1--2.7$^\circ$ to 0.18--0.32$^\circ$.
+
+The third was detection. Beacon over-brightness does not degrade gracefully:
+past a threshold the four LEDs bloom into a single merged blob that fails
+both the area and the circularity filters, and the detector then reports
+\texttt{Not enough blobs with required circularity} followed by
+\texttt{0 contours found} --- wording that reads as \emph{beacon absent}
+when the truth is the exact opposite. Measured directly, the frame carried
+\textbf{88\,628 saturated pixels, 9.6\% of its area}. Since the beacon's
+intensity control is a physical knob with no readout, a live meter was
+written to make the setting visible while it is turned.
+
+\subsection{Result}
+
+Each axis was rotated by approximately $30^\circ$, held still, and measured
+by averaging many de-duplicated samples. \textbf{The expected sign was
+written down before each measurement}, which is what makes the outcome a
+result rather than an interpretation. Each rotation was bracketed between
+two reference readings so that any residual drift could be measured from
+their difference and subtracted, rather than assumed negligible.
+
+\begin{center}
+\begin{tabular}{llr}
+\hline
+Axis & Gesture & Measured \\
+\hline
+Yaw (Z) & tripod pan, $\sim30^\circ$ clockwise from above & $-28.8^\circ$ \\
+Pitch (Y) & tripod tilt, $\sim30^\circ$ backward & $-23.7^\circ$ \\
+Roll (X) & hand twist, $\sim30^\circ$, steering-wheel motion & $-23.6^\circ$ \\
+\hline
+\end{tabular}
+\end{center}
+
+\textbf{Zero axes inverted.} Each rotation landed on its own axis, the other
+two moving by at most a few degrees --- the residual of an imperfect hand
+gesture rather than cross-talk. Every measured sign matches the derivation.
+The drift correction moved each answer by less than half a degree, so the
+bracketing turned out to be unnecessary; it was run anyway, because that is
+what proves the statement rather than assuming it.
+
+One methodological trap is worth recording, because it nearly produced a
+fourth measurement of an axis already closed. A rigid tripod's own rotation
+is a vertical pan --- which is yaw, not roll. Instructions phrased as
+``spin the beacon in its own plane'' sent the operator back to that same
+mechanism twice, and the reading reproduced the yaw result almost exactly
+under the roll label. It was caught by comparing the two readings side by
+side: two physically different gestures should not produce the same
+signature, and these were not different gestures. Genuine roll requires
+rotation about the camera-to-beacon \emph{line}, which a standard tripod
+head does not offer at all, and which had to be done by hand.
+
+\section{Localization and Sensor Fusion Methodology}
+
+\subsection{F3: Lightweight EKF (\texttt{robot\_localization})}
+\label{sec:f3}
+Wheel odometry (from the SDK) and Carolus absolute pose (computed from a
+known, hand-measured beacon position and the detected camera-to-beacon
+transform) are fused with \texttt{robot\_localization}, a loosely-coupled,
+widely used ROS EKF. This was chosen as the first step ahead of MINS because
+it is lighter weight, has no unusual hardware/OS support requirements beyond
+what was already being worked around, and gives an early, concrete
+localization result to build confidence in the sensor and transform chain
+before committing effort to a heavier framework.
+
+\subsection{F4: MINS --- built and characterised, integration pending}
+The longer-term goal is to replace MINS's GPS channel with Carolus, since
+Carolus provides exactly the kind of periodic, absolute-pose correction that
+GPS provides outdoors, applied here to indoor navigation. MINS is officially
+supported on Ubuntu 20.04/ROS Noetic (not the 22.04 environment used on the
+lab PC), builds entirely in user space (no superuser access is available in
+this environment), and expects its GPS-equivalent channel as a standard
+\texttt{sensor\_msgs/NavSatFix} message, which will require a small adapter
+node from Carolus's native \texttt{PoseWithCovarianceStamped} output. The
+plan is to first validate the MINS installation itself against its official
+KAIST Urban benchmark dataset (with independent ground truth) before
+attempting any integration with RoboMaster hardware or Carolus data,
+so that installation problems and integration problems are never diagnosed
+as the same problem. The intended comparison metric between F3 and F4 is
+RMSE against ground truth plus NEES/NIS consistency metrics, for which MINS
+already ships an evaluation toolbox.
+
+\subsection{F5: Carolus vs. AprilTag Orientation Accuracy (planned)}
+A secondary, more exploratory objective is to quantify whether Carolus's
+non-coplanar 4-LED beacon geometry gives a more accurate orientation (roll/
+pitch/yaw) estimate than a planar fiducial marker such as AprilTag, which is
+a plausible but not yet validated hypothesis (published AprilTag accuracy
+figures are already on the order of 1--2 degrees). This is treated
+explicitly as a hypothesis to test, not an assumed result, and is one of the
+project's potential original contributions if confirmed. There is a
+supporting theoretical argument: in pure visual-inertial navigation, yaw
+about the gravity vector is a known unobservable direction and a documented
+source of filter inconsistency; an absolute-orientation beacon reference
+such as Carolus directly resolves that weakness.
+
+\subsection{Ground-Truth Drift Measurement Protocol}
+\label{sec:protocol}
+To quantify the localization-drift reduction that Carolus provides -- the
+core quantitative deliverable requested by the project supervisor -- a
+dedicated protocol was defined: a 10--15\,m course with 4--5 intermediate
+control points (not just start/end) marked on the floor and measured against
+a CAD drawing of the corridor with a measuring tape, a minimum of 3 runs per
+mode (wheel odometry alone vs.\ EKF with Carolus), for 6 runs total. For each
+control point and run, position error against the surveyed ground truth is
+computed; the reporting metrics are an error-vs-distance curve, the
+normalized final error (as a percentage of distance travelled), and RMSE per
+mode. Expected drift magnitude for uncalibrated wheel odometry over this
+distance is on the order of 1--5\% (10--75\,cm), well above the
+centimeter-level noise floor, so the effect should be clearly visible if
+present.
+
+\section{Operational Tooling: the Carolus Launcher}
+\label{sec:launcher}
+
+Every hardware session in this project runs through a single Tkinter
+application, \texttt{carolus\_launcher.py}. It is worth a section of its own
+not because a GUI is a research contribution, but because its feature list
+is a fairly precise record of what the investigation actually needed ---
+most of its panels exist because some specific failure was invisible without
+them.
+
+\subsection{What it does}
+
+It starts the whole stack over SSH in dependency order, each stage unlocking
+only once the previous one is genuinely up --- \texttt{roscore} checked by
+port, the camera by the topic actually publishing, rather than by the
+subprocess having been spawned. It drives the robot manually from the
+keyboard. And it shows a live dashboard: battery, attitude, wheel speeds,
+velocity, a camera preview, Carolus's own blob-detection view, and beacon
+detection state.
+
+\subsection{Why it looks the way it does}
+
+Three constraints shaped the architecture, and all three came from bugs.
+
+The GUI never opens an SDK connection. The RoboMaster EP accepts exactly one
+control connection, and a second one does not fail cleanly --- it partially
+establishes, and calls then hang indefinitely with no exception raised. That
+was diagnosed early, from a symptom (``the robot stops responding after two
+or three commands'') that gave no indication of its cause. Everything the
+GUI sends to the robot therefore travels as text over a pipe to a small
+relay process, which republishes it on ROS topics that the single connected
+node subscribes to.
+
+The dashboard reads telemetry out of the node's own log stream rather than
+querying the robot, for the same reason.
+
+And every command path carries a deadman. A held key emits no repeated X11
+events, so an early version sent one command and let the chassis stop
+half a second later with the key still down; the gimbal, meanwhile, had no
+timeout at all --- its last commanded speed was re-sent at 20\,Hz
+indefinitely, so a lost key-release event left it turning until something
+else intervened.
+
+\subsection{The panels that exist because of a specific failure}
+
+\begin{itemize}
+  \item \textbf{Blob-detection view.} Carolus already published its own
+  thresholded image with each selected blob circled; nothing needed adding
+  to the detector, only a panel to show it. It answers ``is the detector
+  seeing four LEDs or four reflections'' directly, which no log line does.
+
+  \item \textbf{Beacon signature (saturated pixel count and hue).} Added
+  after over-brightness was found to present in the log as beacon
+  \emph{absence} (Section~\ref{sec:quaternion}). The intensity control is a
+  physical knob with no readout; without this panel the operator is tuning
+  blind. Judged against a recorded known-good signature, so a knocked
+  beacon can be detected rather than discovered.
+
+  \item \textbf{Session logs on disk.} The log panes were memory-only and
+  truncated at 300 lines. A planned ``free'' check --- grep an earlier run
+  for a specific tag --- turned out to have no data behind it: the runs had
+  happened and the evidence had been discarded. Every line is now appended
+  to a per-session file, tagged by which terminal produced it. A
+  quantitative cross-check performed ten days later drew entirely on data
+  captured, unrequested, by that change.
+\end{itemize}
+
+\subsection{An honest note on its verification}
+
+Most of the launcher's own defects were found by running it, not by
+reviewing it, and one case is worth stating because it recurs throughout
+this project: a refactor bounded by a regular expression silently removed
+157 lines of module-level code, including a function that other code
+depended on. \texttt{py\_compile} passed cleanly, because every removed name
+is only looked up at runtime. The failure appeared instantly the first time
+the window was actually constructed. Syntax checking is not verification,
+and for GUI code that cannot be exercised headlessly the distinction is not
+academic.
+
+\section{Middleware Portability: Carolus under ROS2}
+\label{sec:ros2}
+
+The supervisor raised a question that reordered the remaining plan: could
+Carolus's detection and pose-estimation core be made independent of ROS, so
+that the eventual target --- ROS1, ROS2 Humble, or a newer ROS2 release ---
+becomes a configuration choice rather than a rewrite?
+
+\subsection{Extraction rather than reimplementation}
+
+Two routes were available: rewrite the pipeline against ROS2 directly, or
+extract the existing algorithm into a middleware-free library and wrap it.
+Rewriting was judged the more dangerous option, and the reason is specific to
+this codebase rather than general. Every hard-won correctness fix in Carolus
+shares one failure signature --- the code runs, looks healthy, and publishes
+a plausible wrong answer. The hue comparison operating on OpenCV's 0--180
+scale rather than 0--360; the orientation conversion of
+Section~\ref{sec:quaternion}, wrong twice before it was right; the solver's
+convergence diagnostics being computed and then discarded. None of these
+announce themselves with a crash. A rewrite has no built-in reason to
+rediscover any of them; an extraction carries all of them forward unchanged.
+
+The detection and solver code was therefore separated into
+\texttt{carolus\_core}. The claim that it is ROS-free is checked rather than
+asserted: the compiled library has an \textbf{empty \texttt{NEEDED} list and
+zero unresolved ROS symbols}, verified on x86\_64 and again on the Raspberry
+Pi's aarch64. The ROS1 node now links against it instead of containing it.
+
+\subsection{The same source, three toolchains}
+
+A wrapper of roughly 240 lines (\texttt{rclcpp} subscriptions, publishers,
+and message conversion --- no algorithm code) was written around that core,
+and the identical sources were then compiled under three combinations:
+
+\begin{center}
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Target} & \textbf{Distribution} & \textbf{Arch.} & \textbf{Build} \\
+\midrule
+Lab PC            & ROS2 Humble (native)    & x86\_64 & 7.45\,s \\
+Lab PC            & ROS2 Jazzy (container)  & x86\_64 & 11.3\,s \\
+Raspberry Pi 5    & ROS2 Jazzy (native)     & aarch64 & 46.0\,s \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+All three build with zero warnings and no source modification. The stronger
+result is not that they compile but that they \emph{agree}: run against the
+same input, the Humble and Jazzy builds produced the same contour count, the
+same solver iteration count and cost, and pose fields matching to eleven
+significant digits --- the twelfth being floating-point noise from Ceres
+iteration ordering, not a behavioural difference.
+
+\subsection{A silent failure worth recording}
+
+Porting to the Raspberry Pi produced one defect that is worth reporting in
+its own right, because it belongs to the same class this project keeps
+encountering and would be easy for someone else to lose days to.
+
+Under ROS2 Jazzy on aarch64, \texttt{image\_transport}'s ``raw'' subscriber
+plugin \textbf{never delivered a single frame}. The node started normally,
+and both \texttt{ros2 node info} and \texttt{ros2 topic info -{}-verbose}
+reported the subscription correctly matched to the camera publisher --- yet
+the image callback was never invoked. There was no error, no warning, and
+nothing in the logs to distinguish this from a camera that simply had
+nothing to say. It was confirmed by instrumenting the first line of the
+callback itself: zero output across a 30-second run with the camera actively
+publishing.
+
+Two hypotheses were tested and rejected before the cause was found. The
+board's DDS implementation was cleared by an existing log from an unrelated
+node on the same hardware, showing continuous frame reception over 171
+seconds under the same middleware. A cable fault was cleared by the kernel
+log, which recorded no USB reconnection event. Replacing the call with a
+plain \texttt{rclcpp} subscription resolved it immediately and
+reproducibly. Since the node had only ever used the ``raw'' transport, the
+dependency was removed outright rather than worked around.
+
+\subsection{Detection on both targets; accuracy on neither}
+
+With a physical 4-LED beacon in view, the ROS2 node performs the complete
+chain on both machines --- four blobs found, tetrahedron-geometry target
+sort, Ceres solve, and a correctly-typed
+\texttt{geometry\_msgs/msg/PoseStamped} published on \texttt{/pose}. The two
+targets' recorded poses for the same beacon agree to within a few
+centimetres.
+
+That agreement should be read carefully, and it is the same distinction this
+report draws elsewhere: it establishes that the two ports behave
+consistently with \emph{each other}, not that either is numerically correct.
+No independent ground truth was involved. \textbf{Pose accuracy was
+unverified on both targets}, and there was direct evidence against trusting
+it: every solve reported \texttt{converged = 0}, hitting the 30-iteration
+ceiling, and the pose was written unconditionally --- so a non-converged
+solve returned a finite, plausible value indistinguishable from a good one
+unless the diagnostic fields were read. On the lab PC, two visibly different
+beacon positions produced translations only a few centimetres apart, which
+is not the behaviour of a solver tracking a moved target.
+\textbf{Measured directly on the Raspberry Pi 5}: a beacon displaced a real,
+ruler-measured 30\,cm moved the reported pose by only 4.28\,mm ---
+1.43\,\% of the real move. A miscalibrated camera still responds to a real
+displacement at the right order of magnitude; a response this small is not
+a calibration error, it is the practical absence of one. This settled, by
+measurement rather than inference, that a camera recalibration could not be
+expected to fix pose accuracy on its own.
+
+\subsubsection*{Cause found: a coordinate conversion dropped in the port}
+
+Three candidate explanations were open at that point --- the assumed beacon
+geometry, the point correspondence, and the solver's fixed initialisation.
+The first was eliminated by direct measurement: all six pairwise LED
+distances on the beacon in use were checked against the assumed geometry
+with a tape measure and matched to within 0.1--0.2\,cm, the instrument's own
+resolution. The remaining two were then tested together in a synthetic
+harness linking the unmodified solver and correspondence code against a
+geometry placed, by bisection, at the exact viewing angle where two of the
+beacon's edges subtend equal angles --- the condition a correspondence flip
+would depend on.
+
+That test confirmed the correspondence sort is genuinely unstable: at
+$\pm1$\,px of noise it selected five different point assignments across 1000
+trials and failed outright on 134 of them. \textbf{But it also showed that
+effect accounts for centimetres, not metres}, and exposed a larger defect
+underneath it. The ROS2 wrapper never converted the sorted image points back
+into pixel space before handing them to the solver --- a step the ROS1 node
+performs and which was lost in the port, because in the original it sat
+inside a loop whose other purpose was populating an Astrobee-specific
+message the ROS2 node correctly does not need. The reprojection residual was
+therefore comparing a pixel-space prediction against a unit bearing vector:
+\textbf{372--640 at the true pose instead of approximately zero}. Minimising
+that drives the solution toward cancelling the principal point --- a
+quantity shared by all four observations and independent of where the beacon
+actually is, which is precisely why the pose barely responded to a real
+displacement.
+
+\textbf{Measured before and after on the same node and the same synthetic
+input}, with the pre-fix state recovered by rebuilding the previous source
+rather than recalled: the solved distance moved from 11.40\,m to 0.679\,m
+against a true 0.700\,m, and the solver from \texttt{converged = 0} in 31
+iterations to \texttt{converged = 1} in 18. The never-converging solve was
+thus a \emph{symptom} of the broken residual rather than an independent
+problem --- a residual that cannot approach zero reaches the iteration
+ceiling by construction.
+
+One observation from that comparison is worth carrying forward, because it
+inverts an intuition: \textbf{the final cost rose} (27.6 to 50.3) while the
+pose went from useless to correct. Cost alone is therefore not usable as a
+quality gate on this solver.
+
+\textbf{That result was measured, not reasoned --- but only against a
+synthetic image, and re-running it on real hardware the same day found a
+second real defect before it could give a clean answer.}
+
+\subsubsection*{The real-hardware re-test, and what it found}
+
+A displacement test on a second machine (24.04, a different physical beacon
+and camera than the ones above) initially gave a confusing result: 55.3\,\%
+of a real 30\,cm move, but with the depth axis moving in the \emph{wrong}
+direction --- not the signature of a simple scale error. Checking each
+measurement position's own internal stability (repeated stationary samples,
+grouped into clusters) explained why: at one distance, 40 stationary samples
+formed \textbf{eight distinct pose clusters}, alternating almost frame to
+frame, while two other distances on the same rig were each rock-stable ---
+the correspondence-sort instability already quantified above, now confirmed
+\emph{live} and shown to be geometry-dependent rather than confined to one
+narrow synthetic case. Two independently-stable readings, 30\,cm apart,
+still disagreed by 135\,mm with the depth axis backwards.
+
+The mechanism is a second defect, distinct from the units mismatch above:
+the solver restarts from an identical fixed point on every single frame,
+with no memory of the previous solve, so two different starting geometries
+are free to converge to two different, disconnected minima --- each
+internally stable, neither necessarily correct. Fixed the same day by
+warm-starting the solver from its own last converged result rather than a
+fixed constant (a backward-compatible, optional parameter; every prior
+caller is unaffected). Verified first against a synthetic stationary target
+(the solver reached the same answer in 1 iteration instead of 18, byte-for-
+byte identical pose), then on hardware: with the fix in place and the node
+left running continuously through a real 30\,cm move --- deliberately
+\emph{not} restarting the node between readings, since a restart is exactly
+what re-exposes the first defect --- the response became \textbf{213.7\,mm
+of 300\,mm, 71.2\,\%, with the depth axis moving in the physically correct
+direction.}
+
+\begin{center}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+ & pre-fix & units fix alone & units fix + warm start \\
+\midrule
+Response to a real 300\,mm move & 1.43\,\% & 45--55\,\% (wrong sign) & \textbf{71.2\,\% (correct sign)} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Read precisely: 71.2\,\% is real and correctly signed, not
+complete.} The remaining gap is not unexplained --- this camera's own
+intrinsics have never been formally calibrated, a question that was
+correctly deferred while the pose was not tracking at all and is now, for
+the first time, worth asking. The correspondence-sort instability itself
+remains open and deliberately unfixed: warm-starting reduces its practical
+impact for continuous tracking (a solve seeded from a good neighbour is
+less likely to jump to an unrelated minimum than one starting fresh every
+frame) but this is inference from the mechanism, not a separate
+measurement, and re-acquiring a beacon with no prior pose to warm-start from
+remains exposed to it.
+
+\subsection{Maximum update rate}
+
+Every rate observed before this test was bounded by the camera, not by
+Carolus: the webcam in use offers only 10 frames per second at its working
+resolution. Removing the camera as the limiting factor --- feeding
+synthetic frames as fast as a script can produce them, and refusing to
+report a result whenever the harness itself might be the bottleneck rather
+than the algorithm --- Carolus sustains roughly \textbf{265\,Hz} on the lab
+PC and \textbf{52.8\,Hz} on the Raspberry Pi 5, both far faster than any
+camera used so far. Running ROS2 Jazzy inside a Docker container rather
+than installing it natively cost \textbf{0.6\,\%}, measured on the same
+operating system either side of the boundary --- negligible, and confirms
+the container used throughout this work is not masking a real performance
+cost.
+
+\subsection{What this establishes}
+
+The portability question is answered affirmatively and by measurement: the
+same detection and solver sources run under ROS Noetic, ROS2 Humble and ROS2
+Jazzy, on two processor architectures, producing matching numerical output.
+The middleware is now a deployment choice. What has \emph{not} been shown is
+that the resulting pose is accurate --- under any of them.
+
+\section{Results to Date}
+
+The autonomous approach state machine (SEARCH, ALIGN, APPROACH, STOP) is
+validated end to end on hardware, including the fan-search coverage pattern
+and the LOCATE calibration mode. The F3 EKF chain (beacon detection $\to$
+camera-to-beacon transform $\to$ absolute pose $\to$ EKF fusion with wheel
+odometry) was validated on hardware with a first in-motion run (1.617\,m
+over 37.2\,s): the fused estimate and raw odometry diverged by up to 5.8\,cm
+during the run (average 0.6\,cm), with a real but modest signal, consistent
+with a short run and a small amount of accumulated drift.
+
+\textbf{This first run should be read as a wiring/sanity check, not as the
+drift-reduction demonstration requested by the supervisor}: the course was
+too short for meaningful odometric drift to accumulate, and no independent
+ground truth was used for comparison --- what the 5.8\,cm measures is
+disagreement between two estimates, not the error of either. The dedicated
+protocol in Section~\ref{sec:protocol} is designed specifically to produce
+that demonstration and has not yet been executed on hardware.
+
+\subsection{The orientation conversion}
+
+Derived, cross-validated, and confirmed on hardware on all three axes with
+zero inversions (Section~\ref{sec:quaternion}). This closes the deliverable
+the supervisor named as primary.
+
+\subsection{Throughput: 5.95$\times$ from moving one node}
+\label{sec:results-throughput}
+
+Carolus was originally run on the lab PC, consuming camera frames streamed
+from the Pi. Since the frames are published uncompressed --- roughly
+2.76\,MB each --- the transport, not the P4P solve, was the constraint.
+Measured like for like on the same beacon the same afternoon, \texttt{/pose}
+went from \textbf{2.19\,Hz on the lab PC to 13.04\,Hz on the Pi}. The
+bottleneck moved rather than disappeared: on the Pi it is CPU, and the
+camera bridge now competes with the solver for it, which is visible in the
+camera rate dropping from 30.0\,Hz alone to 16.5\,Hz with Carolus alongside.
+
+\subsection{The attitude estimate is an artefact}
+
+The platform's reported attitude drifts, and for some time this was read as
+the chassis physically rotating. It is not. Refitting the reported roll and
+pitch against reported \emph{yaw} rather than against time gives
+\[
+\text{roll} = 21.62\sin(\text{yaw}) + 7.55\cos(\text{yaw}) - 9.47,
+\quad R^2 = 0.985,
+\]
+with pitch following the same form --- the signature of the whole estimate
+rotating rigidly about a single axis roughly $11^\circ$ off the body
+vertical. That is one constant misaligned gyro-bias vector integrated with
+\emph{no gravity correction operating at all}. A flat-floor ground robot
+cannot physically roll through $\pm22^\circ$, which is the tell.
+
+It was closed against an independent, calibrated channel rather than against
+another estimate. A commanded $14.6^\circ$ gimbal move shifted the image by
+182.9\,px, giving 12.5\,px per degree; a genuine $18.1^\circ$ chassis
+rotation would therefore move the scene 227\,px. Measured while the attitude
+estimate claimed exactly that rotation: \textbf{0.4\,px}, some 567 times
+smaller. The consequence is uncomfortable and worth stating --- every drift
+figure this project measured on that channel, including some it had already
+recorded as findings, inherits the artefact.
+
+\subsection{MINS, characterised rather than assumed}
+
+MINS builds and runs on both machines. Two findings shaped the architecture
+more than the build did. Its live-subscribe entry point is \textbf{ROS 2
+only}: under Noetic it compiles, initialises, subscribes to nothing and
+returns, which is why replay is the supported path here rather than a
+fallback. And on the Pi it runs at \textbf{0.7$\times$ real time} against
+our own recorded data (camera 118\,ms, IMU 3\,ms per 88\,ms of data) --- and
+that figure is optimistic, since the recording itself throttled the sources
+below their live rates.
+
+\section{Planned Next Steps}
+
+\begin{itemize}
+  \item \textbf{Calibrate the camera and compare the pose against
+  tape-measured beacon positions.} The real-hardware displacement test
+  (Section~\ref{sec:ros2}) is done: 71.2\,\% response to a real 30\,cm move,
+  correctly signed, up from 1.43\,\%. This was correctly deferred while the
+  pose was not tracking at all; it is the natural next step now that it
+  demonstrably is, and is the most likely source of the remaining gap to
+  100\,\%, since this camera's intrinsics have never been formally
+  calibrated.
+  \item \textbf{The correspondence-sort instability is quantified, not
+  fixed.} Confirmed geometry-dependent on real hardware: one tested
+  distance out of three gave eight distinct pose clusters where the other
+  two were rock-stable. Warm-starting is expected, but not separately
+  measured, to reduce its practical impact for continuous tracking; fixing
+  the sort itself is separate work with its own before/after measurement
+  still owed.
+  \item Execute the ground-truth drift protocol (Section~\ref{sec:protocol})
+  on hardware.
+  \item Validate the MINS installation against the official KAIST Urban
+  dataset on the lab PC before any RoboMaster/Carolus integration attempt.
+  \item Design and run the Carolus-vs-AprilTag orientation comparison (F5).
+\end{itemize}
+
+The throughput item that previously appeared in this list --- measuring the
+bottleneck behind Carolus's publish rate --- has been removed because it was
+answered: it is the uncompressed image transport, and moving the node onto
+the Pi raised \texttt{/pose} from 2.19\,Hz to 13.04\,Hz
+(Section~\ref{sec:results-throughput}). It is recorded here only because the
+list had continued to carry it after the measurement was taken.
+
+\section{Selected Lessons Learned}
+\label{sec:lessons}
+
+A small number of structurally significant issues are worth recording
+explicitly, since they were not obvious from surface-level testing and cost
+real debugging time:
+
+\begin{itemize}
+  \item \textbf{Simultaneous SDK connections silently block motion
+  commands.} Two ROS nodes opening independent connections to the robot's
+  SDK at the same time causes chassis/gimbal motion commands to stop being
+  accepted after a few calls, with no error surfaced -- this was the root
+  cause that had blocked autonomous motion in the previous iteration of the
+  project and is now avoided by design (a single SDK connection, shared
+  across the relevant nodes).
+  \item \textbf{A cleared-too-early pose buffer silently broke ALIGN.} The
+  pose buffer used to check whether a fresh beacon detection was available
+  was being invalidated immediately before the state that needed to read it,
+  so ALIGN could never observe a valid pose and would fall back to SEARCH
+  before issuing any rotation command. The bug was structural (present since
+  the state was first implemented) rather than a hardware or tuning problem.
+  \item \textbf{The build environment is not on an officially supported OS
+  combination.} ROS Noetic and several of its dependencies target Ubuntu
+  20.04; this project's lab PC runs 22.04, and no superuser access is
+  available in this environment. Both issues were worked around locally
+  (custom \texttt{CMake} config shims, user-space builds) rather than by
+  changing the underlying OS or gaining elevated access, which constrains
+  how some future dependencies (including MINS) can be installed.
+  \item \textbf{Carolus's $\sim$2.5\,Hz publish rate was a network
+  bottleneck, and this has since been measured rather than argued.} The
+  hypothesis was that transporting uncompressed frames, not the P4P solve,
+  was the constraint. Relocating the node confirmed it: 2.19\,Hz to
+  13.04\,Hz, like for like. Recorded here as a case where a diagnosis stated
+  honestly as a hypothesis was later promoted by measurement rather than by
+  repetition.
+\end{itemize}
+
+\subsection{The recurring failure mode: checks that cannot fail}
+
+The single most expensive pattern on this project was not any individual
+bug. It was a class of them: \textbf{an instrument reporting success because
+it was structurally incapable of reporting failure}. It recurred often
+enough, in enough disguises, that recognising the shape became the most
+productive diagnostic habit available.
+
+\begin{itemize}
+  \item The P4P solver computes convergence status, final cost and
+  iteration count on every frame --- and discards all three. The only
+  surviving guard is a finiteness test, which a non-converged solution
+  passes trivially. The method that does this is named
+  \texttt{computeAndValidatePosesWithRefinement}.
+
+  \item Eight SDK telemetry subscriptions logged ``OK'' on the sole evidence
+  that the call had not raised. The boolean each one returns was discarded
+  inside a bare \texttt{try}. A subscription the robot refuses returns
+  \texttt{False}, quietly.
+
+  \item A credential scanner reported the repository clean for months. Its
+  pattern was correct; \texttt{grep} reads text, and the documents holding
+  the credentials were PDF and Office containers. \textbf{A check that
+  cannot read its input does not report \emph{unknown}; it reports
+  \emph{clean}.}
+
+  \item A tool-availability check of the form
+  \texttt{cmd --version | head -1 \&\& echo OK} reported four linters
+  present. None was installed --- \texttt{head} succeeds on empty input.
+
+  \item A camera-relay process was dead on arrival for five days while the
+  GUI logged every command it sent as delivered: standard error discarded,
+  success logged immediately after the subprocess was spawned rather than
+  after it initialised, and the send path guarded by a bare
+  \texttt{except: pass}.
+
+  \item A drift fix was validated at ``1000$\times$ improvement'' against a
+  quantity that is \emph{constant by construction} in the very mode being
+  tested. The correct reading is that the fix had blinded the instrument
+  rather than stilled the robot.
+
+  \item An optimisation skipped republishing a coordinate transform when it
+  had not changed. Transforms expire, so on a stationary rig the frame
+  stopped existing --- and the failure reported itself as
+  ``frame does not exist'', which reads as a missing publisher rather than
+  an over-eager one.
+\end{itemize}
+
+The counter-practice that emerged is narrow and mechanical: \textbf{prefer a
+check with a demonstrated way to come back negative}. In practice this meant
+validating detectors against planted defects before trusting them on real
+data; deliberately sabotaging a documentation checker to confirm it would
+notice; proving a refactor null by comparing 35 composed transforms
+element-wise; and, when a positive control was needed, checking that the
+control itself had worked --- one such test ``proved'' a camera blind while
+publishing to the wrong message type, and the tell was a suspiciously high
+correlation confidence on a genuinely static scene.
+
+\subsection{Measuring things that move while you measure them}
+
+A second cluster of lessons concerns instruments that work but do not
+measure what they appear to.
+
+Several early figures were repeatability dressed as accuracy: a pose stable
+to sub-millimetre across frames on a static scene says nothing about its
+distance from the truth, and a controller stopping 3\,mm from its own
+setpoint measures the controller, not the position. Both were recorded at
+the time as if they were accuracy results.
+
+The correction that generalised best was to insist the reference be
+independent of the thing under test. The attitude artefact
+(Section~\ref{sec:quaternion} and Results) was only settled by an optical
+channel calibrated by a commanded motion of known size --- not by comparing
+two estimates that shared an origin. Similarly, when three measurement
+channels disagreed, the resolution was to check the outlier's own health
+rather than take the majority: the camera channel was returning hundreds of
+pixels of motion because the room lights were off and the correlator was
+matching noise against noise. Two trustworthy channels beat three when the
+third is measuring nothing.
+
+\section{References}
+
+\begin{itemize}
+  \item Prior intern documentation and tutorials describing the original
+  Carolus/RoboMaster pipeline setup.
+  \item Manuscript describing uVGS-2 (Carolus), general architecture,
+  starting at the beacon-detection and P4P sections.
+  \item SVGS paper (original NASA system Carolus derives from), including
+  its accuracy-characterization methodology (encoder ground truth,
+  dynamic time warping, error histograms), used as a reference approach for
+  the drift-measurement protocol in Section~\ref{sec:protocol}.
+  \item MINS (Lee et al.), including its published Journal of Field
+  Robotics version, used for the F4 integration design and evaluation
+  toolbox.
+  \item Coverage/search-strategy literature consulted when designing the
+  fan-search pattern (coverage path planning survey; boustrophedon/lawnmower
+  decomposition-free coverage; the SIBA spiral+boustrophedon hybrid; radial
+  /fan search angular-increment literature) -- see
+  \texttt{research-log/03-recherche-ia/perplexity/08-strategie-recherche-couverture.md}
+  in the project's internal engineering log for the specific sources.
+\end{itemize}
+
+\end{document}
