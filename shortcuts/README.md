@@ -664,7 +664,7 @@ Reconciled `carolus_repo/` (a hand-assembled mirror of `carolus_ws/src/`, `cmake
 
 **What** — subscribes to `/camera/color/image_raw` and saves a live preview frame to disk on keypress, for the MATLAB Camera Calibration Toolbox procedure (`technical.tex`, Chapter "Camera Calibration").
 
-**Why** — created 2026-08-11 after reviewing the LEO/LIMO documents Hector sent: they use the exact same MATLAB checkerboard method, and this project's own manual already documented the procedure (25 mm checkerboard, MATLAB's Camera Calibration app) without ever having a way to actually save frames from the live camera stream — the values currently loaded (`camera_info.yaml`) were a pragmatic stand-in, never the output of this procedure. No existing script in this project wrote a camera frame to disk.
+**Why** — created 2026-08-11 after reviewing the LEO/LIMO documents Hector sent: they use the exact same MATLAB checkerboard method, and this project's own manual already documented the procedure (MATLAB's Camera Calibration app) without ever having a way to actually save frames from the live camera stream — the values currently loaded (`camera_info.yaml`) were a pragmatic stand-in, never the output of this procedure. No existing script in this project wrote a camera frame to disk.
 
 **Usage**
 ```bash
@@ -674,7 +674,7 @@ Live preview window. `s` saves the current frame as `checkerboard_NNN.png`; `q` 
 
 **Expected** — a folder of PNG frames ready to upload into MATLAB's Camera Calibration app (Apps tab), enable tangential distortion + three radial distortion coefficients, run, and transcribe the exported `fx`/`fy`/`cx`/`cy`/distortion into `testcarolus.launch`.
 
-**Needs the robot powered on**, camera streaming, and a printed 25 mm checkerboard.
+**Needs the robot powered on** and camera streaming. **Corrected 2026-08-25**: this project has nothing to print — the checkerboard is on the back of the project's own beacon (`overleaf/technical.tex` §"Recommended method", confirmed against the manual, not assumed). Only use a separate printed checkerboard if calibrating a different camera/beacon combination.
 
 **BUG-102, fixed 2026-08-11 (first real run crashed):** this lab PC has a numpy 2.2.6 install shadowing the system numpy `cv2` needs, and a system `cv_bridge` linked against a different OpenCV build than `cv2` itself (same defect class as BUG-101, same day) — both are corrected automatically by a self-re-exec guard at the top of the script; the plain command above is unaffected and needs no extra flags.
 

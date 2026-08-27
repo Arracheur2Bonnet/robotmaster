@@ -1347,20 +1347,84 @@ regression and the win, which is why it looked like a clean improvement.
 
 \begin{warningbox}
 \textbf{Do not enable \texttt{multi\_hypothesis\_sort} broadly.} It is not a
-strict improvement. Either the 45\textdegree--55\textdegree{} regression
-needs understanding and fixing first (candidate cause, not yet checked: the
-classical P4P ``twisted pair'' near-planar ambiguity, where a genuinely
-different wrong pose can have \emph{lower} cost than the true one at
-specific geometries), or the feature needs gating by viewing angle rather
-than applied unconditionally.
+strict improvement, and the section below explains exactly why the two
+regimes exist.
 \end{warningbox}
 
+\subsection{Why those three regimes exist --- the sort has a hard geometric
+limit at \texorpdfstring{$\sim$}{~}58\textdegree}
+\label{sec:sortlimit}
+
+Measured 2026-08-27 with \texttt{carolus\_ros2/test/}\allowbreak
+\texttt{instrument\_sort\_input\_scale.cpp}, and confirmed independently in
+closed form with no noise at all.
+
+The sort's founding assumption is that \textbf{the longest \emph{projected}
+edge is P1--P2}. That assumption expires. P1--P2 is 0.1650\,m along $X$ and
+foreshortens as the beacon rotates about $Y$; P3--P4 is 0.0909\,m in the
+$YZ$ plane and barely changes. Their projected lengths cross over:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Viewing angle & P1--P2 projected & P3--P4 projected \\
+\midrule
+55\textdegree & 0.1365 & 0.1202 \\
+\textbf{$\sim$58\textdegree} & \multicolumn{2}{l}{\textbf{crossover --- equal}} \\
+60\textdegree & 0.1191 & \textbf{0.1222} \\
+85\textdegree & 0.0208 & \textbf{0.1294} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+How often the sort picks the genuinely correct pair, 200 trials per angle:
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Viewing angle & Correct pair chosen \\
+\midrule
+5\textdegree--55\textdegree & \textbf{200/200} \\
+60\textdegree & 16/200 \\
+65\textdegree--85\textdegree & \textbf{0/200} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{warningbox}
+\textbf{Past $\sim$58\textdegree{} the sort is not unstable --- it is
+deterministically wrong}, on every frame, and no amount of averaging or
+filtering recovers from that. \textbf{Measured operating envelope for this
+beacon geometry: reliable below $\sim$55\textdegree{} of viewing angle,
+unusable above $\sim$60\textdegree.} Keep the beacon within that cone. A
+different beacon changes the crossover angle: it is set by the ratio of the
+P1--P2 and P3--P4 edge lengths, so recompute it if the geometry changes.
+\end{warningbox}
+
+This also settles what the 58.95\textdegree{} ``near-tie'' in the previous
+section actually was --- not an arbitrary awkward geometry, but this exact
+crossover, the one angle where the two projected lengths are equal. And it
+explains the three regimes directly: below 55\textdegree{} the baseline is
+already right every time, so a 6-way search can only lose; above
+60\textdegree{} it is always wrong, so a 6-way search can only win.
+
+\textbf{A tempting explanation that was tested and is false.} The ROS2 node
+feeds the sort \texttt{.normalized()} unit bearing vectors, while the ROS1
+node's production path feeds pixel-scale coordinates --- so the ROS2 port
+appeared to have introduced the problem by making the sort compare
+\emph{angular} rather than \emph{image-plane} separations. Measured
+directly, with the noise drawn once and both representations derived from
+it: the two pick the same pair in \textbf{3395 of 3400 trials}, and the
+failure band is identical in both. \textbf{The representation is not the
+cause.} Recorded because it is the first thing anyone comparing the two
+nodes will suspect.
+
 \textbf{The 60\textdegree--85\textdegree{} finding stands on its own,
-independent of the fix.} Baseline --- current production, even with
-BUG-088 and BUG-132 both fixed --- drops roughly half its frames outright at
-steep viewing angles. This may explain some of the \texttt{Failed to sort
-targets using tetrahedron geometry} messages seen interleaved with
-successful detections across every real-hardware session to date.
+independent of any fix.} Baseline --- current production --- drops roughly
+half its frames outright at steep viewing angles. This may explain some of
+the \texttt{Failed to sort targets using tetrahedron geometry} messages seen
+interleaved with successful detections across every real-hardware session to
+date.
 
 Wired in as \texttt{-p multi\_hypothesis\_sort:=true}, \textbf{default
 \texttt{false}}. \texttt{pose\_est.cpp} itself is untouched; the alternative
@@ -1368,16 +1432,22 @@ labeling and 6-way solve live entirely in \texttt{carolus\_node\_ros2.cpp},
 reusing \texttt{FindP1P2Indices} (now declared in \texttt{pose\_est.hpp}, a
 zero-behaviour-change addition) rather than reimplementing it.
 
-\textbf{Next step is code, not hardware:} understand or fix the
-45\textdegree--55\textdegree{} regression before scheduling any hardware
-test of this flag.
+\textbf{Next step is code, not hardware.} With the crossover above
+identified, the productive direction is choosing the reference edge from the
+known 3D geometry rather than from observed 2D lengths --- not a 6-way
+search. No such fix is written yet.
 
-Two harnesses produced the results above, both in
+Three harnesses produced the results above, all in
 \texttt{carolus\_ros2/test/}:
 
 \begin{itemize}
 \item \texttt{instrument\_multi\_hypothesis\_sort.cpp} --- the single-point table
 \item \texttt{instrument\_multi\_hypothesis\_sweep.cpp} --- the angle sweep
+\item \texttt{instrument\_sort\_input\_scale.cpp} --- the representation test and
+  the \texttt{argmax\_ok} diagnostic behind Section~\ref{sec:sortlimit}. Run it
+  with \texttt{-{}-verify-baseline} to re-derive the sweep's own numbers from
+  the same seeds first; it exits non-zero if they have drifted, so a diverged
+  harness cannot pass its output off as a comparison.
 \end{itemize}
 
 Same build recipe as \texttt{instrument\_p4p\_sort.cpp} above, substituting

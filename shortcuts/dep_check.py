@@ -228,9 +228,25 @@ def main():
         if probe is None:
             print("  SKIPPED: rosdep not available on this machine")
         elif not probe:
+            # Two DIFFERENT causes produce this identical symptom, and they need
+            # opposite fixes. Until 2026-08-27 this branch blamed the EOL cache
+            # unconditionally and printed a remedy that does nothing for the more
+            # common cause -- a script or container where ROS_DISTRO is simply
+            # unset, exactly the case CLAUDE.md warns about (interactive shells
+            # get it from ~/.bashrc; scripts do not). Distinguish them here
+            # rather than guessing: an unset ROS_DISTRO is checkable directly.
             print("  CANNOT CHECK: even 'roscpp' does not resolve.")
-            print("  This is the end-of-life trap: plain `rosdep update` now SKIPS Noetic.")
-            print("  Fix with:  rosdep update --include-eol-distros")
+            if not os.environ.get("ROS_DISTRO"):
+                print("  CAUSE: ROS_DISTRO is unset, so rosdep cannot map ANY ROS name.")
+                print("  This is normal in a script or container -- an interactive shell")
+                print("  gets ROS_DISTRO from ~/.bashrc, a script does not.")
+                print("  Fix with:  source /opt/ros/noetic/setup.bash")
+            else:
+                print("  CAUSE: ROS_DISTRO=%s is set, so this is the end-of-life trap:"
+                      % os.environ["ROS_DISTRO"])
+                print("  a plain `rosdep update` SKIPS Noetic ('Skip end-of-life distro'),")
+                print("  after which nothing resolves and every error blames your manifests.")
+                print("  Fix with:  rosdep update --include-eol-distros")
             problems += 1
         else:
             bad = []
