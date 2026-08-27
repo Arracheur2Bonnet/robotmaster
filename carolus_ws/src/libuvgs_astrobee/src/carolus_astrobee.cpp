@@ -74,6 +74,15 @@ public:
         private_nh_.param("fisheye", fisheye, false);
         private_nh_.param("fov", fov, true);
         private_nh_.param("mono", mono, true);
+        // BUG-088 (ported to ROS1 2026-08-27) — warm-start the solver from the
+        // previous converged pose instead of the same fixed vector every frame.
+        // Parameterised rather than hardcoded so the exact same binary can A/B
+        // it: relaunch with _warm_start:=false to reproduce the old,
+        // always-fixed-start behaviour. Matches carolus_node_ros2.cpp, where
+        // this was measured on hardware (2026-08-25): a real 90->120 cm beacon
+        // move gave 213.7 mm of 300 mm (71.2%) with the correct sign, against
+        // 55.3% with the wrong sign across independent restarts.
+        private_nh_.param("warm_start", warm_start_, true);
         private_nh_.param("bot_name", _bot_name, std::string("wannabee"));
         private_nh_.param("frame_id_conv", frame_id_conv, false);
         // TIMESTAMP SOURCE FOR THE PUBLISHED POSE (added 2026-08-04).
@@ -669,7 +678,8 @@ private:
         //COBRAS FUMANTES POSE SOLVER
         //THE SNAKE IS GOING TO SMOKE
         CobrasFumantes poseSolver(cameraMatrix_, measType_);
-        poseSolver.computeAndValidatePosesWithRefinement(sortedImagePoints, knownPoints_, undistortedPoints, bestPose);
+        poseSolver.computeAndValidatePosesWithRefinement(sortedImagePoints, knownPoints_, undistortedPoints, bestPose,
+                                                        (warm_start_ && has_prior_) ? prior_params_ : nullptr);
     } else {
         imagePoints.reserve(undistortedPoints.size());
         for (const auto& point : undistortedPoints) {
@@ -697,7 +707,8 @@ private:
         //COBRAS FUMANTES POSE SOLVER
         //THE SNAKE IS GOING TO SMOKE
         CobrasFumantes poseSolver(camMatrixAstrobee, measType_);
-        poseSolver.computeAndValidatePosesWithRefinement(sortedImagePoints, knownPoints_, undistortedPoints, bestPose);
+        poseSolver.computeAndValidatePosesWithRefinement(sortedImagePoints, knownPoints_, undistortedPoints, bestPose,
+                                                        (warm_start_ && has_prior_) ? prior_params_ : nullptr);
     }
    
 
@@ -711,6 +722,14 @@ private:
     // turns out to be rare, rejecting becomes the right fix; if it is common,
     // rejecting would silence the pipeline. Throttled so a persistent failure
     // cannot flood the log at frame rate.
+    // BUG-088 (ported to ROS1 2026-08-27) — refresh the prior ONLY from a
+    // converged solve. A non-converged solve's parameter vector is wherever the
+    // optimiser happened to stop, which would poison every subsequent frame.
+    if (bestPose.solver_converged) {
+        for (int i = 0; i < 6; ++i) prior_params_[i] = bestPose.solved_params[i];
+        has_prior_ = true;
+    }
+
     if (!bestPose.solver_converged) {
         ROS_WARN_THROTTLE(2.0,
             "[P4P] solver did NOT converge (iterations=%d, final_cost=%.6g) — "
@@ -989,6 +1008,15 @@ void extractXYZ(const Eigen::Vector3d& translationVector, double& xExtracted, do
     bool fisheye;
     bool mono;
     bool fov;
+    // BUG-088 warm-start state (ported to ROS1 2026-08-27). has_prior_ starts
+    // false, so the very first frame — and any frame after a non-converged
+    // solve — falls back to the fixed guess below, which is byte-identical to
+    // ceresP4P.cpp's own default. Deliberately NOT reset on beacon loss: a
+    // stale prior from seconds ago is still a far better starting point than
+    // the fixed vector, and a wrong prior costs iterations, not correctness.
+    bool warm_start_;
+    bool has_prior_ = false;
+    double prior_params_[6] = {0.0, 0.0, -0.001, 0.0, 0.0, 0.7};
     bool dock_cam_;
     bool nav_cam_;
     bool sci_cam_;
