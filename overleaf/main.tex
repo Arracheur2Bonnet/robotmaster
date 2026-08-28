@@ -811,9 +811,43 @@ our own recorded data (camera 118\,ms, IMU 3\,ms per 88\,ms of data) --- and
 that figure is optimistic, since the recording itself throttled the sources
 below their live rates.
 
+\subsection{The ground-truth recording that four deliverables were waiting
+on}
+\label{sec:bag23}
+
+An audit on 2026-08-13 established that none of the project's 26 existing
+rosbags contained camera and IMU together --- the exact combination a
+MINS-versus-ground-truth comparison needs. That single missing artefact
+gated four separate pieces of work, and it was recorded on 2026-08-27:
+\textbf{684\,s, 27\,620 messages, \texttt{/camera/color/image\_raw} 6704 and
+\texttt{/imu} 14\,709}, driving a tape-measured 6.41\,m $\times$ 3.66\,m
+rectangle with four corner-crossing timestamps logged live.
+
+Two limitations are recorded rather than smoothed over, because both bound
+what the bag can be used to claim. The start-corner timestamp is the
+recording-start time used as a proxy, not a measured crossing --- four real
+crossings remain, comfortably above the three that
+\texttt{ov\_eval}'s trajectory alignment requires. And only two of the four
+sides were measured, the opposite pair assumed equal by symmetry; if a
+per-side residual analysis is ever attempted, that assumption is the first
+thing to revisit.
+
+Getting to the recording took three attempts at the pre-flight torn-frame
+check, which passed 0/60 only on the third. No code changed between runs.
+This is a known intermittent fault, and the protocol's own instruction is to
+retry --- but it is worth stating plainly that the first run showed a frame
+whose tear metric was 409 against a same-run median of 2.7, so the failure
+being retried past was real, not a threshold artefact.
+
 \section{Planned Next Steps}
 
 \begin{itemize}
+  \item \textbf{Replay the new recording through MINS and compare against
+  the measured rectangle.} This is the immediate next task and needs no
+  hardware: the recording (Section~\ref{sec:bag23}) unblocks the
+  MINS-versus-ground-truth comparison, the MINS-versus-sqrtVINS comparison,
+  and the relocalization demonstration --- all three of which had been
+  waiting on it alone.
   \item \textbf{Calibrate the camera and compare the pose against
   tape-measured beacon positions.} The real-hardware displacement test
   (Section~\ref{sec:ros2}) is done: 71.2\,\% response to a real 30\,cm move,
@@ -822,13 +856,23 @@ below their live rates.
   demonstrably is, and is the most likely source of the remaining gap to
   100\,\%, since this camera's intrinsics have never been formally
   calibrated.
-  \item \textbf{The correspondence-sort instability is quantified, not
-  fixed.} Confirmed geometry-dependent on real hardware: one tested
-  distance out of three gave eight distinct pose clusters where the other
-  two were rock-stable. Warm-starting is expected, but not separately
-  measured, to reduce its practical impact for continuous tracking; fixing
-  the sort itself is separate work with its own before/after measurement
-  still owed.
+  \item \textbf{The correspondence sort has a hard geometric limit, now
+  located rather than merely observed.} What had been described as an
+  instability is, past a threshold, a deterministic failure. The sort
+  assumes the longest \emph{projected} inter-point edge identifies a
+  specific pair of beacon LEDs; that assumption expires, because the pair it
+  looks for foreshortens under rotation while another pair does not. Their
+  projected lengths cross at approximately 58\textdegree{} of viewing angle
+  for this beacon's geometry. Measured across 200 trials per angle, the sort
+  identifies the correct pair 200/200 below 55\textdegree{} and
+  \textbf{0/200 between 65\textdegree{} and 85\textdegree}. This is measured
+  synthetically against the production sort function, not reasoned from the
+  code. The practical consequence is an operating envelope rather than a
+  bug to be patched blind: keep the beacon within roughly 55\textdegree{} of
+  frontal, and treat any pose recorded outside it as uninformative. A
+  candidate fix that re-solved for all six possible labellings was
+  implemented, measured, and \textbf{rejected} --- it regressed in the band
+  where the existing heuristic is already correct.
   \item Execute the ground-truth drift protocol (Section~\ref{sec:protocol})
   on hardware.
   \item Validate the MINS installation against the official KAIST Urban
