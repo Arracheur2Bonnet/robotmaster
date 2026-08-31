@@ -839,15 +839,71 @@ retry --- but it is worth stating plainly that the first run showed a frame
 whose tear metric was 409 against a same-run median of 2.7, so the failure
 being retried past was real, not a threshold artefact.
 
+\subsection{2.4: replaying the recording through MINS diverges, it does not
+compare}
+\label{sec:24divergence}
+
+The recording (Section~\ref{sec:bag23}) was replayed the same week, using the
+robot-specific MINS configuration built 2026-08-04 for a timing test (one
+camera, no LIDAR/GPS/wheel odometry, IMU on \texttt{/imu}). The replay itself
+ran well: \textbf{684\,s of bag data processed in 31.27\,s, 21.9$\times$ real
+time} on this machine --- a new throughput figure in its own right, the only
+prior number being 0.7$\times$ on a Pi 4B under a heavier simulated sensor
+load.
+
+\textbf{The trajectory it produced is not usable as a comparison.} It starts
+sensibly and is already physically impossible within seconds:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Time into recording & Estimated position (m) & \\
+\midrule
+0.5\,s & (0.13, --0.11, 0.00) & plausible \\
+17\,s & (325, --700, --80) & already impossible for a 6.41$\times$3.66\,m course \\
+641\,s (end) & (258038, --28025, --2030828) & \textasciitilde{}1.5 million metres of estimated path \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{figures/mins_2.4_divergence.png}
+\caption{Left: full extent, the 6.41$\times$3.66\,m ground truth is a single
+indistinguishable point at this scale. Right: the first 20\,s, where the
+estimate is already at (450, --1000)\,m.}
+\end{figure}
+
+This is not new information reasoned after the fact --- the configuration
+carried an explicit warning from the day it was written that
+\texttt{T\_imu\_cam} (the camera--IMU geometric relationship) is a placeholder,
+never calibrated, and that only timing conclusions from it are valid.
+Independently, the accelerometer's units remain unverified (reported in g,
+not m/s\textsuperscript{2}, measured but never fixed). Either defect,
+propagated through the filter's double integration of acceleration into
+position, produces exactly this signature: a roughly constant per-sample
+error that compounds rather than averaging out, turning a sensor-scale error
+into a kilometre-scale one within seconds. \textbf{This measurement confirms
+what both open items already predicted; it does not point at anything new.}
+One feature of the trajectory --- a slow, roughly periodic oscillation once
+the runaway growth reaches a few hundred thousand metres --- was observed but
+not explained.
+
+\textbf{2.4's real deliverable is therefore this: the comparison Carolus's
+supervisor asked for cannot be produced by more replay or more plotting.} It
+needs the camera--IMU extrinsic actually measured (a dedicated Kalibr
+calibration session, not yet run) and the IMU unit question resolved, both of
+which are physical sessions, not further desk analysis of the same
+recording.
+
 \section{Planned Next Steps}
 
 \begin{itemize}
-  \item \textbf{Replay the new recording through MINS and compare against
-  the measured rectangle.} This is the immediate next task and needs no
-  hardware: the recording (Section~\ref{sec:bag23}) unblocks the
-  MINS-versus-ground-truth comparison, the MINS-versus-sqrtVINS comparison,
-  and the relocalization demonstration --- all three of which had been
-  waiting on it alone.
+  \item \textbf{Resolve the IMU unit question and calibrate the camera--IMU
+  extrinsic.} Both are prerequisites for Section~\ref{sec:24divergence}'s
+  comparison to mean anything, and neither is desk work: the IMU question
+  needs a known-rotation turntable session, the extrinsic needs the
+  camera-IMU calibration protocol run for real rather than assumed.
   \item \textbf{Calibrate the camera and compare the pose against
   tape-measured beacon positions.} The real-hardware displacement test
   (Section~\ref{sec:ros2}) is done: 71.2\,\% response to a real 30\,cm move,
