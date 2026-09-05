@@ -94,3 +94,11 @@ raspberry5-carolus-ros2/technical-ros2.pdf
 *.out
 *.toc
 *.synctex.gz
+
+# Exception to *.log above, deliberately narrow. These four files are the only
+# recording that exists of the BUG-141 twisted-pair ambiguity and of the
+# cheirality fix working -- 1469 poses before, 3037 after, taken 2026-09-04 on
+# the Pi 5. No further hardware sessions are planned, so they cannot be
+# re-recorded. Scoped to this one dataset folder on purpose: do NOT widen it to
+# raspberry5-carolus-ros2/data/ generally, or the next rosbag lands in git.
+!raspberry5-carolus-ros2/data/bug141_square_2026-09-04/*.log
