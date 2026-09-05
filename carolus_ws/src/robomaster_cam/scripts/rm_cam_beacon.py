@@ -407,7 +407,6 @@ class EPCameraBeaconFollower:
         self._man_vx        = 0.0
         self._man_wz        = 0.0
         self._man_stamp     = 0.0   # timestamp derniere commande MANUEL recue
-        self._idle_braked   = False # BUG-093: has the one-shot idle brake been sent?
         self._gim_idle_braked = False # BUG-106: same, for the gimbal (see the control loop)
         self._man_lock      = threading.Lock()
         # Gimbal manuel
@@ -1540,7 +1539,6 @@ class EPCameraBeaconFollower:
                 # publish to /carolus/wheels any more, so it was an unreachable
                 # branch holding a live chassis.drive_wheels() call.
                 # Bug 4: safety timeout -- stop if no recent command.
-                # `cmd_fresh` is consumed by the BUG-093 brake-once logic below.
                 cmd_fresh = (time.time() - stamp) <= MANUAL_CMDVEL_TIMEOUT
                 if not cmd_fresh:
                     vx, wz = 0.0, 0.0
@@ -1558,23 +1556,18 @@ class EPCameraBeaconFollower:
                         vx = 0.0
                         rospy.logwarn_throttle(1.0, f"[MANUAL] avance bloquee (TOF={_tof_cm:.0f}cm)")
 
-                # BUG-093 FIX (2026-08-10) — brake once, then go silent.
-                #
-                # Measured by protocol 22's B4 the same day: re-sending
-                # drive_speed(0,0,0) at 20 Hz IS the uncommanded rotation.
-                # Normal +0.1734 deg/s; gimbal torque cut +0.1327 deg/s (77%
-                # of it survives); commands suppressed +0.0000 deg/s. It was
-                # never the gimbal's gyro -- it is this loop.
-                #
-                # But simply not sending is NOT the fix, also measured: from
-                # 0.15 m/s, ceasing to send leaves a 16.2 cm tail over 1.1 s
-                # (the SDK's own command timeout eventually stops it, slowly).
-                # Sending ONE explicit zero first cuts that to 1.7 cm in
-                # 0.1 s -- a 10x shorter stopping distance for one extra call.
-                #
-                # So: while a command is fresh, drive normally. When the
-                # deadman expires, brake ONCE and then send nothing at all,
-                # which is the state B4 measured at exactly zero drift.
+                # BUG-093 FIX (2026-08-10) REVERTED (2026-08-31) -- deployed,
+                # confirmed present and running in the live process
+                # (`[IDLE-POLICY] ... BUG-093 fix present` in the session log),
+                # and the chassis still rotated uncommanded regardless. The
+                # measurement this fix was built on (re-sending drive_speed at
+                # 20 Hz IS the rotation) does not hold given a running,
+                # confirmed instance of the fix showed no improvement. Reverted
+                # to the pre-fix behaviour -- unconditional re-send every tick
+                # -- rather than leave an ineffective behaviour change of
+                # uncertain side effects active during hardware testing. See
+                # journal.md for the full reasoning and BUG-093's updated
+                # status.
                 if not B4_NO_DRIVE:
                     # 2026-08-12 -- this block used to end in `except Exception: pass`,
                     # the same silent-failure anti-pattern that made BUG-103 invisible
@@ -1593,14 +1586,9 @@ class EPCameraBeaconFollower:
                     # accepted and dropped it, look at the connection, not the code).
                     try:
                         if cmd_fresh:
-                            self._idle_braked = False
                             rospy.loginfo_throttle(
                                 1.0, f"[MANUAL-DRIVE] drive_speed vx={vx:.3f} wz={wz:.1f}")
-                            self.chassis.drive_speed(x=vx, y=0.0, z=wz, timeout=1)
-                        elif not self._idle_braked:
-                            self.chassis.drive_speed(x=0.0, y=0.0, z=0.0, timeout=1)
-                            self._idle_braked = True
-                        # else: deliberately send NOTHING -- see above
+                        self.chassis.drive_speed(x=vx, y=0.0, z=wz, timeout=1)
                     except Exception as e:
                         rospy.logwarn_throttle(
                             1.0, f"[MANUAL-DRIVE] chassis.drive_speed REFUSEE: {e}")
@@ -1918,16 +1906,14 @@ class EPCameraBeaconFollower:
         ctrl.start()
 
         # 2026-08-11 -- makes "which code is actually running?" answerable from
-        # the log instead of by inference. BUG-093's fix (brake once when the
-        # MANUAL deadman expires, then send nothing) was deployed and then
-        # measured as still drifting, and there is no record of whether the
-        # node had been restarted between the two -- a Python file on disk
-        # changes nothing until the process is relaunched. Reading the code
-        # afterwards could not settle it either way. This line settles it for
-        # every future session: if it is absent from the log, the running node
-        # predates the fix regardless of what the file on disk says.
-        rospy.loginfo("[IDLE-POLICY] MANUAL deadman=%.2fs -> brake once, then silent "
-                      "(BUG-093 fix present)", MANUAL_CMDVEL_TIMEOUT)
+        # the log instead of by inference; kept for the same reason after the
+        # 2026-08-31 revert below, now announcing the reverted state instead.
+        # BUG-093's brake-once-then-silent fix was deployed 2026-08-10, then
+        # confirmed present and running in a live session on 2026-08-31 while
+        # the chassis still rotated uncommanded -- reverted rather than left
+        # active with no measured benefit. See journal.md.
+        rospy.loginfo("[IDLE-POLICY] MANUAL deadman=%.2fs -> unconditional resend "
+                      "(BUG-093 fix reverted 2026-08-31)", MANUAL_CMDVEL_TIMEOUT)
         rospy.loginfo("[CAM] Publishing on /camera/color/image_raw")
         while not rospy.is_shutdown():
             try:
