@@ -23,8 +23,9 @@ flowchart LR
 On top of the perception pipeline, an autonomous state machine (SEARCH →
 ALIGN → APPROACH → STOP) drives the robot to the beacon under visual
 servoing, validated end to end on hardware. See
-[`overleaf/technical.pdf`](overleaf/technical.pdf) below for the full setup
-and reproduction guide.
+[`overleaf/technical.tex`](overleaf/technical.tex) below for the full setup
+and reproduction guide — compile it with `pdflatex` (two passes) or on
+Overleaf; no PDF is tracked in this repository.
 
 ## License
 
@@ -110,10 +111,55 @@ disconnected local minimum — measured directly: two individually rock-stable
 readings 30 cm apart disagreed by 135–166 mm with the depth axis moving the
 *wrong* direction. Fixed by warm-starting from the last converged solve.
 **With both fixes, and the node left running through a real 30 cm move: 71.2%
-response, correct direction** (up from 1.43% before either fix). Not 100% —
-this camera's own intrinsics have never been properly calibrated, which is
-now a fair question to ask since the pose is actually tracking. The ROS2
-manual has the full account where a reader will see it.
+response, correct direction** (up from 1.43% before either fix).
+
+Four things then closed the remaining gap, between 2 and 4 September 2026.
+
+**The camera was calibrated.** The intrinsics really had never been measured;
+they are now — MATLAB Camera Calibration Toolbox, 200 checkerboard images at
+25 mm squares, **mean reprojection error 0.2782 px**, two radial coefficients
+and no tangential term (a consumer webcam, not the wide-angle lens the
+RoboMaster's own camera needs). Written into both the ROS1 and ROS2 profiles.
+
+**The blob-to-model correspondence was wrong more often than it looked.**
+Which of the four detected blobs is which model point was decided by three
+independent single guesses; when any one of them was wrong the correct
+labelling was unreachable, and the solver would converge cleanly on a wrong
+pose with no warning. Against a beacon tape-measured at 83.0 cm this read
+**79.66 cm, every frame, with 2 mm of spread**. Solving all 24 possible
+assignments and keeping the best-fitting one reads **83.41 cm** on the same
+scene, with a solver residual roughly 1400× lower. Now the default.
+
+**A measured calibration was being silently discarded.** The profile carried
+plumb_bob distortion coefficients but also set `fov: true`, routing
+undistortion through a single-parameter model that reads `k1` as a field-of-view
+coefficient — a different quantity — and never reads `k2` at all. Sub-millimetre
+at this range with this lens, but wrong in mechanism and growing with lens
+distortion.
+
+**Two of the 24 candidate assignments are mirror images of each other.** The
+two beacon points either side of its symmetry plane can be swapped, which
+reflects the assumed geometry, fits the image about as well, and reports the
+*opposite sign* on depth. Dragging the beacon around a 30 cm square, the
+winner switched once and stayed switched — depth flipping from −0.99 m to
++0.99 m for the rest of the recording. Fixed with a cheirality check: a
+solution placing the beacon behind the camera is physically impossible and is
+now rejected inside the search, before a winner is chosen. Validated over 3037
+poses with **zero wrong-signed samples**.
+
+**The headline result: ROS1 and ROS2 now agree.** Run against the same beacon
+and the same camera at a tape-measured ~70 cm, ROS1 reads **0.7017 m** and
+ROS2 **0.7028 m** — the two stacks agree to **1.1 mm**. The middleware is a
+deployment choice, not a source of numerical difference.
+
+**What is not established:** accuracy at 2 m, which is the distance the
+project's own target specifies. At that range this beacon's LEDs fall below
+the detector's minimum blob area (4–10 px² against a floor of 8.0, the
+expected inverse-square falloff), so the limit currently reached is one of
+*detection*, not of solver accuracy. Stated as a characterised limit rather
+than left implied. The recorded data behind the cheirality result, and a
+script that re-derives every number quoted above from it, are in
+[`raspberry5-carolus-ros2/data/`](raspberry5-carolus-ros2/data/).
 
 ## Running Carolus on a different robot
 
@@ -127,7 +173,7 @@ editing any code:
 
 1. **Calibrate your camera.** You need `fx`, `fy`, `cx`, `cy` and the
    plumb_bob distortion coefficients. The MATLAB Camera Calibration Toolbox
-   procedure is documented in `overleaf/technical.pdf` (calibration chapter),
+   procedure is documented in `overleaf/technical.tex` (calibration chapter),
    along with a Kalibr alternative.
 
 2. **Measure your beacon.** Four LED positions in metres, in Carolus's
@@ -159,8 +205,8 @@ profile and adds an S1-specific static transform, then delegates to
 ## Testing
 
 Full step-by-step reproduction guide, from a fresh Pi and a fresh S1 through
-to a running Carolus pipeline: **[`overleaf/technical.pdf`](overleaf/technical.pdf)**,
-in this repository. It is self-contained — powering on, rooting the S1,
+to a running Carolus pipeline: **[`overleaf/technical.tex`](overleaf/technical.tex)**,
+in this repository (compile it yourself; no PDF is tracked). It is self-contained — powering on, rooting the S1,
 Raspberry Pi and ROS setup, RNDIS networking, the camera bridge, camera
 calibration, and building/launching Carolus, including how to run it on a
 robot other than this one.
@@ -205,7 +251,7 @@ this RNDIS-based pipeline).
 
 ## Report
 
-`overleaf/` holds **`technical.pdf` / `technical.tex`** — the self-contained
+`overleaf/` holds **`technical.tex`** — the self-contained
 technical manual (power-on through building and launching Carolus). This is
 the one to read to set the system up; compile `technical.tex` on Overleaf or
 locally with `pdflatex` (two passes).

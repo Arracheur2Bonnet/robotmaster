@@ -78,3 +78,31 @@ repository), duplicated here on purpose so this folder stays portable.
 **That copy does not update itself.** If the ROS1 originals are fixed, the
 change has to be brought across by hand. This is a deliberate trade —
 portability over a single source of truth — not an oversight.
+
+## `data/` — recorded evidence
+
+`data/bug141_square_2026-09-04/` holds the two square-path recordings that
+found and then validated the cheirality fix: 1469 poses before it (showing a
+sustained depth-sign flip) and 3037 after (showing none). Raw node stdout and
+`/pose` echoes, exactly as written during the sessions.
+
+`analyse.py` beside them re-derives every number this project quotes about
+those recordings — sign counts, the single outlier frame and both depth
+spans, per-edge straightness and corner angles, and an offline replay of the
+pose filter. It needs numpy and nothing else: no ROS, no camera, no robot.
+
+```bash
+cd data/bug141_square_2026-09-04 && python3 analyse.py
+```
+
+Headline: the traced path is a square with edges of 28.8 / 33.2 / 30.7 /
+30.2 cm against a nominal 30, corners square to within 4°, and straightness
+of 2–7 mm RMS per edge. It does not curve.
+
+## `figures/`
+
+`bug141_square_trace.png` — top-down plot of the post-fix recording, coloured
+by which correspondence candidate won each frame, both axes on one shared
+metres-per-pixel scale. A byte-identical copy lives under `overleaf/figures/`
+because the report includes it and an Overleaf project cannot reference a
+file outside its own root.

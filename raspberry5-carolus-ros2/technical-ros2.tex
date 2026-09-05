@@ -1041,6 +1041,27 @@ whatever a given driver publishes, not an assumption baked into this
 callback.
 \end{warningbox}
 
+\begin{warningbox}
+\textbf{Hue is on OpenCV's 0--180 scale, not 0--360 --- and getting this
+wrong kills every detection while the node looks healthy.} OpenCV stores
+hue on half the usual circle, so the profile's
+\texttt{lb\_hue}\,\texttt{:}\,\texttt{90.0} and
+\texttt{ub\_hue}\,\texttt{:}\,\texttt{140.0} select blue. Enter the values
+from the 0--360 convention a colour picker gives you --- 240 for blue --- and
+\emph{every} blob is rejected: the node starts, subscribes, processes every
+frame and publishes \texttt{"0 contours found"} on schedule, which is
+byte-for-byte what it prints when no beacon is in front of it.
+
+Rough reference points on the 0--180 scale: red $\approx$ 0--10 and
+170--180, green $\approx$ 35--85, blue $\approx$ 90--130. Halve any
+0--360 figure before entering it here.
+
+This is the same trap as the encoding bug above, arrived at from the other
+direction: there, the hue was rotated correctly-but-wrongly by an RGB/BGR
+swap; here, the window it is compared against is on the wrong scale. Both
+produce an identical, entirely healthy-looking log.
+\end{warningbox}
+
 \textbf{Verified 2026-08-20}: Logitech HD Pro Webcam C920, 1280x720, measured
 10.000\,Hz average (std dev 0.00392\,s, 30-sample window --- this device
 offers only 10\,FPS at this resolution, confirmed against its own format
