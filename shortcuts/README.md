@@ -127,7 +127,11 @@ ssh -t -i ~/.ssh/carolus_nopass ubuntu@192.168.0.103 'source /opt/ros/noetic/set
 - **P4P ambiguity.** On a stationary rig, ~8-12% of samples land on the solver's alternate near-planar solution (roll +41 vs +0.5). A mean over both describes neither, so it uses the median with an interquartile filter and *reports* the outlier fraction. Above 35% it refuses the reading outright.
 - **Chassis drift.** The chassis rotates ~9°/min on its own, so the camera has turned by an unknown amount between two captures. `q14b_bracket.py` implements the standard fix: reference → rotated → reference again, measure the drift from the two references, subtract it from the rotated reading.
 
-**Usage** (on the Pi, ROS sourced):
+**Usage:** not covered by `deploy_pi.sh` (which syncs `robomaster_cam`/`carolus_node`/`libuvgs_astrobee`/`ff_msgs`, not `shortcuts/`) — copy `q14b_capture.py` across by hand first:
+```bash
+scp shortcuts/q14b_capture.py <pi>:/tmp/
+```
+Then, on the Pi (ROS sourced):
 ```bash
 python3 /tmp/q14b_capture.py REF1 15      # beacon straight, centred
 python3 /tmp/q14b_capture.py ROT  15      # after rotating it in place
