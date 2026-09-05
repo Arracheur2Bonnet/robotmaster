@@ -323,7 +323,17 @@ python3 shortcuts/q14b_bracket.py "REF1 …" "ROT …" "REF2 …"
 
 **Why:** during a launch bisection the usual instruments are part of what is being tested — `gimbal_yaw_rel` needs T2, and the beacon bearing normally needs T3's `/pose`. This needs neither, so a stage can be measured without the measurement presupposing the stage. Brightness-centroid only, numpy, no cv2/cv_bridge (which drag in the OpenCV ABI collisions behind BUG-101/102/108).
 
-**Usage:** `OBS_THRESH=252 python3 /tmp/optical_drift_observer.py 100 "label"` — threshold needs calibrating per lighting; 252 isolated the 4 saturated LEDs (~118 px) against 321 px at 230.
+**Usage:** `OBS_THRESH=252 python3 /tmp/optical_drift_observer.py 100 "label" [csv_path]` — threshold needs calibrating per lighting; 252 isolated the 4 saturated LEDs (~118 px) against 321 px at 230. `csv_path` defaults to `/tmp/optical_drift_<label>_<timestamp>.csv`.
+
+**Expected:** one line naming the CSV it wrote, then `n=` samples with a rate, then the drift as `px/min` and `deg/min` with an R², ending `DRIFTING` or `stable`. `INSUFFICIENT DATA` means the beacon is not bright enough or the camera topic is silent — retune the threshold rather than trusting a long run that ends that way.
+
+**Promoted 2026-08-31 from bisection tool to primary instrument** for Protocol 25 (`research-log/02-protocoles/protocoles-terrain.md`), after `chassis.sub_attitude` was disqualified as a drift-measurement channel. Two changes for that role:
+- **Raw samples now go to CSV**, written *before* the summary is computed, so a session can be re-analysed against a different calibration without re-running the robot — and so a divide-by-zero in a summary line cannot lose the expensive part. The CSV carries the raw pixel centroid, not only the normalised position, which is exactly what makes a later recalibration possible.
+- **Pixels-per-degree is now the measured 12.53** (2026-08-13/14: a commanded 14.6° gimbal move produced 182.9 px), overriding the previous "a frame half-width is ~50°" estimate. Override with `OBS_PX_PER_DEG=`. The two agree to ~2 % (640 px / 12.53 = 51.1°) — the point is traceability to a measurement, not that the number moved.
+
+**Self-tested offline 2026-08-31**, without ROS or a robot: fed a synthetic 12.53 px drift across exactly 60 s, it reports exactly `1.0000 deg/min` with R²=1.000000; fed a flat signal it reports exactly `0.000000 px/min`. The negative control is the point — a drift detector that cannot report "no drift" would be useless for Protocol 25's condition 3.
+
+⚠️ **Not covered by `deploy_pi.sh`**, which syncs `robomaster_cam`/`carolus_node`/`libuvgs_astrobee`/`ff_msgs` and not `shortcuts/`. Copy it across by hand: `scp shortcuts/optical_drift_observer.py <pi>:/tmp/`.
 
 ---
 
@@ -353,11 +363,11 @@ cp saves/2026-06-24-20-10/carolus_ws__src__robomaster_cam__scripts__rm_cam_beaco
    carolus_ws/src/robomaster_cam/scripts/rm_cam_beacon.py
 ```
 
-**Files saved:** `carolus_launcher.py`, `cam_view_helper.py`, `map_editor.py`, `rm_cam_beacon.py`, **`beacon_docking.py`**, **`beacon_absolute_pose.py`**, `testcarolus.launch`, `carolus_node/config/robomaster_s1.yaml`, plus the workspace's 5 `CMakeLists.txt` files (`src/`, `libuvgs_astrobee/`, `ff_msgs/`, `robomaster_cam/`, `carolus_node/`) and **`libuvgs_astrobee/src/carolus_astrobee.cpp`, `ceresP4P.cpp`, `pose_est.cpp`** — the `CMakeLists.txt` set was added 2026-07-13 to cover the CLAUDE.md rule listing them as critical files; the two docking scripts were added **2026-07-28**; `robomaster_s1.yaml` was added 2026-08-14, on discovering it was absent at the exact moment it was about to be edited (the `min_area` retune); **the three C++ files were added 2026-08-18**, on the same discovery repeating a fourth time — this time at the start of the core-extraction rework (Hector's ROS-portability request), the most structurally significant change these files have had.
+**Files saved:** `carolus_launcher.py`, `cam_view_helper.py`, `map_editor.py`, `rm_cam_beacon.py`, **`beacon_docking.py`**, **`beacon_absolute_pose.py`**, `testcarolus.launch`, `carolus_node/config/robomaster_s1.yaml`, **`optical_drift_observer.py`**, plus the workspace's 5 `CMakeLists.txt` files (`src/`, `libuvgs_astrobee/`, `ff_msgs/`, `robomaster_cam/`, `carolus_node/`) and **`libuvgs_astrobee/src/carolus_astrobee.cpp`, `ceresP4P.cpp`, `pose_est.cpp`** — the `CMakeLists.txt` set was added 2026-07-13 to cover the CLAUDE.md rule listing them as critical files; the two docking scripts were added **2026-07-28**; `robomaster_s1.yaml` was added 2026-08-14, on discovering it was absent at the exact moment it was about to be edited (the `min_area` retune); **the three C++ files were added 2026-08-18**, on the same discovery repeating a fourth time — this time at the start of the core-extraction rework (Hector's ROS-portability request), the most structurally significant change these files have had; **`optical_drift_observer.py` was added 2026-08-31 — for once *before* the edit rather than after it bit**, on noticing it was absent at the moment it was becoming Protocol 25's primary instrument; and **`carolus_node/config/logitech_1080p.yaml` and `carolus_node/config/robomaster_s1_longrange.yaml` were added 2026-09-04**, on the discovery repeating a fifth time — `robomaster_s1.yaml` sat in `FILES` in the very same directory while its two neighbours did not, found at the exact moment `logitech_1080p.yaml` became the file being patched for BUG-138.
 
 > **Why the omission keeps recurring:** every one of these additions was caught the same way — a file became the active target of real work while absent from `FILES`, so the backup gave a false sense of a safety net. A backup script that silently omits the file you are actually editing is worse than no script. **Rule, restated because it keeps needing restating: any source file under active modification must be in `FILES` before the work starts, not after it bites.**
 
-**Expected:** a `saves/YYYY-MM-DD-HH-MM/` folder created with **34** files + `NOTE.txt`. *(Corrected 2026-08-21: this line said 35. `FILES` holds 34 entries, all of which resolve, and the last two real saves — `2026-08-20-21-59` and `2026-08-20-22-11` — each contain exactly 34. An operator following the advice below and counting would have concluded a file was silently missing when none was.)*
+**Expected:** a `saves/YYYY-MM-DD-HH-MM/` folder created with **37** files + `NOTE.txt`. *(Was 35 from 2026-08-31 until 2026-09-04, when the two config files above were added. Verified rather than assumed: `FILES` holds 37 entries, and the save made 2026-09-04 (`2026-09-04-15-56`) contains exactly 37 plus `NOTE.txt`. Corrected twice before — 2026-08-21 (said 35 against a real 34) and implicitly by every addition above — which is why the number is re-checked against an actual save each time it changes rather than incremented on faith.)*
 
 **The ROS2 package has moved three times; the list currently points at the third
 location.** `carolus_ws/src/carolus_ros2/` → repository root (2026-08-19: a ROS2
@@ -482,6 +492,8 @@ python3 /tmp/tear_check.py
 **What** — compares the 10 shared core files (`beacon_detector`, `ceresP4P`, `pose_est`, `pose_filter`, `carolus_types`, `compute_jacobian`) between the ROS1 workspace and their copy in `raspberry5-carolus-ros2/`, and fails if any has drifted.
 
 **Why** — `raspberry5-carolus-ros2/` deliberately holds its *own copy* of that core rather than referencing `carolus_ws/` by path, so the folder stays portable and hand-over-able (decision of 2026-08-20, `CLAUDE.md`'s "ROS2 manual" section). The cost is that a fix on one side never reaches the other and **nothing warns you**. This script is that warning, and exists so the sync rule is mechanically checkable instead of relying on someone remembering it.
+
+**This is also why there is no third tree.** A `test_ros/` folder for the ROS1-vs-ROS2 benchmark was considered and rejected 2026-09-04: a third copy of the core would need its own drift check on top of this one, for a comparison that belongs in documentation, not in code that can silently diverge. See `technical-ros2.tex`'s "Where this node genuinely differs from the ROS1 one" section.
 
 **Usage**
 ```bash
@@ -673,6 +685,28 @@ python3 shortcuts/capture_checkerboard.py [output_dir]   # default: data/checker
 Live preview window. `s` saves the current frame as `checkerboard_NNN.png`; `q` quits. Aim for at least 15 frames, checkerboard tilted more than 45° from the optical axis in each, varied position/orientation across the field of view, occupying roughly 20–25% of the frame — per the manual's own already-written recommendation.
 
 **Expected** — a folder of PNG frames ready to upload into MATLAB's Camera Calibration app (Apps tab), enable tangential distortion + three radial distortion coefficients, run, and transcribe the exported `fx`/`fy`/`cx`/`cy`/distortion into `testcarolus.launch`.
+
+---
+
+## `capture_checkerboard_ros2.py`
+
+**What** — the ROS2/Logitech-C920 equivalent of `capture_checkerboard.py` above. Subscribes to `/image_raw` (`usb_cam`'s topic, not `/camera/color/image_raw`), keypress-triggered (Enter saves the current frame, `q` quits), saves PPM — no cv2/cv_bridge, no GUI window needed.
+
+**Why** — created 2026-09-02 for Hector's mail-13 objective 2 (<1cm accuracy at 2m, MATLAB calibration): the Logitech C920 has never had a real calibration run against it — `logitech_1080p.yaml`'s current values are Hector's own approximate estimate (2026-08-17), not the output of this procedure. `capture_checkerboard.py` cannot serve this: it's ROS1 (`rospy`), needs `cv2`/`cv_bridge`, subscribes to the RoboMaster's own onboard-camera topic, and pops a GUI window — none of which apply to a headless ROS2/Jazzy machine reached over SSH. This is a different tool for a different physical camera, not a replacement.
+
+**Usage**
+```bash
+python3 shortcuts/capture_checkerboard_ros2.py [out_dir]   # default: data/checkerboard/logitech_capture
+# On a remote machine without this project checked out (this session's actual
+# case, captured on a separate Dell over SSH), pass an explicit out_dir and
+# move the result into data/checkerboard/<name>/ afterward -- do not leave it
+# loose in $HOME, that was a real mistake caught and corrected 2026-09-02.
+```
+Run interactively, in your own terminal (needs real stdin — piping it through a non-interactive SSH command doesn't work). Press Enter to save the live frame, move the board, Enter again; `q` + Enter to stop. Same targets as the manual's own procedure: ≥10 frames (15+ better), board filling 20-25% of the frame, tilted >45° off the optical axis, varied positions.
+
+**Do not enable "three radial distortion coefficients" for this camera** — that setting is specifically justified in `technical.tex` for the RoboMaster's own wider-FOV onboard camera, not the C920. Use MATLAB's default 2-coefficient radial model, matching `logitech_1080p.yaml`'s existing 4-slot `distortion: [k1, k2, p1, p2]` format.
+
+**Expected** — a folder of PPM frames MATLAB's Camera Calibration app reads natively. First real run, 2026-09-02: 200 frames captured (more than needed — variety matters more than count past ~15-20; let MATLAB's own detection and per-image error review do the filtering rather than pre-selecting by hand).
 
 **Needs the robot powered on** and camera streaming. **Corrected 2026-08-25**: this project has nothing to print — the checkerboard is on the back of the project's own beacon (`overleaf/technical.tex` §"Recommended method", confirmed against the manual, not assumed). Only use a separate printed checkerboard if calibrating a different camera/beacon combination.
 

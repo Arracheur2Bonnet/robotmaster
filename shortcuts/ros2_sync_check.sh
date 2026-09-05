@@ -10,6 +10,13 @@
 #
 # Run it after ANY change to carolus_ws/src/libuvgs_astrobee/{src,include}/.
 # Exit 0 = in sync, 1 = drifted (or a file is missing on either side).
+#
+# There are exactly TWO maintained trees: carolus_ws/ (ROS1) and
+# raspberry5-carolus-ros2/ (ROS2). A third copy for testing/comparison
+# (e.g. a "test_ros/") was considered and deliberately rejected 2026-09-04 --
+# this script exists precisely so two copies stay safe without a third.
+# The ROS1-vs-ROS2 comparison itself lives in technical-ros2.tex's
+# "Where this node genuinely differs from the ROS1 one" section, not in code.
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ROS1_SRC="$ROOT/carolus_ws/src/libuvgs_astrobee/src"

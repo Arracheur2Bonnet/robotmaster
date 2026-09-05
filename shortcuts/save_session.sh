@@ -28,6 +28,11 @@ FILES=(
     # meme ou il devenait le fichier touche (tuning min_area pour la portee
     # 8m, demande d'Hector) -- meme regle que ci-dessus, sans exception.
     "carolus_ws/src/carolus_node/config/robomaster_s1.yaml"
+    # 2026-09-04 : meme trou, meme regle -- robomaster_s1.yaml etait suivi
+    # mais ses deux voisins dans le meme dossier ne l'etaient pas, constate en
+    # patchant BUG-138 (fov/plumb_bob mismatch) dans logitech_1080p.yaml.
+    "carolus_ws/src/carolus_node/config/logitech_1080p.yaml"
+    "carolus_ws/src/carolus_node/config/robomaster_s1_longrange.yaml"
     "carolus_ws/src/CMakeLists.txt"
     "carolus_ws/src/libuvgs_astrobee/CMakeLists.txt"
     "carolus_ws/src/ff_msgs/CMakeLists.txt"
@@ -73,6 +78,13 @@ FILES=(
     # 2026-08-19 (2) : filtre FIFO extrait du noeud ROS1 vers carolus_core.
     "carolus_ws/src/libuvgs_astrobee/src/pose_filter.cpp"
     "carolus_ws/src/libuvgs_astrobee/include/carolus_node/pose_filter.hpp"
+    # 2026-08-31 : ajoute AVANT de le modifier, pas apres -- il devient
+    # l'instrument principal du protocole 25 (rejouer les trois conditions de
+    # BUG-093 avec le canal optique, apres que la telemetrie sub_attitude ait
+    # ete disqualifiee). Quatrieme occurrence du meme pattern que les commentaires
+    # ci-dessus decrivent : un fichier qui devient central doit entrer dans cette
+    # liste le jour meme, sans exception.
+    "shortcuts/optical_drift_observer.py"
 )
 
 for f in "${FILES[@]}"; do
