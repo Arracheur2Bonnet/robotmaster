@@ -165,7 +165,7 @@ with like. Verified against both sources 2026-09-03.
 \toprule
 & ROS1 (\texttt{carolus\_astrobee}) & ROS2 (\texttt{carolus\_ros2}) \\
 \midrule
-Distortion model & \texttt{fov}, \texttt{fisheye} or plumb\_bob, selected per profile. The Logitech profile sets \texttt{fov: false} (BUG-138, fixed 2026-09-04) & plumb\_bob always; no \texttt{fov} branch exists \\
+Distortion model & \texttt{fov}, \texttt{fisheye} or plumb\_bob, selected per profile. The Logitech profile sets \texttt{fov: false} (corrected 2026-09-04) & plumb\_bob always; no \texttt{fov} branch exists \\
 Pose filtering & \texttt{PoseFilter} active: FIFO of 7, translation gate 0.5\,m, rotation gate 0.3 & \textbf{not called} --- publishes the raw per-frame solve \\
 Image subscription & \texttt{image\_transport} & plain \texttt{rclcpp} subscription \\
 Default image topic & \texttt{/usb\_cam/image\_raw} & \texttt{/image\_raw} \\
@@ -241,7 +241,7 @@ one machine to the other between runs. Full account and the investigation
 that preceded it: \texttt{overleaf/main.tex}.
 
 \begin{warningbox}
-\textbf{BUG-138, fixed 2026-09-04, for the record: what the Logitech profile
+\textbf{Corrected 2026-09-04, for the record: what the Logitech profile
 got wrong and why.} It shipped \texttt{fov: true}, which routes undistortion
 through the Astrobee single-parameter FOV model. That model reads
 \texttt{distortion[0]} --- the profile's plumb\_bob \textbf{k1} --- as its
@@ -268,7 +268,9 @@ hardware currently in service, and this project's own comment in that file
 already flags the distortion array as ``validated pragmatically rather than
 by a formal calibration campaign,'' so switching to \texttt{cv::undistortPoints}
 is not guaranteed correct without first checking that array actually fits a
-plumb\_bob model. Tracked as BUG-139.
+plumb\_bob model. Known, and deliberately left as it is --- that camera's
+coefficients were never confirmed to be a valid plumb\_bob fit in the first
+place, so changing the flag alone would not make them correct.
 \end{warningbox}
 
 \section{Getting Carolus's own source code onto a blank machine}
@@ -362,7 +364,7 @@ skipping it here reproduces the same broken-build failure on ROS2.
 \texttt{image\_transport} is deliberately \textbf{not} in this list ---
 \texttt{carolus\_ros2}'s \texttt{package.xml} and \texttt{CMakeLists.txt}
 declare no dependency on it (checked directly, not inferred), a direct
-consequence of BUG-127 (Chapter~\ref{ch:ros2-pi5}) replacing
+consequence of the Pi 5 work (Chapter~\ref{ch:ros2-pi5}) replacing
 \texttt{image\_transport::create\_subscription} with a plain
 \texttt{rclcpp::create\_subscription}. An earlier revision of this
 install command listed it anyway, left over from before that fix; installing
@@ -429,7 +431,7 @@ Identical in shape to Section~\ref{sec:ros2-jazzy-container}'s container
 install and to the Pi 5's own native install
 (Chapter~\ref{ch:ros2-pi5}) --- same packages, same reasoning for each
 one (\texttt{ros-jazzy-ros-base} alone omits \texttt{cv\_bridge};
-\texttt{image\_transport} is deliberately absent, unneeded since BUG-127).
+\texttt{image\_transport} is deliberately absent, unneeded since that change).
 The only thing that changes between all three paths is whether a container
 sits underneath.
 
@@ -1180,7 +1182,7 @@ already present regardless (\texttt{ros2 pkg list | grep -E
 "image\_transport|cv\_bridge"} lists both) --- but only because this Pi's
 pre-existing Carolus workspace had already pulled it in as a dependency of
 something else, not because this install command provided it. Since
-BUG-127 (Chapter~\ref{ch:ros2-pi5}) removed \texttt{image\_transport} from
+The Pi 5 work (Chapter~\ref{ch:ros2-pi5}) removed \texttt{image\_transport} from
 \texttt{carolus\_ros2}'s own manifest, that earlier finding was answering a
 question this package no longer asks. \texttt{cv\_bridge} is the one
 genuinely declared dependency, and \texttt{ros-jazzy-ros-base} alone does
@@ -1688,7 +1690,7 @@ farther away), which is not what a scale error looks like.
 \texttt{capture\_pose\_stats.py --cluster}, groups samples into clusters
 over time. 40 stationary samples at 60\,cm gave \textbf{8 distinct
 clusters}, two dominant (19 and 12 of 40) alternating almost every 1--3
-frames --- \textbf{BUG-131's correspondence-sort instability, reproduced
+frames --- \textbf{The correspondence-sort instability, reproduced
 live}, and shown to be \textbf{geometry-dependent rather than a narrow
 edge case}: the same rig at 90\,cm and 120\,cm was rock-stable (std under
 0.6\,mm), each in its \emph{own} disconnected local minimum. Two
@@ -1703,7 +1705,7 @@ reason) can land inside an unstable zone with no warning besides the check
 itself.
 \end{warningbox}
 
-\textbf{Root cause: BUG-088, implemented the same session.}
+\textbf{Root cause: the fixed initial guess, fixed the same session.}
 \texttt{ceresP4P.cpp} solves every frame from the identical fixed starting
 vector, no memory of the previous frame --- so a different starting geometry
 is free to fall into a different, unrelated local minimum. Fixed by warm-
@@ -1724,7 +1726,7 @@ not fixed: the raw solved vector is now stored directly
 (\texttt{CameraPose::solved\_params}) instead of being re-derived from $R$.
 \end{warningbox}
 
-\textbf{Verified synthetically first}, same discipline as BUG-132: stationary
+\textbf{Verified synthetically first}, same discipline as the units fix: stationary
 target, first frame unchanged (\texttt{iterations=18}, no prior yet), every
 frame after \textbf{\texttt{iterations=1, converged=1}}, identical
 \texttt{final\_cost} and \texttt{/pose} to the bit. Warm-starting from an
@@ -1775,7 +1777,7 @@ groups} and produced \textbf{134 outright sort failures} --- the synthetic
 reproduction of the \texttt{Failed to sort targets using tetrahedron
 geometry} messages seen on real frames, and of the 8-cluster result measured
 live above. Its effect on the pose, at the specific synthetic near-tie
-tested, is \textbf{centimetres}, against the metres BUG-132 caused --- but
+tested, is \textbf{centimetres}, against the metres the units mismatch caused --- but
 the live 60\,cm result above shows the \emph{practical} unstable zone is
 wider than that one synthetic point, wide enough to catch an arbitrarily
 chosen real measurement distance. \textbf{Warm-starting (above) mitigates

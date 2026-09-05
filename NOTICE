@@ -2,10 +2,11 @@ Carolus / RoboMaster S1
 Copyright 2026 Nawfel Bouazza and contributors
 
 This product includes software developed by third parties, listed below.
-All components are distributed under the Apache License, Version 2.0 (see
-LICENSE). Nothing in this repository relicenses third-party code: each
-component below already declared Apache-2.0 in its own package metadata, and
-the repository-level license was chosen to match rather than to override it.
+The repository-level license is the Apache License, Version 2.0 (see LICENSE).
+Nothing here relicenses third-party code: each component keeps the license it
+already declared in its own package metadata, and where that differs from
+Apache-2.0 it is stated explicitly below and the component's own LICENSE file
+travels with it in this repository.
 
 --------------------------------------------------------------------------
 src/ff_msgs/
@@ -26,19 +27,51 @@ Carolus / uVGS-2 -- 4-LED beacon detection and Perspective-4-Point pose
 estimation. Original author: zauberflote1. Declared Apache-2.0 in
 package.xml.
 
-Modified in this repository. Changes are limited to:
+Modified in this repository:
   - camera intrinsics and beacon geometry moved out of the source into a
     configuration profile
   - Ceres solver convergence diagnostics surfaced to the caller
     (previously computed and discarded)
-No algorithmic change to the detection or P4P solve.
+  - the detection/solver core split out into a ROS-free library
+    (src/libuvgs_astrobee/src/{beacon_detector,ceresP4P,pose_est,
+    pose_filter}.cpp), with the ROS node linking against it
+  - blob-to-model correspondence changed from three single guesses to an
+    exhaustive search over all 24 assignments, keeping the lowest-cost one
+  - a cheirality constraint added to that search: a candidate placing the
+    beacon behind the camera is rejected
+
+The last two are algorithmic changes to the P4P solve, not merely structural.
+An earlier version of this file stated there were none; that was true when
+written and stopped being true on 2026-09-03 and 2026-09-04 respectively.
 
 --------------------------------------------------------------------------
-src/carolus_node/, src/robomaster_cam/, shortcuts/, cmake_shims/
+src/carolus_node/, src/robomaster_cam/, shortcuts/
 --------------------------------------------------------------------------
 Written for this project (Florida Institute of Technology / RoboMaster S1
 integration), including work carried over from earlier iterations of the
 project by previous contributors.
+
+--------------------------------------------------------------------------
+src/usb_cam/
+--------------------------------------------------------------------------
+ROS 1 USB camera driver (http://wiki.ros.org/usb_cam,
+https://github.com/bosch-ros-pkg/usb_cam).
+
+Copyright (c) Robert Bosch LLC. Author: Benjamin Pitzer.
+Maintainer: Russell Toris.
+
+Licensed under the BSD license -- NOT Apache-2.0. The upstream LICENSE file
+is included in this repository at src/usb_cam/LICENSE and governs this
+component.
+
+Modified in this repository (2026-08-17), to make it build on a host newer
+than the one upstream targets:
+  - CMakeLists.txt: work around rosconsole.pc hardcoding the unversioned
+    liblog4cxx.so symlink, which resolves to the host's own log4cxx rather
+    than the one ROS Noetic was built against
+  - src/usb_cam.cpp: replace FFmpeg symbols removed since upstream's last
+    release
+Each change is annotated inline with its date and reason.
 
 --------------------------------------------------------------------------
 Not included in this repository

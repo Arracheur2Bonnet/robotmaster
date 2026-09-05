@@ -1255,22 +1255,22 @@ project's camera and are not guaranteed to transfer to a different physical
 unit.
 
 \begin{warningbox}
-\textbf{BUG-139, found 2026-09-04, not fixed.} \texttt{carolus\_node/config/robomaster\_s1.yaml}
+\textbf{Known and deliberately unfixed, found 2026-09-04.} \texttt{carolus\_node/config/robomaster\_s1.yaml}
 and \texttt{robomaster\_s1\_longrange.yaml} both set \texttt{fov: true} while
 carrying this same four-coefficient plumb\_bob array above. \texttt{fov:
 true} routes undistortion through the Astrobee single-parameter FOV model,
 which reads \texttt{distortion[0]} (here, $k_1=-0.1479$) as its own,
 unrelated field-of-view coefficient rather than a plumb\_bob radial term,
 and never reads $k_2$ at all --- the identical mismatch found and fixed the
-same day in the Logitech ground-test profile (\texttt{logitech\_1080p.yaml},
-BUG-138). \textbf{Computed against these exact coefficients} (not measured
+same day in the Logitech ground-test profile
+(\texttt{logitech\_1080p.yaml}, which now sets \texttt{fov: false}). \textbf{Computed against these exact coefficients} (not measured
 on hardware): the FOV model and plumb\_bob diverge by
 $-0.3\,\%$ at 100\,px off the optical centre, $-1.6\,\%$ at 200\,px, and
 $-3.2\,\%$ near the 1280-pixel-wide frame's edge --- an order of magnitude
 larger than the Logitech case, because this camera's distortion
 coefficients are themselves an order of magnitude larger.
 
-\textbf{Deliberately not fixed here, unlike BUG-138.} This is the robot's
+\textbf{Deliberately not fixed here, unlike the Logitech profile.} This is the robot's
 own operational camera, currently in service, and the paragraph directly
 above already states these values were ``validated pragmatically'' rather
 than by a formal calibration campaign --- meaning it is not established that
