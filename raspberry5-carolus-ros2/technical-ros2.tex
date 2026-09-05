@@ -1835,10 +1835,12 @@ camera or a beacon.
 Harness & Produces \\
 \midrule
 \texttt{instrument\_p4p\_sort.cpp} & sort behaviour at a chosen geometry \\
+\texttt{instrument\_multi\_hypothesis\_sort.cpp} & the original single-point candidate-fix test, superseded by the sweep below \\
 \texttt{instrument\_multi\_hypothesis\_sweep.cpp} & the angle sweep \\
 \texttt{instrument\_sort\_input\_scale.cpp} & the representation test, the crossover \\
 \texttt{capture\_pose\_stats.py} & \texttt{/pose} capture with cluster grouping \\
 \texttt{beacon\_brightness\_live\_ros2.py} & live LED intensity while tuning \\
+\texttt{beacon\_hud\_view.py} & a live camera view with a detection/intensity HUD, for tuning the beacon by eye (needs a real display, X11-forwarded over SSH) \\
 \bottomrule
 \end{tabular}
 \end{center}

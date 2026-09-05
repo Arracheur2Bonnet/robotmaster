@@ -87,9 +87,19 @@ def delatex(line):
     return out
 
 
-def manual_lines():
-    with open(MANUAL, encoding="utf-8") as f:
+def manual_lines(path=MANUAL):
+    with open(path, encoding="utf-8") as f:
         return f.read().split("\n")
+
+
+# One canary per manual: an identifier present in escaped form (proves
+# delatex() runs) and absent in literal form (proves a raw \lstlisting
+# match isn't silently doing the work instead -- the exact way the first
+# version of this self-test passed while proving nothing, see _self_test).
+CANARIES = {
+    MANUAL: "cam_view_helper.py",
+    MANUAL_ROS2: "carolus_node_ros2.cpp",
+}
 
 
 def find(term, lines=None):
@@ -103,8 +113,9 @@ def find(term, lines=None):
     return hits
 
 
-def _self_test(lines):
-    """Prove the search works before trusting any zero it reports.
+def _self_test(lines, path=MANUAL):
+    """Prove the search works, for THIS manual, before trusting any zero it
+    reports for it.
 
     The canary is an identifier that is certainly in the manual AND is
     certainly escaped there, so it fails exactly when the escaping logic
@@ -115,28 +126,37 @@ def _self_test(lines):
     \\lstlisting code blocks (which are not LaTeX-escaped at all), so even a
     completely disabled delatex() still found it there and the self-test
     reported OK while proving nothing. Confirmed by deliberately breaking
-    delatex() into a no-op and re-running this test: it passed anyway. The
-    canary below appears only inside \\texttt{...} prose, never in a raw
-    listing -- checked by grepping the manual for both its escaped and
+    delatex() into a no-op and re-running this test: it passed anyway. Each
+    canary in CANARIES appears only inside \\texttt{...} prose, never in a
+    raw listing -- checked by grepping its manual for both the escaped and
     literal forms and confirming exactly one of the two occurs.
+
+    2026-09-05: this ran against MANUAL only for a full day after the ROS2
+    manual was added to every OTHER check in this script -- `--find` and the
+    stale-reference sweep both kept silently searching `overleaf/technical.tex`
+    alone and reporting a confirmed-real absence for terms that were only ever
+    going to be in `technical-ros2.tex`. One canary per manual now, so a gap
+    like that fails loudly instead of passing on the wrong file.
     """
     raw_text = "\n".join(lines)
-    canary = "cam_view_helper.py"
-    escaped_present = "cam\\_view\\_helper.py" in raw_text
+    canary = CANARIES.get(path, CANARIES[MANUAL])
+    rel = os.path.relpath(path, ROOT)
+    escaped_present = canary.replace("_", "\\_") in raw_text
     found = bool(find(canary, lines))
     if not escaped_present:
-        print("SELF-TEST INCONCLUSIVE: the canary is no longer escaped in the "
-              "manual. Pick a different canary rather than trusting this run.",
-              file=sys.stderr)
+        print(f"SELF-TEST INCONCLUSIVE ({rel}): the canary '{canary}' is no "
+              "longer escaped in this manual. Pick a different canary rather "
+              "than trusting this run.", file=sys.stderr)
         return False
     if not found:
-        print("SELF-TEST FAILED: the LaTeX-aware search cannot find "
+        print(f"SELF-TEST FAILED ({rel}): the LaTeX-aware search cannot find "
               f"'{canary}' even though the manual contains its escaped form. "
-              "Every 'not mentioned' result below would be meaningless. "
-              "Fix delatex() before using this output.", file=sys.stderr)
+              "Every 'not mentioned' result for this file would be "
+              "meaningless. Fix delatex() before using this output.",
+              file=sys.stderr)
         sys.exit(2)
     naive = canary in raw_text
-    print(f"self-test OK  (canary '{canary}': LaTeX-aware finds it, "
+    print(f"self-test OK  ({rel}, canary '{canary}': LaTeX-aware finds it, "
           f"naive grep {'also would' if naive else 'would NOT'} -- "
           f"{'no' if naive else 'this is the trap this script removes'})")
     return True
@@ -237,42 +257,55 @@ def bug_reference_check():
     return total
 
 
+def existing_manuals():
+    found = [m for m in MANUALS if os.path.exists(m)]
+    if not found:
+        print(f"no manual found (looked for {MANUALS})", file=sys.stderr)
+        sys.exit(2)
+    return found
+
+
 def main():
     args = sys.argv[1:]
-    if not os.path.exists(MANUAL):
-        print(f"manual not found: {MANUAL}", file=sys.stderr)
-        return 2
-    lines = manual_lines()
+    manuals = existing_manuals()
+    manual_lines_by_path = {m: manual_lines(m) for m in manuals}
 
     if args and args[0] == "--find":
         if len(args) < 2:
             print("usage: doc_check.py --find NAME", file=sys.stderr)
             return 2
-        _self_test(lines)
-        hits = find(args[1], lines)
-        print(f"\n'{args[1]}' -- {len(hits)} reference(s) in the manual:")
-        for ln, txt in hits:
-            print(f"  {MANUAL}:{ln}: {txt[:140]}")
-        if not hits:
-            print("  (none -- and the self-test above says that is a real "
-                  "absence, not a broken search)")
+        for m in manuals:
+            _self_test(manual_lines_by_path[m], m)
+        print(f"\n'{args[1]}' -- reference(s) across {len(manuals)} manual(s):")
+        any_hit = False
+        for m in manuals:
+            hits = find(args[1], manual_lines_by_path[m])
+            for ln, txt in hits:
+                any_hit = True
+                print(f"  {m}:{ln}: {txt[:140]}")
+        if not any_hit:
+            print("  (none in any manual -- and the self-tests above say "
+                  "that is a real absence, not a broken search)")
         return 0
 
-    print("== doc_check.py -- technical manual vs the code it documents ==\n")
-    _self_test(lines)
+    print("== doc_check.py -- technical manuals vs the code they document ==\n")
+    for m in manuals:
+        _self_test(manual_lines_by_path[m], m)
 
-    # ---- 1. stale references ------------------------------------------------
-    print("\n--- references the manual makes that no longer exist ---")
+    # ---- 1. stale references, per manual ------------------------------------
+    print("\n--- references the manuals make that no longer exist ---")
     stale = 0
-    for tok, linenos in sorted(referenced_paths(lines).items()):
-        if not exists_in_repo(tok):
-            stale += 1
-            where = ", ".join(f"line {n}" for n in linenos[:4])
-            print(f"  STALE  {tok}   ({where})")
+    for m in manuals:
+        rel = os.path.relpath(m, ROOT)
+        for tok, linenos in sorted(referenced_paths(manual_lines_by_path[m]).items()):
+            if not exists_in_repo(tok):
+                stale += 1
+                where = ", ".join(f"line {n}" for n in linenos[:4])
+                print(f"  STALE  {rel}: {tok}   ({where})")
     if stale == 0:
-        print("  none -- every path the manual names resolves on disk")
+        print("  none -- every path either manual names resolves on disk")
 
-    # ---- 2. changed files the manual talks about ---------------------------
+    # ---- 2. changed files the manuals talk about ----------------------------
     if args and args[0] == "--all":
         targets, label = published_files(), "every published file"
     elif args:
@@ -280,21 +313,23 @@ def main():
     else:
         targets, label = changed_files(), "your uncommitted changes"
 
-    print(f"\n--- does the manual document {label}? ---")
+    print(f"\n--- do the manuals document {label}? ---")
     if not targets:
         print("  nothing to review")
     else:
         any_hit = False
         for f in targets:
             name = os.path.basename(f)
-            hits = find(name, lines)
-            if hits:
-                any_hit = True
-                where = ", ".join(str(n) for n, _ in hits[:6])
-                print(f"  REVIEW  {f}\n            mentioned at line(s) {where}")
+            for m in manuals:
+                hits = find(name, manual_lines_by_path[m])
+                if hits:
+                    any_hit = True
+                    where = ", ".join(str(n) for n, _ in hits[:6])
+                    rel = os.path.relpath(m, ROOT)
+                    print(f"  REVIEW  {f}\n            mentioned in {rel} at line(s) {where}")
         if not any_hit:
-            print("  none of them are mentioned in the manual "
-                  "(self-test above confirms the search works)")
+            print("  none of them are mentioned in either manual "
+                  "(the self-tests above confirm the search works)")
 
     leaked = bug_reference_check()
 
