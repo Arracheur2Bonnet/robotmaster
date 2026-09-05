@@ -863,6 +863,98 @@ in this project that two independently-run middleware stacks have agreed
 on an absolute distance, rather than only on each other's history of
 instability.
 
+\subsection{A mirror-image pose the solver could not tell from the real
+one}
+
+With both stacks agreeing at a fixed distance, the next question was what
+happens when the beacon \emph{moves}. The test came from a specific
+precedent: a previous intern's report on a different robot (a LIMO
+platform) describes tracing a square in front of the beacon and getting a
+curved trajectory back instead of straight edges, with the cause left as
+an unconfirmed hypothesis about the P4P solver settling into a wrong local
+minimum. Reproducing that test on this project's own Carolus was worth
+doing on its own merits, independently of whether the earlier diagnosis
+was right.
+
+Two of that report's own confirmed fixes were checked against this
+project's code first, and neither mistake is present here: the
+\texttt{beacon}$\rightarrow$\texttt{camera} transform already uses a
+dynamic TF2 broadcaster rather than a static one, and the quaternion
+conversion was corrected to a proper conjugation in July. That check is
+\textbf{reasoned}, not measured --- it establishes only that two known
+failure modes are absent, not that no failure mode is.
+
+\textbf{The measurement found something worse than a curve.} Dragging the
+beacon around a 30\,cm square at roughly 1\,m, close to fronto-parallel,
+1469 published poses traced a plausible-looking path in $x$ and $y$ while
+$z$ ran at $-0.99$\,m for the first half of the recording, jumped to
+$+0.99$\,m partway through, and never came back. Not oscillation --- a
+single sustained sign flip, with the beacon's actual distance from the
+camera unchanged to within 0.3\,mm across it.
+
+Correlating each pose against the correspondence candidate that won its
+frame made the mechanism exact. Of the search's 24 blob-to-model
+assignments, candidate 15 produced $z<0$ on 699 of 699 samples and
+candidate 14 produced $z\geq0$ on 586 of 586. Those two candidates differ
+in exactly one respect: which detected blob is called $P_1$ and which
+$P_2$ --- and $P_1$ and $P_2$ are mirror points about the beacon's own
+symmetry plane. Swapping them reflects the assumed geometry, and the
+solver fits the reflection about as well as the truth, converging cleanly
+either way. This is the classical P4P "twisted pair" ambiguity. The
+warm-start then made it permanent rather than intermittent: the guard that
+decides whether to reuse the previous frame's solution as the next
+frame's initial guess checks only whether Ceres converged, which the
+mirrored solution satisfies as convincingly as the correct one, so a
+single bad frame re-seeds every frame after it.
+
+\textbf{The fix is a cheirality check} --- the standard remedy for this
+ambiguity class, and one this project could apply cheaply because every
+validated measurement it has ever taken agrees that a beacon genuinely in
+front of the camera reports $t_z<0$. A candidate placing the beacon behind
+the camera is now disqualified inside the search loop, before a winner is
+chosen, so a correct candidate that merely was not the single lowest-cost
+one can still win; the single-guess path, which has no runner-up to fall
+back on, gets the same test as a backstop. Both middleware
+implementations received the identical change, verified byte-identical
+afterwards.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/bug141_square_trace.png}
+\caption{Top-down view ($x$ horizontal, $z$ depth) of 3037 \texttt{/pose}
+samples recorded after the cheirality fix, beacon dragged by hand around a
+30\,cm square at roughly 1\,m on a Raspberry Pi 5 under ROS2 Jazzy,
+coloured by which of the 24 correspondence candidates won each frame.
+\textbf{Both axes share one metres-per-pixel scale}, so the shape is not
+distorted by the plot. A single off-frame outlier (one bad-detection
+frame near 0.36\,m) is excluded from the axis range but not from the
+counts. Every one of the 3037 samples reports $z<0$; candidate 14 --- the
+one that caused the original lock-in --- wins 331 frames here and never
+once places the beacon behind the camera. \textbf{Measured} 2026-09-04.}
+\label{fig:bug141-square-trace}
+\end{figure}
+
+Figure~\ref{fig:bug141-square-trace} is the validation run, and it is
+worth being precise about what it does and does not show. It shows the
+ambiguity is gone under genuine motion: 3037 samples spanning 0.95\,m of
+real depth excursion, six different candidates winning across the
+recording, zero wrong-signed poses. It does \emph{not} show the trajectory
+is accurate --- there is no independent ground truth in this recording,
+only a hand-dragged path and a tape-measured nominal size, so the residual
+waviness visible along each edge (0.8--1.4\,cm RMS, 3--4\,cm worst case,
+over edges measuring 32--34\,cm) measures the steadiness of a human hand at
+least as much as it measures Carolus. Distinguishing those two would need a fixture, not a better plot.
+
+An earlier attempt at this same validation was discarded, and the reason
+is worth recording: the recording window was launched on a fixed timeout,
+and when the timeout elapsed that was read as the test having happened.
+It had not --- the beacon had not yet been moved. The resulting
+"4157 of 4157 samples correctly signed, zero flips" was real data and a
+worthless test, since a stationary beacon cannot exhibit a
+viewing-angle-dependent ambiguity. The
+run reported above is the retry, held open until the operator confirmed
+the motion was complete.
+
 \subsection{Maximum update rate}
 
 Every rate observed before this test was bounded by the camera, not by
