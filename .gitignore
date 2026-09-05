@@ -24,6 +24,12 @@
 # portability is the whole reason the folder exists.
 !/raspberry5-carolus-ros2/
 
+# Added 2026-09-05: public-facing showcase pages linked from README.md
+# (currently docs/carolus-launcher.md and its screenshots). Found missing
+# from this allowlist only after writing and linking the page -- it had
+# been silently blocked from ever reaching the pushed repo the whole time.
+!/docs/
+
 # .env.example is NOT published: it documents this project's internal
 # Tavily/Perplexity research workflow (research-log/09-tavily/...), which
 # itself is not published -- the file would be an orphaned pointer to a

@@ -249,6 +249,20 @@ a previous setup), a ROS log-directory-over-1GB warning on the Pi, and a
 `pillow`/`imageio` version mismatch from the `myqr` dependency (unused in
 this RNDIS-based pipeline).
 
+## Carolus Launcher
+
+<!-- SCREENSHOT: same hero image as docs/carolus-launcher.md, or a smaller
+     crop of it -- keep this one light, the full page carries the detail. -->
+![Carolus Launcher](docs/images/launcher-full.png)
+
+Turn the robot on, run one script, and every terminal, control, and status
+indicator needed to fly it lives in one window: a sequenced, gated launch
+sequence, live ZQSD piloting, a live state dashboard, per-process logs, and
+camera/blob-detection previews — orchestrating five processes on the Pi
+from a single Tkinter console on the lab PC. Run instructions are in
+[Testing](#testing) above; the full writeup, design decisions, and
+architecture diagram are in [`docs/carolus-launcher.md`](docs/carolus-launcher.md).
+
 ## Report
 
 `overleaf/` holds **`technical.tex`** — the self-contained
