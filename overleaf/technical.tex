@@ -2335,7 +2335,7 @@ Parameter & What it does \\
 \texttt{kernel\_size\_gaussian} & Gaussian blur kernel size --- reduces sensor noise and smooths the image before thresholding. \\
 \texttt{kernel\_size\_morph} & Morphological kernel size --- cleans the binary mask, removing speckle and filling small holes inside a blob. \\
 \texttt{image\_threshold} & Brightness cut (0--255) isolating bright emissive regions before colour filtering. Beacon LEDs are bright, so this removes most of the scene cheaply. \\
-\texttt{multi\_hypothesis\_sort} & \texttt{true} since 2026-09-03. Which of the four detected blobs is which model point is decided by three separate single guesses; when any one is wrong the correct labeling is unreachable and the solver fits the wrong correspondence, converging cleanly on a wrong pose. With this on, all 24 assignments are solved and the lowest-cost one kept. Costs $+0.22$\,ms per frame. Set \texttt{false} for the old single-guess behaviour. \\
+\texttt{multi\_hypothesis\_sort} & \texttt{true} since 2026-09-03. Which of the four detected blobs is which model point is decided by three separate single guesses; when any one is wrong the correct labeling is unreachable and the solver fits the wrong correspondence, converging cleanly on a wrong pose. With this on, all 24 assignments are solved and the lowest-cost one \emph{that places the beacon in front of the camera} is kept. Costs $+0.22$\,ms per frame. Set \texttt{false} for the old single-guess behaviour --- which is then subject to the same front-of-camera test, with no runner-up to fall back on, so a rejected frame publishes nothing. \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -2358,6 +2358,33 @@ this robot's own camera that check is still owed --- the measurements above
 were taken on the ROS2 build with a different camera, and this node has been
 rebuilt but \textbf{not yet run against the beacon} (\textbf{Verified}: it
 compiles and links; \textbf{not executed} on hardware).
+\end{warningbox}
+
+\begin{warningbox}
+\textbf{Two of the 24 candidates are mirror images of each other, and the
+solver cannot tell them apart on cost alone.} $P_1=(0.0825,0,0)$ and
+$P_2=(-0.0825,0,0)$ are mirror points about the beacon's own symmetry
+plane, so the assignment that swaps them is a reflection of the assumed
+geometry. It fits the image about as well as the truth --- same reported
+distance to within 0.3\,mm, same clean convergence --- and reports the
+opposite sign on $Z$. \textbf{Measured} 2026-09-04 on a moving beacon: the
+winning candidate switched from 15 to 14 once and stayed there,
+$Z$ jumping from $-0.99$\,m to $+0.99$\,m for the rest of the recording.
+
+The node rejects this by \textbf{cheirality}: a solution placing the
+beacon behind the camera ($t_z \geq 0$) is physically impossible and is
+discarded. The test runs \emph{inside} the candidate loop, not after a
+winner is picked --- filtering afterwards would throw away a good frame
+whenever the mirror happened to have the lower cost, instead of letting
+the correct candidate win. \textbf{Verified} 2026-09-04 over 3037 poses
+spanning 0.95\,m of motion: zero wrong-signed samples, and candidate 14
+itself still won 331 frames legitimately.
+
+\textbf{The sign convention this relies on is empirical, not arbitrary}:
+in this project's camera frame a beacon in front of the camera reports
+$t_z<0$. If you port this code to a pipeline that uses the opposite
+convention, the test inverts --- and the failure mode is a node that
+rejects every frame and publishes nothing while logging a converged solve.
 \end{warningbox}
 
 \subsection{The pose filter}
