@@ -57,10 +57,18 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, ".."))
 MANUAL = os.path.join(ROOT, "overleaf", "technical.tex")
 
+# The ROS2 manual, added 2026-09-05. Until then this script read technical.tex
+# ONLY, so a change touching just the ROS2 tree produced a clean run that meant
+# nothing -- the same reassuring zero this script exists to eliminate,
+# reintroduced by scope rather than by escaping.
+MANUAL_ROS2 = os.path.join(ROOT, "raspberry5-carolus-ros2", "technical-ros2.tex")
+MANUALS = [MANUAL, MANUAL_ROS2]
+
 # Top-level directories whose contents the manual may legitimately name.
 # A path starting with anything else (/opt/ros, ~/.ssh, /home/ubuntu on the
 # Pi, a URL) is not ours to check for existence and is skipped.
-REPO_DIRS = ("carolus_ws/", "shortcuts/", "overleaf/")
+REPO_DIRS = ("carolus_ws/", "shortcuts/", "overleaf/",
+             "raspberry5-carolus-ros2/")
 
 FILE_EXT = (".py", ".sh", ".launch", ".yaml", ".yml", ".txt", ".xml",
             ".cpp", ".hpp", ".h", ".tex", ".pdf", ".md", ".json")
@@ -193,6 +201,42 @@ def published_files():
         return []
 
 
+def bug_reference_check():
+    """Both manuals forbid BUG-XXX labels: a reader with only the repository
+    cannot resolve them.
+
+    This has broken twice -- seven references removed 2026-08-25, thirteen more
+    found 2026-09-05 -- and both times while writing up a real bug, which is
+    exactly when reaching for its number is most automatic. A rule that depends
+    on remembering it at the one moment it is hardest to remember needs a
+    mechanical check, not better intentions.
+
+    Returns the number of offending references (0 is the only acceptable value).
+    """
+    total = 0
+    print("\n--- bug numbers leaked into the manuals (must be zero) ---")
+    for man in MANUALS:
+        if not os.path.exists(man):
+            continue
+        hits = []
+        with open(man, encoding="utf-8") as f:
+            for i, raw in enumerate(f.read().split("\n"), 1):
+                for m in re.finditer(r"BUG-\d{3}", raw):
+                    hits.append((i, m.group(0), raw.strip()[:110]))
+        total += len(hits)
+        rel = os.path.relpath(man, ROOT)
+        if hits:
+            print(f"  FAIL  {rel}: {len(hits)} reference(s)")
+            for ln, tag, txt in hits:
+                print(f"          line {ln}: {tag} -- {txt}")
+        else:
+            print(f"  ok    {rel}")
+    if total:
+        print("  Keep the content, drop the label: say 'corrected 2026-09-04'")
+        print("  or 'known and deliberately unfixed' instead of the number.")
+    return total
+
+
 def main():
     args = sys.argv[1:]
     if not os.path.exists(MANUAL):
@@ -252,9 +296,11 @@ def main():
             print("  none of them are mentioned in the manual "
                   "(self-test above confirms the search works)")
 
+    leaked = bug_reference_check()
+
     print("\nReminder: 'mentioned' is not 'correct'. Open each line above and "
           "either update it or state that it still holds.")
-    return 1 if stale else 0
+    return 1 if (stale or leaked) else 0
 
 
 if __name__ == "__main__":
