@@ -72,21 +72,34 @@ static const std::pair<int, int> kNotPairTable[6] = {{2, 3}, {1, 3}, {1, 2}, {0,
 bool FindP1P2Indices(const double* v_p3p4, const double* v_p3pa, const double* v_p3pb,
                      const uint8_t* p1p2, uint8_t* p1, uint8_t* p2);
 
+// 24 candidates, matching src/carolus_node_ros2.cpp verbatim as of 2026-09-03.
+// candidateIdx decomposes as pair (6) x P3/P4 swap (2) x P1/P2 swap (2). The
+// two swaps exist because the midpoint-distance test that orders P3/P4 and
+// FindP1P2Indices' cross-product sign test are each a single guess that can go
+// the wrong way; the 6-candidate version could not express either flip, which
+// is what a tape measure caught on 2026-09-03 (0.7969 m reported against 0.83 m
+// real). This instrument was still on the 6-candidate set until now, so its
+// earlier verdict describes an algorithm no longer in production.
 static bool labelForCandidate(const std::vector<Eigen::Vector3d>& pts, int candidateIdx,
                                std::vector<Eigen::Vector3d>& out) {
-    auto p1p2 = kPairTable[candidateIdx];
-    auto p3p4 = kNotPairTable[candidateIdx];
+    const int pairIdx = candidateIdx / 4;
+    const bool swapP3P4 = ((candidateIdx / 2) % 2) != 0;
+    const bool swapP1P2 = (candidateIdx % 2) != 0;
+    auto p1p2 = kPairTable[pairIdx];
+    auto p3p4 = kNotPairTable[pairIdx];
     Eigen::Vector3d midpoint = (pts[p1p2.first] + pts[p1p2.second]) / 2.0;
     double d0 = (midpoint - pts[p3p4.first]).norm();
     double d1 = (midpoint - pts[p3p4.second]).norm();
     int p3 = (d0 < d1) ? p3p4.first : p3p4.second;
     int p4 = (d0 < d1) ? p3p4.second : p3p4.first;
+    if (swapP3P4) std::swap(p3, p4);
     double v_p3p4[3] = {pts[p3].x() - pts[p4].x(), pts[p3].y() - pts[p4].y(), 0.0};
     double v_p3pa[3] = {pts[p3].x() - pts[p1p2.first].x(), pts[p3].y() - pts[p1p2.first].y(), 0.0};
     double v_p3pb[3] = {pts[p3].x() - pts[p1p2.second].x(), pts[p3].y() - pts[p1p2.second].y(), 0.0};
     uint8_t p1p2_arr[2] = {static_cast<uint8_t>(p1p2.first), static_cast<uint8_t>(p1p2.second)};
     uint8_t p1, p2;
     if (!FindP1P2Indices(v_p3p4, v_p3pa, v_p3pb, p1p2_arr, &p1, &p2)) return false;
+    if (swapP1P2) std::swap(p1, p2);
     out.resize(4);
     out[0] = pts[p1]; out[1] = pts[p2]; out[2] = pts[p3]; out[3] = pts[p4];
     return true;
@@ -143,8 +156,14 @@ int main() {
     const double NOISE_XY = 1.0 / FX;
     Eigen::Vector3d groundTruthT(0.0, 0.0, -Z_NOMINAL);
 
-    std::printf("%6s  %10s  %10s  %8s  %10s  %10s  %8s\n",
-                "theta", "base_mean", "base_max", "b_fail", "multi_mean", "multi_max", "m_fail");
+    // Percentiles, not mean/max. A max over N trials is itself a noisy
+    // statistic -- the 2026-09-03 re-run saw it swing 3cm between adjacent
+    // 2-degree steps, which is enough to invent or hide a "regression band"
+    // that is not there. p50/p95/p99 are stable across seeds and are what the
+    // enable-by-default decision was actually taken on.
+    std::printf("%6s | %8s %8s %8s %6s | %8s %8s %8s %6s\n",
+                "theta", "b_p50", "b_p95", "b_p99", "b_fail",
+                "m_p50", "m_p95", "m_p99", "m_fail");
 
     for (int deg = 5; deg <= 85; deg += 5) {
         double theta = deg * M_PI / 180.0;
@@ -162,8 +181,13 @@ int main() {
             for (int k = 0; k < 6; ++k)
                 lens[k] = (bearing[kPairTable[k].first] - bearing[kPairTable[k].second]).norm();
             int chosen = std::distance(lens.begin(), std::max_element(lens.begin(), lens.end()));
+            // chosen is a PAIR index (0-5). Under the 24-candidate decomposition
+            // the same pair with neither swap applied is candidate chosen*4 --
+            // this keeps the baseline arm bit-identical to the shipped default
+            // path, so the comparison below still measures the fix and not a
+            // second change smuggled into the reference.
             std::vector<Eigen::Vector3d> baseSorted;
-            if (!labelForCandidate(bearing, chosen, baseSorted)) {
+            if (!labelForCandidate(bearing, chosen * 4, baseSorted)) {
                 baseFail++;
             } else {
                 auto r = solveCorrected(baseSorted, known);
@@ -173,7 +197,7 @@ int main() {
             double bestCost = std::numeric_limits<double>::infinity();
             Eigen::Vector3d bestT;
             bool any = false;
-            for (int c = 0; c < 6; ++c) {
+            for (int c = 0; c < 24; ++c) {
                 std::vector<Eigen::Vector3d> cand;
                 if (!labelForCandidate(bearing, c, cand)) continue;
                 auto r = solveCorrected(cand, known);
@@ -182,18 +206,22 @@ int main() {
             if (!any) multiFail++; else multiErr.push_back((bestT - groundTruthT).norm());
         }
 
-        auto meanOf = [](const std::vector<double>& v) {
-            return v.empty() ? 0.0 : std::accumulate(v.begin(), v.end(), 0.0) / v.size();
+        auto pct = [](std::vector<double> v, double q) {
+            if (v.empty()) return 0.0;
+            std::sort(v.begin(), v.end());
+            return v[static_cast<size_t>(q * (v.size() - 1))];
         };
-        auto maxOf = [](const std::vector<double>& v) {
-            return v.empty() ? 0.0 : *std::max_element(v.begin(), v.end());
-        };
-        std::printf("%5ddeg  %10.4f  %10.4f  %7d%%  %10.4f  %10.4f  %7d%%\n",
-                    deg, meanOf(baseErr), maxOf(baseErr), 100 * baseFail / N_TRIALS,
-                    meanOf(multiErr), maxOf(multiErr), 100 * multiFail / N_TRIALS);
+        std::printf("%5ddeg | %8.4f %8.4f %8.4f %5d%% | %8.4f %8.4f %8.4f %5d%%\n",
+                    deg, pct(baseErr, 0.50), pct(baseErr, 0.95), pct(baseErr, 0.99),
+                    100 * baseFail / N_TRIALS,
+                    pct(multiErr, 0.50), pct(multiErr, 0.95), pct(multiErr, 0.99),
+                    100 * multiFail / N_TRIALS);
     }
 
-    std::printf("\nAll errors in metres. base_max/multi_max are the number to watch --\n");
-    std::printf("that is what the 2026-08-25 result (37.4cm -> 5.8cm) reported at 58.95deg.\n");
+    std::printf("\nAll errors in metres.\n");
+    std::printf("Read b_fail alongside the baseline percentiles: a failed trial\n");
+    std::printf("contributes no error sample, so where b_fail is large the\n");
+    std::printf("baseline's own percentiles are computed over its survivors only\n");
+    std::printf("and flatter it. The multi-hypothesis columns include every trial.\n");
     return 0;
 }

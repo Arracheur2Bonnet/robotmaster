@@ -22,17 +22,29 @@
 
 /**:
   ros__parameters:
-    # Camera intrinsics -- from Hector directly, 2026-08-17 (his email).
-    # His own words: "The camera should be calibrated again later, after we
-    # get it to work". Starting point to confirm detection runs, not a
-    # formally calibrated value.
-    fx: 570.6975
-    fy: 572.8081
-    cx: 322.6828
-    cy: 228.3519
+    # Camera intrinsics: MEASURED 2026-09-02, MATLAB Camera Calibration
+    # Toolbox (Computer Vision Toolbox, cameraCalibrator app), 200
+    # checkerboard images (25 mm squares, ruler-measured against the board
+    # glued to the back of the beacon), mean reprojection error 0.2782 px.
+    # Radial distortion model: 2 coefficients (not 3 -- that setting is for
+    # the RoboMaster's own wider-FOV camera, see overleaf/technical.tex's
+    # Camera Calibration chapter; not re-derived for this camera).
+    # Tangential distortion not estimated (p1=p2=0). Supersedes Hector's
+    # 2026-08-17 approximate values.
+    #
+    # VALID ONLY AT 640x480 -- intrinsics are resolution-dependent. The
+    # capture was run with usb_cam at image_width:=640 image_height:=480.
+    # If this camera is ever launched at a different resolution on either
+    # target (lab PC or Pi 5), these values do not apply without rescaling.
+    fx: 633.1446
+    fy: 635.7331
+    cx: 313.9318
+    cy: 237.0129
 
-    # plumb_bob distortion: k1 k2 p1 p2.
-    distortion: [0.0223, -0.3088, -0.0048, -0.0018]
+    # plumb_bob distortion: k1 k2 p1 p2. k1, k2 measured 2026-09-02 (see
+    # intrinsics comment above); p1, p2 are 0 -- tangential distortion was
+    # not estimated for this calibration.
+    distortion: [0.0506, -0.1501, 0.0, 0.0]
 
     # Beacon geometry, metres -- same physical beacon as the RoboMaster's,
     # UNVERIFIED for whichever beacon actually sits in front of this camera.

@@ -69,12 +69,26 @@ public:
         // SortTargetsUsingTetrahedronGeometry's single argmax-angular-
         // separation guess (which is confirmed unstable near real and
         // apparent ties, both synthetically and on real hardware the same
-        // day). OFF by default: verified synthetically only so far
-        // (test/instrument_multi_hypothesis_sort.cpp -- worst-case error
-        // 37.4cm -> 5.8cm at a near-tie, cost +0.22ms/frame, negligible
-        // against this camera's ~10-30 Hz), NOT yet hardware-tested, so it
-        // does not change default behaviour until it has been.
-        declare_parameter("multi_hypothesis_sort", false);
+        // day).
+        //
+        // ON by default since 2026-09-03. It was off while it was a
+        // 6-candidate search verified at a single synthetic near-tie; two
+        // things changed. (1) Hardware: against an 83.0cm tape measure the
+        // single-guess path reported 79.66cm (-3.34cm) while the 24-candidate
+        // search reported 83.41cm (+0.41cm), final_cost 51.5 vs 0.037,
+        // reproduced back to back on one undisturbed scene. (2) The 45-55deg
+        // regression that had justified keeping it off was re-measured with
+        // test/instrument_multi_hypothesis_sweep.cpp after that instrument was
+        // brought up to the same 24 candidates -- it describes the old
+        // 6-candidate algorithm and no longer holds. Over 40-60deg, 3000
+        // trials/angle at +/-1px: median error halves or better at every
+        // angle, p95 improves almost everywhere, and the single-guess path
+        // fails outright 14% of the time at 60deg where this one never does.
+        // Residual cost, stated rather than buried: a slightly heavier p99
+        // tail at 55deg (5.6cm vs 3.7cm), and +0.22ms/frame.
+        //
+        // Pass -p multi_hypothesis_sort:=false to get the old behaviour back.
+        declare_parameter("multi_hypothesis_sort", true);
         multi_hypothesis_sort_ = get_parameter("multi_hypothesis_sort").as_bool();
 
         declare_parameter("fx", 546.1957);
@@ -225,11 +239,11 @@ private:
         }
         const double* prior = (warm_start_ && has_prior_) ? prior_params_ : nullptr;
         CameraPose bestPose;
-        int winningCandidate = -1;  // -1 = the single-guess path; 0..5 under multi-hypothesis
+        int winningCandidate = -1;  // -1 = the single-guess path; 0..23 under multi-hypothesis
 
         if (multi_hypothesis_sort_) {
             if (!solveMultiHypothesis(imagePoints, undistorted, prior, bestPose, winningCandidate)) {
-                RCLCPP_ERROR(get_logger(), "multi_hypothesis_sort: all 6 candidate labelings failed.");
+                RCLCPP_ERROR(get_logger(), "multi_hypothesis_sort: all 24 candidate labelings failed.");
                 return;
             }
         } else {
@@ -327,17 +341,39 @@ private:
     // p1p2 pair instead of always picking the max-angular-separation one.
     // Verified synthetically against this exact algorithm in
     // test/instrument_multi_hypothesis_sort.cpp before being wired in here.
+    // EXTENDED 2026-09-03 from 6 candidates to the full 24, after a real
+    // hardware measurement showed the 6-candidate set does not contain the
+    // correct labeling at every geometry. Beacon tape-measured at 83 cm; the
+    // 6-candidate search returned 79.7 cm on every frame (candidate 3, chosen
+    // consistently), while an offline solve over all 24 labelings of the SAME
+    // frame found one at 82.96 cm with a 0.229 px mean reprojection error
+    // against 3.10 px for the labeling the 6-candidate search settled on --
+    // a 13x worse fit, and 3.3 cm of range error.
+    //
+    // Why 6 was not enough: the pair choice was enumerated (6 ways) but P3/P4
+    // was then DERIVED by the closer-to-midpoint rule and P1/P2 by
+    // FindP1P2Indices' cross-product sign, so each pair choice produced
+    // exactly one labeling. When either derivation is wrong for the correct
+    // pair, the correct labeling is unreachable no matter how the candidates
+    // are scored. candidateIdx now decomposes as pair (6) x P3/P4 swap (2) x
+    // P1/P2 swap (2), which is every assignment of four blobs to four model
+    // points -- the derivations are kept as the default ordering and the
+    // swaps simply also offer the alternative.
     static bool labelForCandidate(const std::vector<Eigen::Vector3d>& pts, int candidateIdx,
                                   std::vector<Eigen::Vector3d>& out) {
         static const std::pair<int, int> kPairTable[6] = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
         static const std::pair<int, int> kNotPairTable[6] = {{2, 3}, {1, 3}, {1, 2}, {0, 3}, {0, 2}, {0, 1}};
-        auto p1p2 = kPairTable[candidateIdx];
-        auto p3p4 = kNotPairTable[candidateIdx];
+        const int pairIdx = candidateIdx / 4;
+        const bool swapP3P4 = ((candidateIdx / 2) % 2) != 0;
+        const bool swapP1P2 = (candidateIdx % 2) != 0;
+        auto p1p2 = kPairTable[pairIdx];
+        auto p3p4 = kNotPairTable[pairIdx];
         Eigen::Vector3d midpoint = (pts[p1p2.first] + pts[p1p2.second]) / 2.0;
         double d0 = (midpoint - pts[p3p4.first]).norm();
         double d1 = (midpoint - pts[p3p4.second]).norm();
         int p3 = (d0 < d1) ? p3p4.first : p3p4.second;
         int p4 = (d0 < d1) ? p3p4.second : p3p4.first;
+        if (swapP3P4) std::swap(p3, p4);
 
         double v_p3p4[3] = {pts[p3].x() - pts[p4].x(), pts[p3].y() - pts[p4].y(), 0.0};
         double v_p3pa[3] = {pts[p3].x() - pts[p1p2.first].x(), pts[p3].y() - pts[p1p2.first].y(), 0.0};
@@ -345,6 +381,7 @@ private:
         uint8_t p1p2_arr[2] = {static_cast<uint8_t>(p1p2.first), static_cast<uint8_t>(p1p2.second)};
         uint8_t p1, p2;
         if (!FindP1P2Indices(v_p3p4, v_p3pa, v_p3pb, p1p2_arr, &p1, &p2)) return false;
+        if (swapP1P2) std::swap(p1, p2);
 
         out.resize(4);
         out[0] = pts[p1];
@@ -354,7 +391,7 @@ private:
         return true;
     }
 
-    // Tries all 6 candidate labelings of `imagePoints` (unit bearing
+    // Tries all 24 candidate labelings of `imagePoints` (unit bearing
     // vectors, same input SortTargetsUsingTetrahedronGeometry itself takes),
     // solving the REAL production CobrasFumantes for each (same warm-start
     // prior offered to every candidate, since they all explain the same
@@ -362,7 +399,7 @@ private:
     // criterion verified in test/instrument_multi_hypothesis_sort.cpp
     // (worst-case error 37.4cm -> 5.8cm at a synthetic near-tie; ~0.3ms/frame
     // for up to 6 solves, negligible against this camera's frame budget).
-    // Returns false only if every one of the 6 candidates fails to label
+    // Returns false only if every one of the 24 candidates fails to label
     // (the FindP1P2Indices disambiguation itself hits its own 2D near-tie) --
     // a stricter failure condition than the single-guess path, by design.
     bool solveMultiHypothesis(const std::vector<Eigen::Vector3d>& imagePoints,
@@ -371,7 +408,7 @@ private:
         bestPose.solver_final_cost = -1.0;
         double bestCost = std::numeric_limits<double>::infinity();
         winningCandidate = -1;
-        for (int c = 0; c < 6; ++c) {
+        for (int c = 0; c < 24; ++c) {
             std::vector<Eigen::Vector3d> candidate;
             if (!labelForCandidate(imagePoints, c, candidate)) continue;
             pixelSpaceConvert(candidate);
