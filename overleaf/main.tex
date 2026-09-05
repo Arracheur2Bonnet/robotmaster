@@ -1179,14 +1179,18 @@ recording.
   comparison to mean anything, and neither is desk work: the IMU question
   needs a known-rotation turntable session, the extrinsic needs the
   camera-IMU calibration protocol run for real rather than assumed.
-  \item \textbf{Calibrate the camera and compare the pose against
-  tape-measured beacon positions.} The real-hardware displacement test
-  (Section~\ref{sec:ros2}) is done: 71.2\,\% response to a real 30\,cm move,
-  correctly signed, up from 1.43\,\%. This was correctly deferred while the
-  pose was not tracking at all; it is the natural next step now that it
-  demonstrably is, and is the most likely source of the remaining gap to
-  100\,\%, since this camera's intrinsics have never been formally
-  calibrated.
+  \item \textbf{Done since this list was written: the camera was calibrated
+  and the pose checked against a tape.} MATLAB Camera Calibration Toolbox,
+  200 checkerboard images, mean reprojection error \textbf{0.2782\,px}
+  (2026-09-02), written into both middleware profiles. Against a beacon
+  tape-measured at 83.0\,cm the corrected pipeline reads \textbf{83.41\,cm}
+  (2026-09-03), and ROS1 and ROS2 agree to \textbf{1.1\,mm} at
+  $\sim$70\,cm (2026-09-04). The earlier statement that this camera's
+  intrinsics had never been formally calibrated is no longer true.
+  \textbf{What remains open is accuracy at 2\,m}, the distance the
+  objective actually names --- and the limit reached there is
+  \emph{detection}, not solver accuracy: at that range this beacon's LEDs
+  fall to 4--10\,px\textsuperscript{2} against a minimum blob area of 8.0.
   \item \textbf{The correspondence sort has a hard geometric limit, now
   located rather than merely observed.} What had been described as an
   instability is, past a threshold, a deterministic failure. The sort
@@ -1198,12 +1202,19 @@ recording.
   identifies the correct pair 200/200 below 55\textdegree{} and
   \textbf{0/200 between 65\textdegree{} and 85\textdegree}. This is measured
   synthetically against the production sort function, not reasoned from the
-  code. The practical consequence is an operating envelope rather than a
-  bug to be patched blind: keep the beacon within roughly 55\textdegree{} of
-  frontal, and treat any pose recorded outside it as uninformative. A
-  candidate fix that re-solved for all six possible labellings was
-  implemented, measured, and \textbf{rejected} --- it regressed in the band
-  where the existing heuristic is already correct.
+  code. \textbf{Superseded 2026-09-03, and the supersession is
+  the more useful result.} A candidate fix re-solving all six possible
+  labellings was first measured and \textbf{rejected} for regressing in the
+  45--55\textdegree{} band. That verdict was wrong: the sweep instrument
+  producing it was itself still testing the six-candidate algorithm after
+  production had moved on. Re-run correctly, and extended to all
+  \textbf{24} assignments, the median error is 3--6$\times$ lower at every
+  angle from 5\textdegree{} to 55\textdegree{} and the failure rate above
+  60\textdegree{} goes from 15--53\,\% to zero. It is now the default on
+  both stacks. The 55\textdegree{} operating envelope described above
+  therefore constrains the \emph{old} single-guess sort, not the shipped
+  one. \textbf{The instrument, not the fix, was the thing that had drifted}
+  --- and nothing in the original measurement could have revealed that.
   \item Execute the ground-truth drift protocol (Section~\ref{sec:protocol})
   on hardware.
   \item Validate the MINS installation against the official KAIST Urban
