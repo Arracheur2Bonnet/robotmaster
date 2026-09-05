@@ -5,21 +5,32 @@
 # the general "copy this file for your own hardware" pattern -- this is that
 # pattern applied.
 #
-# Camera intrinsics: from Hector directly, 2026-08-17 (his email). Approximate
-# -- his own words: "The camera should be calibrated again later, after we
-# get it to work". Treat as a starting point to confirm detection runs at
-# all, not as a formally calibrated value.
-fx: 570.6975
-fy: 572.8081
-cx: 322.6828
-cy: 228.3519
+# Camera intrinsics: MEASURED 2026-09-02, MATLAB Camera Calibration Toolbox
+# (Computer Vision Toolbox, cameraCalibrator app), 200 checkerboard images
+# (25 mm squares, measured with a ruler against the board glued to the back
+# of the beacon), mean reprojection error 0.2782 px. Radial distortion model:
+# 2 coefficients (not 3 -- that setting is for the RoboMaster's own
+# wider-FOV camera, see overleaf/technical.tex's Camera Calibration chapter;
+# not re-derived for this camera). Tangential distortion not estimated
+# (p1=p2=0). Supersedes Hector's 2026-08-17 approximate values.
+#
+# VALID ONLY AT 640x480 -- intrinsics are resolution-dependent. The capture
+# was run with usb_cam at image_width:=640 image_height:=480. If this camera
+# is ever launched at a different resolution, these values do not apply
+# without rescaling.
+fx: 633.1446
+fy: 635.7331
+cx: 313.9318
+cy: 237.0129
 
 # plumb_bob distortion: k1 k2 p1 p2. A real YAML list, not a quoted string --
 # see BUG-117 (2026-08-17, journal.md): the string form silently fails to
 # load as a vector<double> and the node falls back to a hardcoded Astrobee
 # placeholder with no warning. carolus_astrobee.cpp:352 only ever consumes
 # exactly 4 values regardless of list length, so don't add a 5th (k3).
-distortion: [0.0223, -0.3088, -0.0048, -0.0018]
+# k1, k2 measured 2026-09-02 (see intrinsics comment above); p1, p2 are 0 --
+# tangential distortion was not estimated for this calibration.
+distortion: [0.0506, -0.1501, 0.0, 0.0]
 
 # --- Beacon geometry ---------------------------------------------------------
 # Copied from robomaster_s1.yaml as a starting point, UNVERIFIED for
@@ -101,7 +112,17 @@ benchtest: true
 nav_cam: true
 dock_cam: false
 fisheye: false
-fov: true
+# fov: false since 2026-09-04 (BUG-138). fov:true routes undistortion through
+# the Astrobee single-parameter FOV model, which reads distortion[0] (our
+# MATLAB-measured plumb_bob k1, 0.0506) as its own, unrelated FOV coefficient.
+# For k1 this small the FOV model degenerates to the identity (computed
+# against the four blob positions from the 2026-09-03 83cm run: 0.99979-
+# 0.99980, against plumb_bob's genuine 1.00010-1.00088) -- the measured
+# distortion was silently discarded, and k2 was never read at all.
+# fov:false routes through cv::undistortPoints instead, which is what the
+# distortion array above was actually calibrated for (MATLAB Camera
+# Calibration Toolbox, plumb_bob/radial-tangential model).
+fov: false
 mono: false
 
 bot_name: "wannabee"

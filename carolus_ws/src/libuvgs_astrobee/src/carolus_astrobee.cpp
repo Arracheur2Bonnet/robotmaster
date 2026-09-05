@@ -29,6 +29,7 @@
 #include <numeric>
 #include <condition_variable>
 #include <atomic>
+#include <limits>
 #include <image_transport/image_transport.h>
 #include <std_msgs/Float64.h>
 #include <geometry_msgs/PoseStamped.h>
@@ -83,6 +84,9 @@ public:
         // move gave 213.7 mm of 300 mm (71.2%) with the correct sign, against
         // 55.3% with the wrong sign across independent restarts.
         private_nh_.param("warm_start", warm_start_, true);
+        // Default true since 2026-09-03 -- see the member's own comment for
+        // why. Set false to restore the single-guess sort.
+        private_nh_.param("multi_hypothesis_sort", multi_hypothesis_sort_, true);
         private_nh_.param("bot_name", _bot_name, std::string("wannabee"));
         private_nh_.param("frame_id_conv", frame_id_conv, false);
         // TIMESTAMP SOURCE FOR THE PUBLISHED POSE (added 2026-08-04).
@@ -659,10 +663,41 @@ private:
         imagePoints.emplace_back(Eigen::Vector3d(point.x, point.y, 1.0).normalized());
         }
 
-        bool success = SortTargetsUsingTetrahedronGeometry(imagePoints, sortedImagePoints);
+        const double* prior = (warm_start_ && has_prior_) ? prior_params_ : nullptr;
+
+        if (multi_hypothesis_sort_) {
+            int winningCandidate = -1;
+            if (!solveMultiHypothesis(imagePoints, undistortedPoints, cameraMatrix_, true,
+                                      measType_, prior, bestPose, sortedImagePoints,
+                                      winningCandidate)) {
+                ROS_ERROR("multi_hypothesis_sort: all 24 candidate labelings failed.");
+                return;
+            }
+        } else {
+            bool success = SortTargetsUsingTetrahedronGeometry(imagePoints, sortedImagePoints);
+            if (!success) {
+                ROS_ERROR("Failed to sort targets using tetrahedron geometry.");
+                return;
+            }
+            for (int i = 0; i < sortedImagePoints.size(); i++) {
+                sortedImagePoints[i](0) = sortedImagePoints[i](0) * fx +cx;
+                sortedImagePoints[i](1) = sortedImagePoints[i](1) * fy +cy;
+            }
+            //COBRAS FUMANTES POSE SOLVER
+            //THE SNAKE IS GOING TO SMOKE
+            CobrasFumantes poseSolver(cameraMatrix_, measType_);
+            poseSolver.computeAndValidatePosesWithRefinement(sortedImagePoints, knownPoints_,
+                                                            undistortedPoints, bestPose, prior);
+        }
+
+        // Populated from whichever labeling was actually used, after the solve
+        // rather than during the sort. It used to run ABOVE the `if (!success)`
+        // check, so a failed sort left this member holding landmarks derived
+        // from an unsuccessfully-sorted vector. Nothing was published on that
+        // frame (the check returns immediately after), so this was latent
+        // rather than active; moving it below the check removes the state
+        // entirely instead of relying on the next frame to overwrite it.
         for (int i = 0; i < sortedImagePoints.size(); i++) {
-            sortedImagePoints[i](0) = sortedImagePoints[i](0) * fx +cx;
-            sortedImagePoints[i](1) = sortedImagePoints[i](1) * fy +cy;
             //GOTTA CREATE THE LANDMARK MESSAGE AS PER ASTORBBE DEFS
             visual_landmarks_vec_[i].u = sortedImagePoints[i](0);
             visual_landmarks_vec_[i].v = sortedImagePoints[i](1);
@@ -670,45 +705,46 @@ private:
             visual_landmarks_vec_[i].y = knownPoints_[i](1);
             visual_landmarks_vec_[i].z = knownPoints_[i](2);
         }
-        if (!success) {
-            ROS_ERROR("Failed to sort targets using tetrahedron geometry.");
-            return;
-        }
-
-        //COBRAS FUMANTES POSE SOLVER
-        //THE SNAKE IS GOING TO SMOKE
-        CobrasFumantes poseSolver(cameraMatrix_, measType_);
-        poseSolver.computeAndValidatePosesWithRefinement(sortedImagePoints, knownPoints_, undistortedPoints, bestPose,
-                                                        (warm_start_ && has_prior_) ? prior_params_ : nullptr);
     } else {
         imagePoints.reserve(undistortedPoints.size());
         for (const auto& point : undistortedPoints) {
         imagePoints.emplace_back(Eigen::Vector3d(point.x, point.y, 1.0));
         }
 
-        bool success = SortTargetsUsingTetrahedronGeometry(imagePoints, sortedImagePoints);
-        if (!success) {
-            ROS_ERROR("Failed to sort targets using tetrahedron geometry.");
-            return;
+        const double* prior = (warm_start_ && has_prior_) ? prior_params_ : nullptr;
+
+        if (multi_hypothesis_sort_) {
+            int winningCandidate = -1;
+            // toPixelSpace=false: undistortAstrobeeFov already returns points
+            // in the space camMatrixAstrobee expects, which is why the
+            // original code's two scaling lines here were commented out.
+            if (!solveMultiHypothesis(imagePoints, undistortedPoints, camMatrixAstrobee, false,
+                                      measType_, prior, bestPose, sortedImagePoints,
+                                      winningCandidate)) {
+                ROS_ERROR("multi_hypothesis_sort: all 24 candidate labelings failed.");
+                return;
+            }
+        } else {
+            bool success = SortTargetsUsingTetrahedronGeometry(imagePoints, sortedImagePoints);
+            if (!success) {
+                ROS_ERROR("Failed to sort targets using tetrahedron geometry.");
+                return;
+            }
+            //COBRAS FUMANTES POSE SOLVER
+            //THE SNAKE IS GOING TO SMOKE
+            CobrasFumantes poseSolver(camMatrixAstrobee, measType_);
+            poseSolver.computeAndValidatePosesWithRefinement(sortedImagePoints, knownPoints_,
+                                                            undistortedPoints, bestPose, prior);
         }
+
         for (int i = 0; i < sortedImagePoints.size(); i++) {
-  
-            sortedImagePoints[i](0) = sortedImagePoints[i](0); // * fx;
-            sortedImagePoints[i](1) = sortedImagePoints[i](1); // * fy;
         //GOTTA CREATE THE LANDMARK MESSAGE AS PER ASTORBBE DEFS
             visual_landmarks_vec_[i].u = sortedImagePoints[i](0);
             visual_landmarks_vec_[i].v = sortedImagePoints[i](1);
             visual_landmarks_vec_[i].x = knownPoints_[i](0);
             visual_landmarks_vec_[i].y = knownPoints_[i](1);
             visual_landmarks_vec_[i].z = knownPoints_[i](2);
-
-
         }
-        //COBRAS FUMANTES POSE SOLVER
-        //THE SNAKE IS GOING TO SMOKE
-        CobrasFumantes poseSolver(camMatrixAstrobee, measType_);
-        poseSolver.computeAndValidatePosesWithRefinement(sortedImagePoints, knownPoints_, undistortedPoints, bestPose,
-                                                        (warm_start_ && has_prior_) ? prior_params_ : nullptr);
     }
    
 
@@ -1017,6 +1053,103 @@ void extractXYZ(const Eigen::Vector3d& translationVector, double& xExtracted, do
     bool warm_start_;
     bool has_prior_ = false;
     double prior_params_[6] = {0.0, 0.0, -0.001, 0.0, 0.0, 0.7};
+
+    // BUG-131. SortTargetsUsingTetrahedronGeometry commits to ONE labeling of
+    // the four blobs: it picks the widest-separated pair as P1/P2, derives
+    // P3/P4 by which is closer to that pair's midpoint, and orders P1 vs P2 by
+    // FindP1P2Indices' 2D cross-product sign. Each of those three steps is a
+    // single guess, and when any one goes the wrong way the correct labeling
+    // is simply unreachable -- the solver then fits the wrong correspondence
+    // perfectly well and reports a confidently wrong pose, with no warning and
+    // no failure to converge.
+    //
+    // The alternative below enumerates all 24 assignments of four blobs to the
+    // four model points, solves the real production CobrasFumantes for each,
+    // and keeps the lowest final_cost.
+    bool multi_hypothesis_sort_;
+
+    // Enumerates one of the 24 labelings. candidateIdx decomposes as
+    // pair (6) x P3/P4 swap (2) x P1/P2 swap (2): the pair choice is
+    // enumerated, and the two derived orderings each get their alternative
+    // offered as well. Byte-for-byte the same algorithm as the ROS2 node's
+    // (raspberry5-carolus-ros2/carolus_ros2/src/carolus_node_ros2.cpp) -- if
+    // one is ever changed, change the other.
+    static bool labelForCandidate(const std::vector<Eigen::Vector3d>& pts, int candidateIdx,
+                                  std::vector<Eigen::Vector3d>& out) {
+        static const std::pair<int, int> kPairTable[6] = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
+        static const std::pair<int, int> kNotPairTable[6] = {{2, 3}, {1, 3}, {1, 2}, {0, 3}, {0, 2}, {0, 1}};
+        const int pairIdx = candidateIdx / 4;
+        const bool swapP3P4 = ((candidateIdx / 2) % 2) != 0;
+        const bool swapP1P2 = (candidateIdx % 2) != 0;
+        auto p1p2 = kPairTable[pairIdx];
+        auto p3p4 = kNotPairTable[pairIdx];
+        Eigen::Vector3d midpoint = (pts[p1p2.first] + pts[p1p2.second]) / 2.0;
+        double d0 = (midpoint - pts[p3p4.first]).norm();
+        double d1 = (midpoint - pts[p3p4.second]).norm();
+        int p3 = (d0 < d1) ? p3p4.first : p3p4.second;
+        int p4 = (d0 < d1) ? p3p4.second : p3p4.first;
+        if (swapP3P4) std::swap(p3, p4);
+
+        double v_p3p4[3] = {pts[p3].x() - pts[p4].x(), pts[p3].y() - pts[p4].y(), 0.0};
+        double v_p3pa[3] = {pts[p3].x() - pts[p1p2.first].x(), pts[p3].y() - pts[p1p2.first].y(), 0.0};
+        double v_p3pb[3] = {pts[p3].x() - pts[p1p2.second].x(), pts[p3].y() - pts[p1p2.second].y(), 0.0};
+        uint8_t p1p2_arr[2] = {static_cast<uint8_t>(p1p2.first), static_cast<uint8_t>(p1p2.second)};
+        uint8_t p1, p2;
+        if (!FindP1P2Indices(v_p3p4, v_p3pa, v_p3pb, p1p2_arr, &p1, &p2)) return false;
+        if (swapP1P2) std::swap(p1, p2);
+
+        out.resize(4);
+        out[0] = pts[p1];
+        out[1] = pts[p2];
+        out[2] = pts[p3];
+        out[3] = pts[p4];
+        return true;
+    }
+
+    // Solves all 24 labelings and returns the best-fitting one. `K` and
+    // `toPixelSpace` differ between this node's two branches -- the non-FOV
+    // path solves in pixel space against cameraMatrix_, the FOV path solves
+    // in the normalized space undistortAstrobeeFov already returns, against
+    // camMatrixAstrobee -- so both are passed in rather than assumed. Every
+    // candidate is offered the same warm-start prior, since they all explain
+    // the same frame. bestSorted comes back so the caller can populate the
+    // Astrobee landmark message from the labeling that actually won, not from
+    // a stale one.
+    //
+    // Returns false only if all 24 fail to label, which is a stricter failure
+    // condition than the single-guess path's, by design.
+    bool solveMultiHypothesis(const std::vector<Eigen::Vector3d>& imagePoints,
+                              const std::vector<cv::Point2f>& undistortedPoints,
+                              const cv::Mat& K, bool toPixelSpace, int measType,
+                              const double* prior, CameraPose& bestPose,
+                              std::vector<Eigen::Vector3d>& bestSorted,
+                              int& winningCandidate) const {
+        bestPose.solver_final_cost = -1.0;
+        double bestCost = std::numeric_limits<double>::infinity();
+        winningCandidate = -1;
+        for (int c = 0; c < 24; ++c) {
+            std::vector<Eigen::Vector3d> candidate;
+            if (!labelForCandidate(imagePoints, c, candidate)) continue;
+            if (toPixelSpace) {
+                for (auto& p : candidate) {
+                    p(0) = p(0) * K.at<double>(0, 0) + K.at<double>(0, 2);
+                    p(1) = p(1) * K.at<double>(1, 1) + K.at<double>(1, 2);
+                }
+            }
+            CameraPose trial;
+            CobrasFumantes solver(K, measType);
+            solver.computeAndValidatePosesWithRefinement(candidate, knownPoints_, undistortedPoints,
+                                                        trial, prior);
+            if (!trial.R.allFinite() || !trial.t.allFinite()) continue;
+            if (trial.solver_final_cost < bestCost) {
+                bestCost = trial.solver_final_cost;
+                bestPose = trial;
+                bestSorted = candidate;
+                winningCandidate = c;
+            }
+        }
+        return winningCandidate != -1;
+    }
     bool dock_cam_;
     bool nav_cam_;
     bool sci_cam_;
