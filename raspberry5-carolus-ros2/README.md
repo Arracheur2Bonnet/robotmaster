@@ -24,6 +24,12 @@ says what is where.
 | `carolus_ros2/include/carolus_node/` | Headers for the above |
 | `carolus_ros2/config/logitech_1080p.yaml` | Camera intrinsics + beacon geometry + detection parameters |
 
+This and the parent repo's `carolus_ws/` (ROS1) are the only two maintained
+copies of this code — no third, comparison-only tree exists.
+`shortcuts/ros2_sync_check.sh` (parent repo) catches drift between the two;
+the ROS1-vs-ROS2 comparison itself is in the manual, §"Where this node
+genuinely differs from the ROS1 one".
+
 ## Quick build
 
 ```bash

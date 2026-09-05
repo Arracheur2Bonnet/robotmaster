@@ -89,7 +89,10 @@ unresolved ROS symbols, checked on x86_64 and on the Raspberry Pi's aarch64.
 sources under ROS2 as the test of that claim. It is deliberately
 self-contained — its own manual, its own copy of the core — so it can be
 handed over and built on its own. See its
-[README](raspberry5-carolus-ros2/README.md).
+[README](raspberry5-carolus-ros2/README.md). These two trees are the only
+ones maintained; `shortcuts/ros2_sync_check.sh` catches drift between them,
+and there is no third copy for comparing the two — that comparison is
+documentation, in `raspberry5-carolus-ros2/`'s own manual.
 
 Verified: the same detection/solver sources build under ROS Noetic, ROS2
 Humble and ROS2 Jazzy, and the ROS2 wrapper detects a real beacon and

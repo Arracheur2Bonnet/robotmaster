@@ -152,23 +152,186 @@ second and third time, under different toolchains and middlewares, as the
 actual test of that claim --- not that the code compiles, but that it
 produces the same numbers.
 
-\section{Getting this folder onto a blank machine}
+\section{Where this node genuinely differs from the ROS1 one}
+\label{sec:ros2-vs-ros1}
 
-Every command in this document assumes \texttt{raspberry5-carolus-ros2/}
-already exists somewhere on disk. On a genuinely blank machine it does not
-yet, and getting it there needs \texttt{git} first --- not installed by
-default on a minimal Ubuntu image:
+The detection and solver core is the same source. The \emph{wrappers} around
+it are not, and the differences below change the published numbers --- so a
+ROS1-vs-ROS2 comparison run with both nodes' defaults is not comparing like
+with like. Verified against both sources 2026-09-03.
+
+\begin{center}
+\begin{tabular}{@{}p{0.20\textwidth}p{0.37\textwidth}p{0.35\textwidth}@{}}
+\toprule
+& ROS1 (\texttt{carolus\_astrobee}) & ROS2 (\texttt{carolus\_ros2}) \\
+\midrule
+Distortion model & \texttt{fov}, \texttt{fisheye} or plumb\_bob, selected per profile. The Logitech profile sets \texttt{fov: false} (BUG-138, fixed 2026-09-04) & plumb\_bob always; no \texttt{fov} branch exists \\
+Pose filtering & \texttt{PoseFilter} active: FIFO of 7, translation gate 0.5\,m, rotation gate 0.3 & \textbf{not called} --- publishes the raw per-frame solve \\
+Image subscription & \texttt{image\_transport} & plain \texttt{rclcpp} subscription \\
+Default image topic & \texttt{/usb\_cam/image\_raw} & \texttt{/image\_raw} \\
+\texttt{known\_points} format & space-separated string & real YAML list \\
+Astrobee landmarks & publishes \texttt{ff\_msgs/VisualLandmarks} & not published \\
+Camera pixel format & \texttt{yuyv} (its launch file) & \texttt{mjpeg2rgb} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Identical on both, and not a source of divergence: the intrinsics and every
+detection parameter (both profiles carry the same measured values), the
+warm-start, and the 24-candidate correspondence search --- default
+\texttt{true} on both since 2026-09-03. Colour handling also agrees despite
+the different pixel formats: ROS1 converts \texttt{rgb8} to BGR explicitly
+before \texttt{COLOR\_BGR2HSV}, ROS2 asks \texttt{cv\_bridge} for
+\texttt{bgr8} outright.
+
+\begin{warningbox}
+\textbf{One more setting to change before any parity measurement} ---
+\texttt{fifo\_on} is a real feature, not a bug, so it is not changed in the
+checked-in profile permanently. \texttt{carolus.launch} loads the profile
+via \texttt{rosparam command="load"}, with no launch argument exposed for
+this key, so the verified way to override it for one comparison run is to
+edit \texttt{fifo\_on: true} to \texttt{false} directly in
+\texttt{logitech\_1080p.yaml} before launching, and change it back
+afterward --- the same edit-run-revert pattern this project already uses for
+exposure. ROS1 publishes a 7-pose sliding average with outlier rejection;
+ROS2 publishes each raw solve. Comparing a filtered output against an
+unfiltered one measures the filter as much as the solver.
+
+\texttt{false} is correct only for this comparison, never as a standing
+setting. Left off permanently, ROS1 loses the one thing this filter
+provides that ROS2's own wrapper does not: rejection of a single bad frame
+before it ever reaches \texttt{/pose}, protection this project has
+directly needed in practice, not only in principle.
+\end{warningbox}
+
+\subsection{Where the comparison itself lives}
+\label{sec:ros2-vs-ros1-no-third-tree}
+
+\textbf{Decided 2026-09-04: exactly two trees are maintained, and no third
+one is added for this comparison.} \texttt{carolus\_ws/} (ROS1) and this
+folder (ROS2) already duplicate the detection/solver core once, a
+deliberate, accepted cost this document's opening section states plainly ---
+\texttt{shortcuts/ros2\_sync\_check.sh} exists because that duplication needs
+watching. A third copy (a \texttt{test\_ros/} holding its own patched builds
+of both stacks plus calibration data, considered explicitly this session)
+would need its own drift check on top of that one, for a comparison that is
+methodology and results, not code. It was rejected on that basis, not on
+time or effort grounds.
+
+Concretely, each piece of the comparison has exactly one home, none of them
+a new folder:
+
+\begin{center}
+\begin{tabular}{@{}p{0.30\textwidth}p{0.62\textwidth}@{}}
+\toprule
+What & Where \\
+\midrule
+The two trees' known differences (this section) and the settings to align before comparing & here, \texttt{technical-ros2.tex} \\
+What the comparison found, and what it means & \texttt{overleaf/main.tex} --- a finding, not a procedure \\
+Whether the two trees' shared core has drifted & \texttt{shortcuts/ros2\_sync\_check.sh}, already run after every change to either copy \\
+Calibration images for whichever camera is under test & \texttt{data/checkerboard/<camera>\_<date>/}, the convention already in use --- one dated folder per calibration session, not per comparison \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Measured 2026-09-04:} with the settings above aligned, ROS1 and
+ROS2 agree to 1.1\,mm ($0.7017$\,m vs $0.7028$\,m, both against a
+$\sim$70\,cm tape measurement) --- the same beacon and camera, moved from
+one machine to the other between runs. Full account and the investigation
+that preceded it: \texttt{overleaf/main.tex}.
+
+\begin{warningbox}
+\textbf{BUG-138, fixed 2026-09-04, for the record: what the Logitech profile
+got wrong and why.} It shipped \texttt{fov: true}, which routes undistortion
+through the Astrobee single-parameter FOV model. That model reads
+\texttt{distortion[0]} --- the profile's plumb\_bob \textbf{k1} --- as its
+own, unrelated field-of-view coefficient, computing
+$r_u = \tan(r_d k_1) / 2\tan(k_1/2)$. For a $k_1$ this small that is
+algebraically the identity: against the four measured blob positions at
+83\,cm it gave 0.99979--0.99980 where plumb\_bob gives 1.00010--1.00088.
+\textbf{The measured distortion was silently discarded, and k2 was never
+read at all.} The error was well under a millimetre at this range with this
+lens. \texttt{fov: false} now routes the same profile through
+\texttt{cv::undistortPoints}, which is what its distortion array was
+actually calibrated for.
+
+\textbf{This was not a Logitech-only mistake.} The same \texttt{fov: true}
+plus a full plumb\_bob distortion array appears in \texttt{robomaster\_s1.yaml}
+and \texttt{robomaster\_s1\_longrange.yaml} --- the S1's own operational
+profiles. Computed against those coefficients ($k_1=-0.1479$,
+$k_2=0.1452$), the same mismatch reaches \textbf{$-2.8\,\%$ at 250\,px off
+the optical centre} (an approximate $f_x=500$ stand-in was used for this
+estimate, not this camera's own calibrated value), an order of magnitude
+larger than the Logitech case. \textbf{Deliberately not fixed here} ---
+changing the robot's own camera model is a live-parameter change to
+hardware currently in service, and this project's own comment in that file
+already flags the distortion array as ``validated pragmatically rather than
+by a formal calibration campaign,'' so switching to \texttt{cv::undistortPoints}
+is not guaranteed correct without first checking that array actually fits a
+plumb\_bob model. Tracked as BUG-139.
+\end{warningbox}
+
+\section{Getting Carolus's own source code onto a blank machine}
+\label{sec:ros2-onto-blank-machine}
+
+\textbf{This one \texttt{git clone} is the only step that gets Carolus's
+actual ROS2 source code (\texttt{carolus\_ros2/}) onto your machine ---
+there is no separate ``download Carolus'' step anywhere else in this
+document, and no second repository.} Every later command in this chapter
+(building, testing, calibrating) assumes this clone already happened.
+On a genuinely blank machine it has not, and \texttt{git} itself is not
+installed by default on a minimal Ubuntu image either:
 
 \begin{lstlisting}[style=shell]
 sudo apt install -y git
 git clone -b nawfel-legacy https://github.com/Arracheur2Bonnet/robotmaster.git
 \end{lstlisting}
 
-The folder this document refers to as \texttt{raspberry5-carolus-ros2/} is
-then \texttt{robotmaster/\allowbreak raspberry5-carolus-ros2/} inside that clone.
+\texttt{raspberry5-carolus-ros2/}, the name this whole document uses for
+itself, is \texttt{robotmaster/\allowbreak raspberry5-carolus-ros2/} inside
+that clone --- and \texttt{carolus\_ros2/} inside \emph{that} is the actual
+buildable ROS2 package (Section~\ref{sec:ros2-carolus-package}), not a
+placeholder for something fetched separately later.
+
+\textbf{This is deliberate, not incidental: \texttt{raspberry5-carolus-ros2/}
+is a self-contained folder, independent of the rest of the
+\texttt{robotmaster} repository.} It carries its own copy of the
+detection/solver core rather than a relative reference into
+\texttt{carolus\_ws/src/}, precisely so it can be cloned, copied, or handed
+to someone else and built entirely on its own. Nothing outside this one
+folder --- not \texttt{carolus\_ws/}, not any other part of the clone --- is
+needed to build or run Carolus under ROS2.
 \textbf{Found missing 2026-08-24}, following this document literally on a
 second, genuinely blank 24.04 machine: nothing above this point mentioned
 either step, despite every later command assuming both were already done.
+
+\section{Which ROS2 install path applies to you}
+\label{sec:ros2-which-path}
+
+The next three sections are \textbf{alternatives, not sequential steps} ---
+check your OS first, then read only the one section that matches:
+
+\begin{lstlisting}[style=shell]
+cat /etc/os-release
+\end{lstlisting}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\texttt{VERSION\_ID} reads & Read this section \\
+\midrule
+\texttt{"22.04"} & Installing ROS2 Humble (below) \\
+\texttt{"24.04"} & Installing ROS2 Jazzy, natively (Section~\ref{sec:ros2-jazzy-native-pc}) --- skip the container section entirely \\
+anything else, or no 24.04 machine to hand & Installing ROS2 Jazzy, in a container (Section~\ref{sec:ros2-jazzy-container}) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Installing more than one applies only if you specifically want to
+cross-validate a build across toolchains, the way this project's own
+authors did (Section~\ref{ch:ros2-labpc}'s later "Verified... Jazzy" and
+"Verified... Humble, same host" entries) --- for running Carolus once, on
+one machine, one section is enough.
 
 \section{Installing ROS2 Humble}
 
@@ -176,6 +339,7 @@ Ubuntu 22.04 is Humble's own native target, so it installs from the official
 packages:
 
 \begin{lstlisting}[style=shell]
+sudo apt update
 sudo apt install software-properties-common curl -y
 sudo add-apt-repository universe -y
 sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
@@ -246,6 +410,7 @@ mismatch Section~\ref{sec:ros2-jazzy-container} exists to sidestep is gone,
 and native install is simpler:
 
 \begin{lstlisting}[style=shell]
+sudo apt update
 sudo apt install software-properties-common curl -y
 sudo add-apt-repository universe -y
 sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
@@ -279,6 +444,7 @@ other rows despite being the cleanest \emph{install-path} confirmation yet.
 \end{warningbox}
 
 \section{The \texttt{carolus\_ros2} package}
+\label{sec:ros2-carolus-package}
 
 \texttt{carolus\_ros2/} is a minimal \texttt{rclcpp} wrapper --- \textbf{a
 proof that the core ports, not a full reimplementation of the ROS1 node.}
@@ -309,6 +475,12 @@ hiding the package from the ROS2 build. The two build systems need entirely
 separate source trees, which is one reason this whole document and its
 folder are kept independent.
 \end{warningbox}
+
+\texttt{carolus\_ros2/} below is the same folder Section~\ref{sec:ros2-onto-blank-machine}
+already cloned --- nothing new to fetch. \texttt{/path/to/raspberry5-carolus-ros2}
+is the same placeholder explained there: substitute your own clone's actual
+absolute path (e.g.\ \texttt{\textasciitilde/robotmaster/raspberry5-carolus-ros2}), do not
+type it literally.
 
 \begin{lstlisting}[style=shell]
 # Host, Humble:
@@ -567,15 +739,61 @@ webcam at \texttt{/dev/video0}:
 v4l2-ctl --list-devices
 \end{lstlisting}
 
+\textbf{Standard step, every session, before launching \texttt{usb\_cam}:
+fix the exposure.} Not conditional on seeing a problem first --- the factory
+default is auto-exposure, which this project treats as a reliability defect
+to close before it manifests, not a setting to leave alone until it causes
+one:
+
+\begin{lstlisting}[style=shell]
+v4l2-ctl -d /dev/video0 --set-ctrl=auto_exposure=1
+v4l2-ctl -d /dev/video0 --set-ctrl=exposure_time_absolute=40
+\end{lstlisting}
+
+\begin{warningbox}
+\textbf{The exposure value is a per-room measurement, not a constant ---
+\texttt{40}, not the \texttt{300} this section carried until 2026-09-03.}
+Manual exposure alone is not enough: at \texttt{300} in a normally-lit lab,
+\textbf{65\,\% of the frame} sat above the detector's brightness threshold
+and the two largest blue-passing regions in the scene measured
+\textbf{872\,px and 564\,px} against LED blobs of \textbf{10--35\,px} ---
+ambient furniture and monitors were an order of magnitude larger than the
+beacon, so blob selection locked onto the room instead of the target and the
+solved range was wrong by tens of centimetres while every diagnostic still
+read healthy.
+
+\textbf{Measured 2026-09-03}, sweeping 20/40/80/150/299 on this camera in
+this room: at 299, 106 blue clusters and 197\,882 bright pixels; at 40, the
+four LEDs are the four largest objects in frame by a clear margin (35, 34,
+25, 25\,px, next largest 17); at 20 an edge artefact (13\,px) outranks the
+dimmest LED (12\,px), which is why 40 and not 20. \textbf{Re-measure this in
+your own lighting} --- the correct value is the one where only four objects
+survive, and the check is one frame's worth of blob areas, not a guess.
+\end{warningbox}
+
 \begin{lstlisting}[style=shell]
 ros2 run usb_cam usb_cam_node_exe --ros-args \
-    -p video_device:=/dev/video1 -p image_width:=1280 -p image_height:=720 \
-    -p pixel_format:=yuyv2rgb
+    -p video_device:=/dev/video1 -p image_width:=640 -p image_height:=480 \
+    -p pixel_format:=mjpeg2rgb -p framerate:=30.0
 ros2 run rqt_image_view rqt_image_view /image_raw
 \end{lstlisting}
 
 \texttt{/dev/video1} above is what \texttt{v4l2-ctl --list-devices} reported
 for this camera on this machine --- substitute whatever it reports on yours.
+
+\begin{warningbox}
+\textbf{Changed from a $1280\times720$/\texttt{yuyv2rgb} example to
+$640\times480$/\texttt{mjpeg2rgb}, \texttt{2026-09-02}.} This is now the
+standard resolution, not a cosmetic swap: the calibration below is only
+valid at $640\times480$, and this camera offers Motion-JPEG at that
+resolution (unlike some higher resolutions, where \texttt{usb\_cam}'s
+default \texttt{mjpeg2rgb} silently falls back to raw YUYV --- see the next
+warningbox, still relevant if a different resolution is ever used). The
+$1280\times720$ measurements later in this section (the 10.000\,Hz
+benchmark, the early detection tests) are kept as accurate records of that
+now-superseded configuration, not the current recommended one --- do not
+mix intrinsics calibrated at one resolution with a launch at the other.
+\end{warningbox}
 
 \begin{warningbox}
 \texttt{pixel\_format:=yuyv2rgb} is not optional on a device whose target
@@ -589,16 +807,183 @@ callback otherwise assumes. \texttt{ros2 topic echo <topic> --field encoding
 --once} shows what a driver is actually publishing when in doubt.
 \end{warningbox}
 
+\begin{warningbox}
+\textbf{Why the exposure step above runs \emph{before} \texttt{usb\_cam},
+not as a \texttt{usb\_cam} parameter.} \textbf{Verified 2026-08-31}, on the
+second bare-metal 24.04 machine (Section~\ref{sec:ros2-jazzy-native-pc}):
+\texttt{usb\_cam}'s own \texttt{autoexposure}/\texttt{exposure} ROS
+parameters silently do nothing on this camera --- the node's own startup log
+reads \texttt{Setting 'exposure\_auto' to 3} immediately followed by
+\texttt{unknown control 'exposure\_auto'}. \texttt{usb\_cam} targets the
+older V4L2 control name (\texttt{exposure\_auto}), while this camera's
+driver only exposes the newer one (\texttt{auto\_exposure}, confirmed via
+\texttt{v4l2-ctl -d /dev/video0 --list-ctrls}). The parameter is accepted,
+logged, and has no effect --- no error surfaces anywhere in the ROS graph,
+which is exactly why this cannot be left as a \texttt{usb\_cam} launch
+argument: it would silently fail every time.
+
+\texttt{auto\_exposure=1} is this control's manual mode (\texttt{3} is the
+factory default, Aperture Priority / auto).
+\texttt{exposure\_time\_absolute} then becomes settable (it reports
+\texttt{flags=inactive} while auto mode is on) --- range \texttt{3--2047} on
+this camera, factory default \texttt{250}.
+
+\textbf{Verified 2026-08-31, before/after, same camera, same beacon, 10\,s
+each:} both the factory auto-exposure default and the fixed manual value
+above detected the beacon on all 285/285 frames processed
+(\texttt{converged=1} throughout). The fix did not correct a live detection
+failure in this test --- \texttt{final\_cost} was, if anything, marginally
+tighter under manual exposure (84.3--85.0 vs.\ 82.9--84.9 under auto)
+consistent with removing one source of frame-to-frame variance, but neither
+run is quotable as decisive from a single 10 s session. It is kept as the
+standard regardless: auto-exposure remains a documented risk (a prior
+intern's report on the same camera model describes it causing intermittent
+detection failure under different lighting) that costs nothing to close
+pre-emptively.
+\end{warningbox}
+
+\subsection{Calibrating this camera's intrinsics}
+
+\textbf{Measured 2026-09-02}, MATLAB Camera Calibration Toolbox
+(\texttt{cameraCalibrator} app, Computer Vision Toolbox), replacing Hector's
+2026-08-17 approximate values.
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Parameter & Value \\
+\midrule
+$f_x$ & 633.1446 \\
+$f_y$ & 635.7331 \\
+$c_x$ & 313.9318 \\
+$c_y$ & 237.0129 \\
+Distortion (plumb\_bob: $k_1,k_2,p_1,p_2$) & $0.0506,\ -0.1501,\ 0,\ 0$ \\
+Mean reprojection error & 0.2782\,px \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Procedure: checkerboard on the back of the beacon, 25\,mm squares
+(ruler-measured), 200 captures via
+\texttt{shortcuts/capture\_checkerboard\_ros2.py} against \texttt{usb\_cam}
+at $640\times480$ (the resolution above, not $1280\times720$) --- 2 radial
+coefficients, no tangential (MATLAB's ``Low'' distortion preset). 200/200
+images added, 19 partially detected (excluded from the solve
+automatically), 0 rejected.
+
+\subsection{Absolute accuracy against a tape measure}
+\label{sec:ros2-absolute-accuracy}
+
+\textbf{Measured 2026-09-03.} Beacon set at a tape-measured \textbf{83\,cm},
+measured to the midpoint of the base pair of LEDs --- which is where
+\texttt{known\_points}' origin sits, since $P_1$ and $P_2$ are symmetric
+about it. Not the protruding fourth LED, which is offset in depth and is a
+different point entirely.
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+Correspondence search & Reported range & \texttt{final\_cost} \\
+\midrule
+6 candidates (as shipped) & 0.7969\,m \quad($-3.3$\,cm) & 49.18 \\
+24 candidates & \textbf{0.8343\,m \quad($+0.43$\,cm)} & \textbf{0.0122} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Median of $\sim$240 \texttt{/pose} samples each, 0 non-converged frames out
+of 633 in both cases, sample spread 2.2\,mm. Re-run back to back on the same
+binary and the same undisturbed scene, both figures reproduced to within
+0.2\,mm (0.7966\,m and 0.8341\,m). \textbf{The intrinsics above
+are not what limited accuracy} --- an independent check on the same frame
+confirmed them before the solver was suspected: the two base LEDs measured
+127.0\,px apart against 125.9\,px predicted from a 165\,mm span at 83\,cm
+through $f_x$, and the apex LED sat 55\,px above the base midpoint against
+55\,px predicted.
+
+\begin{warningbox}
+\textbf{The default range is wrong by 3.3\,cm and nothing says so.} The
+6-candidate run above converged on every one of its 573 frames, held a 2\,mm
+spread, and logged no warning --- it simply reports a confidently wrong
+number. A \texttt{final\_cost} in the tens rather than the hundredths is the
+only tell, and it is not surfaced anywhere a reader would look. \textbf{Do
+not treat a stable, converging \texttt{/pose} as a validated one}: check it
+against a tape measure at least once per camera and per beacon.
+\end{warningbox}
+
+\textbf{The 24-candidate search is the default since 2026-09-03}
+(\texttt{multi\_hypothesis\_sort}, previously off). It had been off while it
+was a 6-candidate search checked at a single synthetic geometry, and while a
+measured 45--55\textdegree{} regression stood against it. Both reasons went
+away on the same day: the tape measure above, and a re-run of the angle sweep
+after the sweep instrument was itself brought up to 24 candidates --- it had
+still been testing the 6-candidate algorithm, so its verdict described code
+no longer in production.
+
+Sweep re-run, $\theta$ from 5\textdegree{} to 85\textdegree{}, 200 trials per
+angle at $\pm$1\,px, error in cm:
+
+\begin{center}
+\begin{tabular}{lrrrr}
+\toprule
+& \multicolumn{2}{c}{single-guess} & \multicolumn{2}{c}{24 candidates} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+$\theta$ & median & p99 & median & p99 \\
+\midrule
+5--40\textdegree{}  & 2.1--2.9 & 4.1--4.6 & \textbf{0.4--0.7} & \textbf{1.5--3.0} \\
+45--55\textdegree{} & 1.3--1.9 & 3.6--4.1 & \textbf{0.7--0.8} & 2.4--5.1 \\
+60--85\textdegree{} & \multicolumn{2}{c}{\emph{fails outright 15--53\%}} & \multicolumn{2}{c}{\emph{never fails}} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The median error at least halves at every angle. Above 60\textdegree{} the
+single-guess path stops producing an answer at all on half its frames, which
+also means its own percentiles there are computed over survivors only and
+flatter it. Reproduce with
+\texttt{test/instrument\_multi\_hypothesis\_sweep.cpp}.
+
+\begin{warningbox}
+\textbf{The one cost, stated rather than buried:} at 55\textdegree{} the
+24-candidate search has a slightly heavier tail --- p99 of 5.1\,cm against
+the single-guess path's 3.6\,cm, on roughly 1 frame in 100. Median and p95
+are better at that angle, and it costs $+0.22$\,ms per frame. To get the old
+behaviour back:
+
+\begin{lstlisting}[style=shell]
+ros2 run carolus_ros2 carolus_node --ros-args \
+    --params-file carolus_ros2/config/logitech_1080p.yaml \
+    -p multi_hypothesis_sort:=false
+\end{lstlisting}
+\end{warningbox}
+
+\begin{warningbox}
+\textbf{Computer Vision Toolbox is not installed by default}, even under a
+licence that covers it --- found missing on the lab PC's MATLAB, second time
+(\texttt{overleaf/technical.tex}'s own Camera Calibration chapter records the
+first, \texttt{2026-08-11}). Install via Home~$\to$~Get More Apps~$\to$~search
+``Computer Vision Toolbox''. A permissions error on
+\texttt{/usr/local/MATLAB/<version>} during that install means the directory
+is root-owned from the original install: \texttt{sudo chown -R \$USER
+/usr/local/MATLAB/<version>} once, then retry.
+\end{warningbox}
+
 \begin{lstlisting}[style=shell]
 ros2 run carolus_ros2 carolus_node --ros-args \
     --params-file carolus_ros2/config/logitech_1080p.yaml
 \end{lstlisting}
 
 \texttt{logitech\_1080p.yaml} holds this camera's intrinsics
-(fx=570.6975, fy=572.8081, cx=322.6828, cy=228.3519, distortion
-[0.0223, -0.3088, -0.0048, -0.0018] --- a Logitech HD Pro Webcam C920, from
-Hector directly, 2026-08-17, approximate, ``should be calibrated again
-later'') and the same beacon geometry used elsewhere in this project.
+(fx=633.1446, fy=635.7331, cx=313.9318, cy=237.0129, distortion
+[0.0506, -0.1501, 0.0, 0.0] --- a Logitech HD Pro Webcam C920,
+\textbf{measured 2026-09-02}, MATLAB Camera Calibration Toolbox, 200
+checkerboard images, mean reprojection error 0.2782\,px, tangential
+distortion not estimated; \textbf{valid at 640$\times$480 only}, since
+intrinsics are resolution-dependent) and the same beacon geometry used
+elsewhere in this project. These supersede a set of approximate values
+supplied on 2026-08-17 and marked at the time as needing recalibration ---
+if you are looking at a copy quoting fx=570.6975, it predates the
+calibration.
 \textbf{One field needs a real YAML list, not a string:}
 \texttt{known\_points} must be \texttt{[0.0825, 0.0, 0.0, ...]}, a literal
 list --- \texttt{declare\_parameter} has no string-to-vector parsing for a
@@ -717,6 +1102,7 @@ here, to add what was missing.
 # Ubuntu Server 24.04 LTS for Raspberry Pi, flashed via Raspberry Pi Imager
 # or manually per Ubuntu's own arm64 Pi image instructions.
 
+sudo apt update
 sudo apt install software-properties-common curl -y
 sudo add-apt-repository universe -y
 sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
@@ -750,9 +1136,33 @@ installed explicitly), not on this Pi, whose pre-existing workspace cannot
 answer the question either way.
 \end{warningbox}
 
+\section{Getting this folder onto the Pi 5}
+
+\textbf{Missing until 2026-09-02 --- the previous revision of this chapter
+went straight from installing packages to building \texttt{carolus\_ros2}
+without ever saying how the source gets onto this board}, the same gap
+Section~\ref{sec:ros2-onto-blank-machine} already fixed once for the lab PC,
+recurring here because the Pi 5 is a physically separate machine and needs
+the same step repeated, not assumed. This board's own existing workspace
+happened to already have it from a prior attempt (previous section's
+warningbox) --- a genuinely blank Pi 5 does not:
+
+\begin{lstlisting}[style=shell]
+sudo apt install -y git
+git clone -b nawfel-legacy https://github.com/Arracheur2Bonnet/robotmaster.git
+\end{lstlisting}
+
+As in Section~\ref{sec:ros2-onto-blank-machine}: this document's
+\texttt{raspberry5-carolus-ros2/} is
+\texttt{robotmaster/raspberry5-carolus-ros2/} inside that clone.
+
 \section{Building \texttt{carolus\_ros2} on aarch64}
 
 \textbf{Status: Verified 2026-08-21.}
+
+\texttt{/path/to/raspberry5-carolus-ros2} below is the same placeholder as
+Section~\ref{sec:ros2-onto-blank-machine} --- substitute your own clone's
+actual absolute path on this board.
 
 \begin{lstlisting}[style=shell]
 source /opt/ros/jazzy/setup.bash
@@ -776,11 +1186,13 @@ section). \textbf{Not verified}: pose accuracy on this board since the
 2026-08-25 solver fix (Section~\ref{sec:bug132}) --- the pose values quoted
 below predate it and are kept as a dated record, not as current values.
 
-Same procedure as Section~\ref{sec:ros2-realcam}, same physical camera, same
-config file (\texttt{carolus\_ros2/\allowbreak config/\allowbreak
-logitech\_1080p.yaml}) --- the
-point of reusing it unmodified is that a difference in behaviour would then
-be attributable to the board, not to a re-tuned parameter.
+This is the same physical camera as the lab PC chapter (a Logitech HD Pro
+Webcam C920) and the same config file,
+\texttt{carolus\_ros2/\allowbreak config/\allowbreak logitech\_1080p.yaml}
+--- it holds this camera's calibrated intrinsics and the beacon's known
+geometry. Reused here unmodified, on purpose: if this board's detection
+behaves differently from the lab PC's, that difference is then attributable
+to the board, not to a re-tuned parameter.
 
 Find the camera's actual device number first --- do not assume it carries
 over from another machine:
@@ -788,6 +1200,39 @@ over from another machine:
 \begin{lstlisting}[style=shell]
 v4l2-ctl --list-devices
 \end{lstlisting}
+
+\textbf{Standard step, every session, before launching \texttt{usb\_cam}:
+fix the exposure.} This camera's factory default is auto-exposure, which
+this project treats as a reliability defect to close before it manifests.
+\texttt{usb\_cam}'s own ROS-level \texttt{autoexposure}/\texttt{exposure}
+parameters do not work on this camera model --- they target the older V4L2
+control name \texttt{exposure\_auto}, while this camera's driver only
+exposes the newer \texttt{auto\_exposure} (confirmed on the lab PC via
+\texttt{v4l2-ctl -d /dev/video0 --list-ctrls}; \textbf{not separately
+re-confirmed on this Pi's own V4L2 stack}, since it is a property of the
+camera's own firmware rather than the host). The ROS-level parameter is
+accepted, logged, and silently does nothing --- which is exactly why the fix
+has to run outside \texttt{usb\_cam}, before it starts, not as one of its
+launch arguments:
+
+\begin{lstlisting}[style=shell]
+v4l2-ctl -d /dev/video0 --set-ctrl=auto_exposure=1
+v4l2-ctl -d /dev/video0 --set-ctrl=exposure_time_absolute=40
+\end{lstlisting}
+
+\begin{warningbox}
+\textbf{\texttt{40} is a per-room measurement, not a constant} --- and
+manual exposure alone is not sufficient. Measured on the lab PC's identical
+camera 2026-09-03: at \texttt{300}, 65\,\% of the frame cleared the
+brightness threshold and the two largest blue regions in the scene were
+872\,px and 564\,px against LED blobs of 10--35\,px, so blob selection
+locked onto room furniture rather than the beacon while every log line still
+looked healthy. At \texttt{40} the four LEDs were the four largest objects
+in frame (35, 34, 25, 25\,px, next largest 17). Re-measure in your own
+lighting: the right value is the one where only four objects survive, and
+one frame's blob areas answer it. \textbf{Not re-measured on this board
+specifically} --- the sweep was run on the lab PC.
+\end{warningbox}
 
 \begin{lstlisting}[style=shell]
 ros2 run usb_cam usb_cam_node_exe --ros-args \
@@ -811,11 +1256,18 @@ devices, and the webcam is easy to misidentify among them without running
 ``HD Pro Webcam C920''.
 \end{warningbox}
 
-\texttt{image\_threshold:=100} is carried over from the lab PC (see
-Section~\ref{sec:ros2-realcam}'s first warningbox for why the default 190
-finds nothing on this camera) --- not independently re-derived from a pixel
-measurement on this board, but confirmed to work: detection succeeded with
-this value unchanged, see the success criteria at the end of this section.
+\texttt{image\_threshold:=100}, not the RoboMaster profile's default 190,
+carried over from the lab PC rather than independently re-derived from a
+pixel measurement on this board. The reason 190 fails on this camera class
+at all: a saturated blue LED carries little weight in the standard
+$0.299R+0.587G+0.114B$ grayscale conversion, so a blue LED that looks
+plainly bright to the eye can still land low in grayscale --- measured on
+this exact camera at 105--115 hue, 200--255 saturation (both comfortably
+inside their detection windows), but only 131 grayscale, under the 190
+threshold. 100 sits below that measured ceiling with margin. Not
+independently re-measured on this Pi's own copy of the LEDs, but confirmed
+to work here unchanged: detection succeeded with this value, see the
+success criteria at the end of this section.
 
 \textbf{Verified 2026-08-21}: \texttt{usb\_cam\_node\_exe} publishes real
 1280x720 \texttt{rgb8} frames on \texttt{/image\_raw} (confirmed with

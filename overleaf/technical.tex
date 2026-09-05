@@ -1254,6 +1254,35 @@ below rather than reusing these values --- they are specific to this
 project's camera and are not guaranteed to transfer to a different physical
 unit.
 
+\begin{warningbox}
+\textbf{BUG-139, found 2026-09-04, not fixed.} \texttt{carolus\_node/config/robomaster\_s1.yaml}
+and \texttt{robomaster\_s1\_longrange.yaml} both set \texttt{fov: true} while
+carrying this same four-coefficient plumb\_bob array above. \texttt{fov:
+true} routes undistortion through the Astrobee single-parameter FOV model,
+which reads \texttt{distortion[0]} (here, $k_1=-0.1479$) as its own,
+unrelated field-of-view coefficient rather than a plumb\_bob radial term,
+and never reads $k_2$ at all --- the identical mismatch found and fixed the
+same day in the Logitech ground-test profile (\texttt{logitech\_1080p.yaml},
+BUG-138). \textbf{Computed against these exact coefficients} (not measured
+on hardware): the FOV model and plumb\_bob diverge by
+$-0.3\,\%$ at 100\,px off the optical centre, $-1.6\,\%$ at 200\,px, and
+$-3.2\,\%$ near the 1280-pixel-wide frame's edge --- an order of magnitude
+larger than the Logitech case, because this camera's distortion
+coefficients are themselves an order of magnitude larger.
+
+\textbf{Deliberately not fixed here, unlike BUG-138.} This is the robot's
+own operational camera, currently in service, and the paragraph directly
+above already states these values were ``validated pragmatically'' rather
+than by a formal calibration campaign --- meaning it is not established that
+this array is actually a good plumb\_bob fit in the first place. Flipping
+\texttt{fov} to \texttt{false} changes which mathematical model consumes an
+array that has never been verified to suit either model. Fixing this
+correctly needs the calibration procedure below run against this camera,
+not a one-line flag flip. \textbf{Save first} (per this file's own rule on
+detection-parameter changes) before touching either \texttt{fov} setting on
+these two profiles.
+\end{warningbox}
+
 \section{Recommended method: a checkerboard with the MATLAB Camera
 Calibration Toolbox}
 
@@ -1291,6 +1320,22 @@ camera (Section~\ref{sec:kalibr-alt}).
   toolbox; install it once via Home~$\to$~Add-Ons~$\to$~Get Add-Ons if the
   app does not appear. MATLAB Online comes with every toolbox already
   provisioned and needs no such install.
+
+  \textbf{Found missing again, \texttt{2026-09-02}}, same lab PC, same
+  R2025b install: searching the toolstrip for ``camera calibrator'' returned
+  only tangential hits (functions, blocks, videos, forum answers referencing
+  the toolbox) and no app result --- the toolbox was not present despite the
+  2026-08-11 note above. This followed a same-day MATLAB R2026a install
+  alongside the existing R2025b (\texttt{sudo ./install}, a separate,
+  coexisting version under \texttt{/usr/local/MATLAB/}) and a licensing-service
+  crash requiring a full reboot to clear; whether the reinstall specifically
+  caused the toolbox to disappear from R2025b, or it had simply never been
+  completed after the 2026-08-11 note, was not determined --- reinstalled the
+  same way (Home~$\to$~Get More Apps~$\to$~search ``Computer Vision
+  Toolbox''~$\to$~Install) and confirmed present immediately after. If this
+  recurs a third time, check whether installing a second MATLAB version on
+  this machine reliably resets per-version Add-Ons rather than treating it as
+  a one-off.
   \item Run the calibration. Export the resulting coefficients to the MATLAB
   workspace and generate the calibration script --- this script contains the
   intrinsic matrix, distortion coefficients, and reprojection errors in a
@@ -2290,9 +2335,30 @@ Parameter & What it does \\
 \texttt{kernel\_size\_gaussian} & Gaussian blur kernel size --- reduces sensor noise and smooths the image before thresholding. \\
 \texttt{kernel\_size\_morph} & Morphological kernel size --- cleans the binary mask, removing speckle and filling small holes inside a blob. \\
 \texttt{image\_threshold} & Brightness cut (0--255) isolating bright emissive regions before colour filtering. Beacon LEDs are bright, so this removes most of the scene cheaply. \\
+\texttt{multi\_hypothesis\_sort} & \texttt{true} since 2026-09-03. Which of the four detected blobs is which model point is decided by three separate single guesses; when any one is wrong the correct labeling is unreachable and the solver fits the wrong correspondence, converging cleanly on a wrong pose. With this on, all 24 assignments are solved and the lowest-cost one kept. Costs $+0.22$\,ms per frame. Set \texttt{false} for the old single-guess behaviour. \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+\begin{warningbox}
+\textbf{A wrong blob-to-model correspondence does not look like a failure.}
+On a beacon tape-measured at 83.0\,cm, the single-guess sort reported
+79.66\,cm on every frame --- converging every time, 2\,mm of spread, no
+warning logged. The 24-candidate search reported 83.41\,cm on the same
+scene, with a solver residual 1400 times lower (\textbf{Measured}
+2026-09-03, on the ROS2 build against a Logitech C920; the same sort code
+runs here). Synthetically, across viewing angles 5--85\textdegree{}, the
+median error at least halves at every angle, and above 60\textdegree{} the
+single-guess path stops producing an answer at all on 15--53\% of frames
+where the 24-candidate search never fails.
+
+\textbf{Do not treat a stable, converging \texttt{/pose} as a validated
+one.} Check it against a tape measure once per camera and per beacon. On
+this robot's own camera that check is still owed --- the measurements above
+were taken on the ROS2 build with a different camera, and this node has been
+rebuilt but \textbf{not yet run against the beacon} (\textbf{Verified}: it
+compiles and links; \textbf{not executed} on hardware).
+\end{warningbox}
 
 \subsection{The pose filter}
 \label{sec:pose-filter}
@@ -3533,6 +3599,55 @@ to load a string and falls back to a hardcoded placeholder with no warning,
 which is exactly what happened to this robot's own profile until it was
 found and fixed (see \texttt{robomaster\_s1.yaml}'s own inline comment on
 the \texttt{distortion} field for the full account).
+
+\section{Calibrating this camera's intrinsics}
+
+\textbf{Measured 2026-09-02}, MATLAB Camera Calibration Toolbox
+(\texttt{cameraCalibrator} app, Computer Vision Toolbox), replacing the
+2026-08-17 approximate values above.
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Parameter & Value \\
+\midrule
+$f_x$ & 633.1446 \\
+$f_y$ & 635.7331 \\
+$c_x$ & 313.9318 \\
+$c_y$ & 237.0129 \\
+Distortion (plumb\_bob: $k_1,k_2,p_1,p_2$) & $0.0506,\ -0.1501,\ 0,\ 0$ \\
+Mean reprojection error & 0.2782\,px \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Procedure: checkerboard on the back of the beacon, 25\,mm squares (ruler-measured,
+not assumed), 200 captures via \texttt{shortcuts/capture\_checkerboard\_ros2.py}
+against \texttt{usb\_cam} at $640\times480$ --- 2 radial coefficients, no
+tangential (MATLAB's ``Low'' distortion preset; ``High'' is for the
+RoboMaster's own wider-FOV camera, Chapter~\ref{ch:calibration}, not
+re-derived here). 200/200 images added, 19 partially detected (excluded from
+the solve automatically), 0 rejected.
+
+\begin{warningbox}
+\textbf{Valid only at $640\times480$.} Intrinsics are resolution-dependent.
+\texttt{usb\_cam-test.launch} already runs this camera at $640\times480$
+(Section~\ref{ch:carolus-usbcam}'s own listing, unchanged) --- confirmed
+consistent, not a mismatch to fix here. If this camera is ever launched at a
+different resolution, these values need a fresh calibration, not a rescale
+guess.
+\end{warningbox}
+
+\begin{warningbox}
+\textbf{Computer Vision Toolbox is not installed by default on this lab PC's
+MATLAB}, even under a licence that covers it --- found missing again
+\texttt{2026-09-02} (a prior note, \texttt{2026-08-11}, Chapter~\ref{ch:calibration},
+had already recorded this once). Install via Home~$\to$~Get More Apps~$\to$~search
+``Computer Vision Toolbox''. If Add-Ons installation fails with a permissions
+error on \texttt{/usr/local/MATLAB/<version>}, that directory is root-owned
+from the original install: \texttt{sudo chown -R \$USER
+/usr/local/MATLAB/<version>} once, then retry.
+\end{warningbox}
 
 \begin{lstlisting}[style=shell]
 roslaunch carolus_node carolus_logitech.launch

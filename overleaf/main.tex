@@ -588,7 +588,7 @@ plain \texttt{rclcpp} subscription resolved it immediately and
 reproducibly. Since the node had only ever used the ``raw'' transport, the
 dependency was removed outright rather than worked around.
 
-\subsection{Detection on both targets; accuracy on neither}
+\subsection{Detection on both targets; accuracy on neither, at first}
 
 With a physical 4-LED beacon in view, the ROS2 node performs the complete
 chain on both machines --- four blobs found, tetrahedron-geometry target
@@ -705,16 +705,163 @@ Response to a real 300\,mm move & 1.43\,\% & 45--55\,\% (wrong sign) & \textbf{7
 \end{center}
 
 \textbf{Read precisely: 71.2\,\% is real and correctly signed, not
-complete.} The remaining gap is not unexplained --- this camera's own
-intrinsics have never been formally calibrated, a question that was
-correctly deferred while the pose was not tracking at all and is now, for
-the first time, worth asking. The correspondence-sort instability itself
-remains open and deliberately unfixed: warm-starting reduces its practical
-impact for continuous tracking (a solve seeded from a good neighbour is
-less likely to jump to an unrelated minimum than one starting fresh every
-frame) but this is inference from the mechanism, not a separate
+complete.} The remaining gap was not unexplained. Two candidates were named
+at this point and both were later closed, in the order they are treated
+below: this camera's intrinsics had never been formally calibrated, and the
+correspondence sort was still, at the time of writing, open and deliberately
+unfixed --- warm-starting reduces its practical impact for continuous
+tracking, but that was inference from the mechanism rather than a separate
 measurement, and re-acquiring a beacon with no prior pose to warm-start from
-remains exposed to it.
+stayed exposed to it.
+
+\subsection{Closing the gap: a calibration, a correspondence fix, and the
+first absolute measurement this project has passed}
+
+Everything above measures the pipeline against \emph{itself} --- two ports
+agreeing, or a reported displacement compared against a real one. A
+percentage response to a 30\,cm move is a strong test of whether the system
+tracks, and no test at all of whether it is right. This subsection is the
+first in this report where an independently known distance is involved, and
+the distinction between disagreement and accuracy finally collapses.
+
+\textbf{The intrinsics were calibrated} (\textbf{Measured} 2026-09-02): the
+MATLAB Camera Calibration Toolbox, 200 checkerboard images, 25\,mm squares
+measured with a ruler, mean reprojection error 0.2782\,px, tangential
+distortion not estimated. This replaced values supplied as approximate in
+August and flagged at the time as needing recalibration. The result is valid
+at 640$\times$480 only, since intrinsics do not survive a resolution change.
+
+That was not sufficient on its own, which is itself the useful finding. With
+the new calibration loaded the node reported 0.7969\,m for a beacon
+tape-measured at 0.830\,m --- converging on every frame, holding a 2\,mm
+spread, logging no warning. The residual error was the correspondence sort,
+and the shape of the defect was not what the earlier synthetic work had
+suggested. The multi-hypothesis search introduced to address it enumerated
+only the six possible choices of the beacon's base \emph{pair}, and
+\emph{derived} the two remaining orderings --- which of the other points is
+the apex, and which base point is which --- from geometric rules. Each
+derivation is a single guess. When either is wrong for the correct pair,
+\textbf{the correct labelling is not merely ranked poorly, it is absent from
+the candidate set}, and no scoring rule can recover it. Enumerating all 24
+assignments instead, with the derivations retained only as the default
+ordering, closed it.
+
+\begin{center}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+ & 6 candidates & 24 candidates & tape \\
+\midrule
+Reported range & 0.7969\,m & \textbf{0.8341\,m} & 0.830\,m \\
+Error against ground truth & $-3.3$\,cm & \textbf{$+0.4$\,cm} & --- \\
+Solver final cost & 51.5 & \textbf{0.037} & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Measured 2026-09-03}, median of ${\sim}235$ published poses per
+configuration, reproduced three times including once after the fix was made
+the default and no flag was passed. The winning assignment was the one
+requiring \emph{both} derived orderings to be inverted --- mechanically the
+labelling the six-candidate set could not express, which is the diagnosis
+confirming itself rather than a coincidence.
+
+\textbf{Two things about this result are worth stating precisely, because
+both are easy to overstate.} First, it is one distance, one roughly frontal
+viewing angle, one room, one camera. The 2\,m working distance this project
+is ultimately aiming at has not been measured. Second, the failure it
+corrects was invisible by every internal signal available: zero
+non-converged frames, 2\,mm of repeatability, clean logs. A system reporting
+$-3.3$\,cm of error looked exactly like a system reporting $+0.4$\,cm. The
+only discriminator was the solver's final cost, three orders of magnitude
+apart between the two --- and, notably, this is the same quantity an earlier
+result in this section showed \emph{rising} while a pose went from useless
+to correct. Cost is diagnostic here and was misleading there; it is a hint,
+not a gate.
+
+\subsubsection*{A blocker that had quietly stopped being true}
+
+This fix was available, and measured correct, three weeks before it was
+enabled. What kept it off by default was a documented regression: a
+synthetic sweep across viewing angles had found the multi-hypothesis search
+\emph{worse} than the production heuristic between 45\textdegree{} and
+55\textdegree{}. That verdict was correct when written and had since become
+false without anyone touching the file --- the instrument producing it still
+enumerated six candidates while the code under test had moved to
+twenty-four. It was faithfully measuring an algorithm that no longer
+existed.
+
+Re-run after the instrument was brought back into line, the regression does
+not appear. Across 5--85\textdegree{}, at 3000 trials per angle and
+$\pm1$\,px of noise, the median error at least halves at every angle, and
+above 60\textdegree{} the single-guess path stops returning an answer at all
+on 15--53\,\% of frames where the exhaustive search never fails. The one
+genuine cost is a heavier tail at 55\textdegree{} --- a 99th-percentile
+error of 5.6\,cm against 3.6\,cm --- affecting roughly one frame in a
+hundred, which is recorded rather than smoothed over. \textbf{Reasoned, not
+measured, on the point that matters most here:} this sweep is synthetic
+throughout. It establishes the shape of the improvement; it is not a
+substitute for rotating a real beacon in front of a real camera, which
+remains to be done.
+
+The correspondence sort is now the default on both middleware stacks, and
+the ROS1 port's labelling logic was verified byte-identical to the ROS2
+one before either was trusted. \textbf{Run against a real beacon for the
+first time 2026-09-04}, it produced a cleanly bimodal \texttt{/pose} rather
+than a single stable value --- traced, before assuming a regression in the
+port, to one of four detected points jumping 37\,px between otherwise
+identical frames while the other three held to sub-pixel precision. That
+pointed at something in the camera's view intermittently competing with a
+real LED for detection, not at the correspondence code or the port itself,
+both of which were checked directly against the disagreement rather than
+presumed innocent.
+
+Two candidate explanations were tested and narrowed before the real one was
+found. A screen near the setup, covered as a first attempt, produced a real
+but partial improvement (the fraction of frames with an unexplained
+$>$10\,px point displacement fell from 53.8\,\% to 46.8\,\%) --- not a
+resolution, so not the whole story. Read as a request not to keep guessing
+at the physical setup without first re-checking the software: the shared
+detection/solver core was confirmed byte-identical between the two
+middleware trees, and a specific, previously untested mechanism was ruled
+out directly rather than argued away. The warm-start prior (introduced
+earlier in this report) only refreshes when Ceres reports
+\texttt{solver\_converged} --- which is not the same as a good fit; a
+frame logged the same night at \texttt{final\_cost=78.6} with
+\texttt{converged=1}. A converged-but-wrong solve could in principle seed
+the next frame's search with a bad prior. Disabling warm-start entirely,
+screen still covered, did not reduce the affected-frame rate (58.8\,\%, if
+anything worse) --- \textbf{the hypothesis is refuted, measured rather than
+argued}, closing off the last software-side explanation this project could
+identify.
+
+\textbf{The remaining explanation was physical, and fixing it resolved the
+defect completely.} The beacon and camera were repositioned and the
+camera's exposure re-set. Re-run under identical settings: \textbf{344 of
+344 \texttt{/pose} samples in a single cluster at 0.7017\,m against a
+70\,cm tape measurement ($+0.17$\,cm)}, zero of 593 frames showing any
+point displaced more than 10\,px from its nearest match in the previous
+frame, \texttt{final\_cost} holding a median of 0.052 with no non-converged
+or high-cost frame anywhere in the capture --- the cleanest result either
+middleware stack has produced in this project. Nothing about the
+correspondence search, the multi-hypothesis port, or the units fix earlier
+in this section needed to change at any point; each is validated by this
+result rather than merely unimplicated by the elimination that preceded it.
+
+The methodology for keeping the two middleware stacks comparable at all
+lives in \texttt{technical-ros2.tex}'s "Where this node genuinely differs
+from the ROS1 one" section --- deliberately not duplicated here, on the
+same reasoning that section itself states for why no third,
+comparison-only copy of the code exists. The comparison itself was run the
+same night, with settings aligned on both sides per that section (ROS1 with
+\texttt{fov: false} and \texttt{fifo\_on: false}, matching ROS2's own
+always-raw output; ROS2 needs no equivalent change): the beacon and camera
+were moved from the lab PC to the Dell between runs, exposure re-set on
+arrival rather than assumed carried over. \textbf{ROS1 read 0.7017\,m
+against ROS2's 0.7028\,m, both against the same $\sim$70\,cm tape
+measurement --- the two stacks agree to 1.1\,mm.} This is the first time
+in this project that two independently-run middleware stacks have agreed
+on an absolute distance, rather than only on each other's history of
+instability.
 
 \subsection{Maximum update rate}
 
@@ -1026,6 +1173,17 @@ productive diagnostic habit available.
   stopped existing --- and the failure reported itself as
   ``frame does not exist'', which reads as a missing publisher rather than
   an over-eager one.
+
+  \item \textbf{A test that had silently stopped describing the system it
+  tested}, and in doing so blocked a correct fix for three weeks. The
+  synthetic sweep establishing the correspondence search's regression band
+  enumerated six candidate labellings; the code it was meant to characterise
+  had since moved to twenty-four. It kept running, kept passing its own
+  internal consistency, and kept reporting a regression in an algorithm that
+  no longer existed. This is the pattern's most durable variant: the check
+  was not wrong when written, and nothing about it changed. \textbf{A test
+  can be invalidated entirely by an edit to a file it does not contain, and
+  it has no way to notice.}
 \end{itemize}
 
 The counter-practice that emerged is narrow and mechanical: \textbf{prefer a
