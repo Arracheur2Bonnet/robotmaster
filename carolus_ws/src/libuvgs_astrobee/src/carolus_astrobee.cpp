@@ -793,7 +793,23 @@ private:
                       bestPose.solver_final_cost, bestPose.solver_iterations,
                       static_cast<int>(bestPose.solver_converged));
 
-    if (bestPose.R.allFinite() && bestPose.t.allFinite()) {
+    // BUG-141 (2026-09-04) -- cheirality check, applied here as the single
+    // point both branches' bestPose reaches before publishing. t(2) < 0 is
+    // this project's own established convention for "beacon in front of the
+    // camera" (every validated measurement agrees on the sign); t(2) >= 0
+    // places the beacon behind the camera, physically impossible here, and
+    // is the signature of the P4P "twisted pair" ambiguity confirmed on real
+    // hardware the same day -- candidates differing only by swapping the
+    // mirror-symmetric P1/P2 fit with comparably low cost but opposite z
+    // sign. See solveMultiHypothesis for the same check applied per-candidate,
+    // inside the search, so a correct candidate that was merely not the
+    // single lowest-cost one still gets to win.
+    if (bestPose.R.allFinite() && bestPose.t.allFinite() && bestPose.t(2) >= 0.0) {
+        ROS_ERROR_THROTTLE(2.0, "[P4P] solve placed the beacon behind the camera "
+            "(t.z=%.4f) -- rejecting a physically impossible solution.", bestPose.t(2));
+    }
+
+    if (bestPose.R.allFinite() && bestPose.t.allFinite() && bestPose.t(2) < 0.0) {
         CameraPose filteredPose = getFilteredPose(bestPose, timestamp);
         if (fifo){
             bestPose = filteredPose;
@@ -1141,6 +1157,11 @@ void extractXYZ(const Eigen::Vector3d& translationVector, double& xExtracted, do
             solver.computeAndValidatePosesWithRefinement(candidate, knownPoints_, undistortedPoints,
                                                         trial, prior);
             if (!trial.R.allFinite() || !trial.t.allFinite()) continue;
+            // BUG-141 (2026-09-04) -- cheirality check. See the identical
+            // comment in carolus_node_ros2.cpp's solveMultiHypothesis, ported
+            // verbatim: t(2) >= 0 places the beacon behind the camera, always
+            // the wrong branch of a P1/P2-mirror "twisted pair" ambiguity.
+            if (trial.t(2) >= 0.0) continue;
             if (trial.solver_final_cost < bestCost) {
                 bestCost = trial.solver_final_cost;
                 bestPose = trial;

@@ -295,6 +295,15 @@ private:
             RCLCPP_ERROR(get_logger(), "Pose solve produced non-finite result.");
             return;
         }
+        // BUG-141 -- same cheirality check as solveMultiHypothesis's loop,
+        // repeated here as a backstop for the single-guess path (one
+        // candidate, no runner-up to fall back to if it fails this).
+        if (bestPose.t(2) >= 0.0) {
+            RCLCPP_ERROR(get_logger(), "Pose solve placed the beacon behind the camera "
+                        "(t.z=%.4f) -- rejecting a physically impossible solution.",
+                        bestPose.t(2));
+            return;
+        }
 
         if (bestPose.solver_converged) {
             for (int i = 0; i < 6; ++i) prior_params_[i] = bestPose.solved_params[i];
@@ -416,6 +425,21 @@ private:
             CobrasFumantes solver(camera_matrix_, 2);
             solver.computeAndValidatePosesWithRefinement(candidate, known_points_, undistorted, trial, prior);
             if (!trial.R.allFinite() || !trial.t.allFinite()) continue;
+            // BUG-141 (2026-09-04) -- cheirality check. P1/P2 are mirror
+            // points about the beacon's own symmetry plane, and swapping
+            // them (candidateIdx's swapP1P2 bit) can produce a second,
+            // comparably-low-cost solution that is a reflection of the true
+            // one: measured on real hardware, |t(2)| differing by 0.3mm
+            // between the two but with opposite sign. t(2) < 0 is not a
+            // preference, it is this project's own established convention
+            // for "beacon in front of the camera" (every validated
+            // measurement this project has made agrees on the sign); t(2)
+            // >= 0 places the beacon behind the camera, which is physically
+            // impossible in this application and is always the wrong branch
+            // of the pair. Disqualified here, inside the search, rather than
+            // filtered after picking a winner, so a correct candidate that
+            // was merely not the single lowest-cost one still gets to win.
+            if (trial.t(2) >= 0.0) continue;
             if (trial.solver_final_cost < bestCost) {
                 bestCost = trial.solver_final_cost;
                 bestPose = trial;
