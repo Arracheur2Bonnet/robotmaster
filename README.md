@@ -1,13 +1,45 @@
 # Carolus / RoboMaster S1
 
-Vision-based relative navigation on a rooted DJI RoboMaster S1 ground robot,
-built around **Carolus/UVGS-2** — a monocular, 4-LED-beacon detection and P4P
-(Perspective-4-Point) pose solver derived from NASA's SVGS system, originally
-developed for the Astrobee free-flyer. A beacon of known geometry gives the
-robot an absolute 6-DOF pose whenever it is in view; that pose is fused with
-wheel odometry through a lightweight EKF (`robot_localization`), as a step
-toward replacing the GPS channel of the MINS multi-sensor navigation
-framework for indoor, GPS-denied relocalization.
+Vision-based relative navigation for a rooted DJI RoboMaster S1 ground
+robot, built around **Carolus/UVGS-2** — a monocular, 4-LED-beacon pose
+estimation system derived from NASA's SVGS, originally developed for the
+Astrobee free-flyer. This repository holds two working implementations
+(ROS1, running on the real robot, and a self-contained ROS2 port), the
+reports documenting what was built and found, and the tools used to run it.
+
+New to this project? Start with [How it works](#how-it-works) below.
+
+## Contents
+
+- [How it works](#how-it-works)
+- [What's been accomplished](#whats-been-accomplished)
+- [Carolus Launcher](#carolus-launcher)
+- [Repository tour](#repository-tour)
+- [License](#license)
+- [Versioning](#versioning)
+- [Building](#building)
+- [Running Carolus under ROS2](#running-carolus-under-ros2)
+- [Running Carolus on a different robot](#running-carolus-on-a-different-robot)
+- [Hardware environment](#hardware-environment)
+- [Testing](#testing)
+- [Report](#report)
+- [Where this project stands, and what's next](#where-this-project-stands-and-whats-next)
+
+## How it works
+
+Carolus solves one problem: how does a robot know exactly where it is,
+without GPS?
+
+The answer here is a **beacon** — four LEDs mounted in a known, fixed
+geometric pattern (three roughly in a plane, one deliberately raised above
+it). A camera on the robot sees the four bright points; because their exact
+3D positions relative to each other are known in advance, a well-understood
+piece of geometry called **Perspective-4-Point (P4P)** works backward from
+where those four points land in the camera image to compute the camera's
+exact position and orientation relative to the beacon — a full 6-DOF pose,
+from a single frame. It's the same underlying idea as a motion-capture
+marker or an AR tracking tag, applied here to a robot finding its way
+relative to a fixed point.
 
 ```mermaid
 flowchart LR
@@ -20,12 +52,78 @@ flowchart LR
     EKF -->|/odometry/filtered| OUT[Fused Pose]
 ```
 
-On top of the perception pipeline, an autonomous state machine (SEARCH →
-ALIGN → APPROACH → STOP) drives the robot to the beacon under visual
-servoing, validated end to end on hardware. See
-[`overleaf/technical.tex`](overleaf/technical.tex) below for the full setup
-and reproduction guide — compile it with `pdflatex` (two passes) or on
-Overleaf; no PDF is tracked in this repository.
+"Carolus" is the name for the whole pipeline: detect the 4 LEDs in the
+image, solve P4P (a Ceres Solver optimisation), and publish the result as a
+ROS pose. From there, an autonomous state machine (SEARCH → ALIGN →
+APPROACH → STOP) can drive the robot toward the beacon under visual
+servoing, and a lightweight EKF blends the result with the robot's own
+wheel odometry for a smoother estimate. The longer-term goal is feeding
+this pose into MINS, a larger multi-sensor navigation framework, in place
+of the GPS signal it normally expects — useful indoors, or anywhere
+satellite navigation doesn't reach.
+
+## What's been accomplished
+
+- **Carolus runs on the real robot** — the RoboMaster S1, rooted to expose
+  its own SDK, driving itself to a beacon end to end on hardware (SEARCH
+  through STOP).
+- **The pose math was independently re-derived and validated, not just
+  inherited.** The conversion from Carolus's own coordinate convention into
+  ROS's frame was rebuilt from the solver's own cost function rather than
+  trusted from documentation, and confirmed on hardware by rotating the
+  beacon about each camera axis in turn: zero axes came out inverted.
+- **The same detection/solver code runs unmodified under ROS2**, proven on
+  two different middleware generations and two processor architectures (a
+  lab PC and a Raspberry Pi 5) — the same algorithm, not a rewrite.
+- **The two versions now agree numerically.** After finding and fixing a
+  camera calibration that had never actually been measured, a
+  correspondence ambiguity that could make the solver converge cleanly on a
+  wrong pose with no warning, and a mirror-image ambiguity that could flip
+  the estimated depth's sign, ROS1 and ROS2 report the same real-world
+  distance to within **1.1 millimetres**.
+- **The whole build is proven reproducible from nothing** — a blank virtual
+  machine, following only this repository's own instructions, produces a
+  working build.
+
+The full, honest account — including what was tried and didn't hold up —
+is in [`overleaf/main.tex`](overleaf/main.tex).
+
+## Carolus Launcher
+
+<!-- SCREENSHOT: same hero image as docs/carolus-launcher.md, or a smaller
+     crop of it -- keep this one light, the full page carries the detail. -->
+![Carolus Launcher](docs/images/launcher-full.png)
+
+Turn the robot on, run one script, and every terminal, control, and status
+indicator needed to fly it lives in one window: a sequenced, gated launch
+sequence, live ZQSD piloting, a live state dashboard, per-process logs, and
+camera/blob-detection previews — orchestrating five processes on the Pi
+from a single Tkinter console on the lab PC. Run instructions are in
+[Testing](#testing) below; the full writeup, design decisions, and
+architecture diagram are in
+[`docs/carolus-launcher.md`](docs/carolus-launcher.md).
+
+## Repository tour
+
+This repository is organised around two parallel implementations of the
+same detection/solver core, plus the tooling and reports around them.
+
+| Folder | What's in it |
+|---|---|
+| [`carolus_ws/`](carolus_ws/) | The ROS1 workspace — what actually runs on the robot. The Carolus detection/solver code, the RoboMaster SDK bridge, the autonomous state machine, and the EKF sensor-fusion node. |
+| [`raspberry5-carolus-ros2/`](raspberry5-carolus-ros2/) | A self-contained ROS2 port of the same detection/solver core, with its own manual, meant to be handed over and built independently of the ROS1 tree above. |
+| [`overleaf/`](overleaf/) | The two main written documents: `technical.tex` (the complete ROS1 setup and operation manual) and `main.tex` (the investigation report — what was tried, what was found, and why). |
+| [`shortcuts/`](shortcuts/) | Operator tools — most importantly `carolus_launcher.py` (above) — plus deployment, testing and safety-check scripts. Full reference: `shortcuts/README.md`. |
+| [`docs/`](docs/) | Showcase pages for specific parts of the project. |
+| `LICENSE` / `NOTICE` | Apache-2.0, and attribution for every third-party component. |
+
+**One thing this repository deliberately does not include: a day-by-day
+engineering log.** Development was tracked in a private, internal working
+record — decisions, dead ends, exact measurements, a full bug-by-bug
+history — that was never meant to be published and isn't part of this
+repository. Nothing that matters is missing for it: every conclusion worth
+keeping made it into `overleaf/main.tex` and the two technical manuals.
+What stays private is the process of getting there, not the result.
 
 ## License
 
@@ -202,6 +300,33 @@ your platform already does, and point `camera_topic` at it.
 profile and adds an S1-specific static transform, then delegates to
 `carolus.launch`.
 
+## Hardware environment
+
+Specific to this project's own robot and Raspberry Pi — read this before a
+physical session, not after something doesn't turn on.
+
+- **Development machine:** Ubuntu. Every shell command in this repository's
+  documentation is written for it directly.
+- **Robot:** a RoboMaster S1, rooted via `s1_sdk_hack_v0.0.5` to expose
+  DJI's own EP-series SDK API (not the stock consumer S1 API). A Raspberry
+  Pi is mounted at the turret position.
+- **Pi ↔ robot connection:** RNDIS over USB; the robot's own address on
+  that link is fixed at `192.168.42.2`.
+- **Pi power — the one thing worth reading twice.** The Pi carries a UPS
+  HAT (a green PCB with its own battery and a physical ON/OFF button), with
+  **two USB-C ports that look interchangeable and are not**:
+  - The **Pi's own POWER IN port** (next to its HDMI port): direct power —
+    the Pi boots immediately, but the HAT's ON/OFF button stops doing
+    anything. Not the port to use for a normal session.
+  - The **HAT's own USB-C port** (on the green board underneath): charges
+    the HAT's battery — a blue "Charge" LED confirms it, and the ON/OFF
+    button works again, letting the Pi run standalone. **Use this one.**
+  - Working pattern: charge via the HAT port the evening before a session,
+    then the Pi runs on battery the next day, started and stopped with the
+    physical button.
+  - If the Pi won't power on: check the cable is on the HAT port, not
+    POWER IN, and that the charge LED is blue.
+
 ## Testing
 
 Full step-by-step reproduction guide, from a fresh Pi and a fresh S1 through
@@ -249,20 +374,6 @@ a previous setup), a ROS log-directory-over-1GB warning on the Pi, and a
 `pillow`/`imageio` version mismatch from the `myqr` dependency (unused in
 this RNDIS-based pipeline).
 
-## Carolus Launcher
-
-<!-- SCREENSHOT: same hero image as docs/carolus-launcher.md, or a smaller
-     crop of it -- keep this one light, the full page carries the detail. -->
-![Carolus Launcher](docs/images/launcher-full.png)
-
-Turn the robot on, run one script, and every terminal, control, and status
-indicator needed to fly it lives in one window: a sequenced, gated launch
-sequence, live ZQSD piloting, a live state dashboard, per-process logs, and
-camera/blob-detection previews — orchestrating five processes on the Pi
-from a single Tkinter console on the lab PC. Run instructions are in
-[Testing](#testing) above; the full writeup, design decisions, and
-architecture diagram are in [`docs/carolus-launcher.md`](docs/carolus-launcher.md).
-
 ## Report
 
 `overleaf/` holds **`technical.tex`** — the self-contained
@@ -274,6 +385,35 @@ locally with `pdflatex` (two passes).
 covering the ROS2 port on the lab PC and a Raspberry Pi 5. It is independent
 of the one above rather than a chapter of it, so the ROS2 folder stays
 portable on its own.
+
+## Where this project stands, and what's next
+
+Measured against this project's own accuracy target — better than 1 cm at
+2 m, matching on both middleware versions:
+
+- **The 2 m distance itself is not yet reachable, and the reason is
+  understood.** At 2 m, this beacon's LEDs fall below the detector's
+  minimum blob-area threshold, so nothing publishes a pose at all — a
+  lighting/optics limit, not a solver problem. The honest next step is a
+  brighter or larger beacon, or a longer, properly measured camera
+  exposure — not loosening the detection threshold, which was tried before
+  and produces ambiguous rather than accurate results.
+- **The ROS1 port of the two most recent fixes** (the 24-way correspondence
+  search and the mirror-image rejection) **has never been run against a
+  moving beacon on the real robot.** It compiles, links, and is
+  byte-identical to the ROS2 version that has been validated — but that is
+  reasoning, not a hardware measurement.
+- **The RoboMaster's own onboard camera still carries an unfixed
+  distortion-model mismatch**, documented rather than silently left
+  unmentioned in `overleaf/technical.tex`'s camera-calibration chapter.
+  Fixing it needs a real recalibration of that specific camera, not a
+  settings change.
+- **A Raspberry Pi 4B target was never tried** — only the Pi 5 has been
+  built and tested end to end.
+
+None of this blocks picking the project up and continuing: the build is
+proven reproducible from a blank machine, and every item above is a
+scoped, well-understood next step, not an open mystery.
 
 ---
 
