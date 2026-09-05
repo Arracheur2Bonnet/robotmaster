@@ -53,8 +53,13 @@ distance.
 
 **`02` — the fix.** Same setup, with the cheirality check in place: any
 candidate placing the beacon behind the camera (`t.z >= 0`) is skipped inside
-the search loop. 3037 poses, z spanning −1.3137 to −0.3638 m (0.95 m of real
-depth excursion, so the beacon genuinely moved). Six different candidates win
+the search loop. 3037 poses. z spans −1.3137 to −0.3638 m, but **that 0.95 m
+figure is misleading and was quoted as real for a while**: −0.3638 m is a
+single bad detection frame (index 2692, t=100.47 s). Excluding it the depth
+range is −1.3137 to −0.9753 m, i.e. **0.338 m** — the square's own depth edge,
+which matches the tape. Measured offline from these very files: edges of
+28.8 / 33.2 / 30.7 / 30.2 cm, corners square to within 4°, straightness
+2–7 mm RMS per edge. **The path does not curve.** Six different candidates win
 across the recording — 15: 1520, 7: 1138, **14: 331**, 3: 35, 6: 12, 9: 1 —
 and **zero** samples report z ≥ 0. Candidate 14 still wins legitimately: the
 check disqualifies wrong-signed *solutions*, not candidate *numbers*.
