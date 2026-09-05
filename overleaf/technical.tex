@@ -2377,8 +2377,11 @@ discarded. The test runs \emph{inside} the candidate loop, not after a
 winner is picked --- filtering afterwards would throw away a good frame
 whenever the mirror happened to have the lower cost, instead of letting
 the correct candidate win. \textbf{Verified} 2026-09-04 over 3037 poses
-spanning 0.95\,m of motion: zero wrong-signed samples, and candidate 14
-itself still won 331 frames legitimately.
+spanning 0.338\,m of depth motion: zero wrong-signed samples, and candidate 14
+itself still won 331 frames legitimately. (An earlier version of this note
+said 0.95\,m of motion. That was the span out to a single bad detection
+frame, not the path: the real depth edge is \textbf{0.338\,m}, matching the
+30\,cm square that was traced.)
 
 \textbf{The sign convention this relies on is empirical, not arbitrary}:
 in this project's camera frame a beacon in front of the camera reports

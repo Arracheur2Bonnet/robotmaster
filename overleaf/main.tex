@@ -934,16 +934,52 @@ once places the beacon behind the camera. \textbf{Measured} 2026-09-04.}
 \label{fig:bug141-square-trace}
 \end{figure}
 
-Figure~\ref{fig:bug141-square-trace} is the validation run, and it is
-worth being precise about what it does and does not show. It shows the
-ambiguity is gone under genuine motion: 3037 samples spanning 0.95\,m of
-real depth excursion, six different candidates winning across the
-recording, zero wrong-signed poses. It does \emph{not} show the trajectory
-is accurate --- there is no independent ground truth in this recording,
-only a hand-dragged path and a tape-measured nominal size, so the residual
-waviness visible along each edge (0.8--1.4\,cm RMS, 3--4\,cm worst case,
-over edges measuring 32--34\,cm) measures the steadiness of a human hand at
-least as much as it measures Carolus. Distinguishing those two would need a fixture, not a better plot.
+Figure~\ref{fig:bug141-square-trace} is the validation run: 3037 samples,
+six different candidates winning across the recording, zero wrong-signed
+poses. Read back off the recording afterwards, the traced shape is a
+square to a degree the raw plot understates.
+
+\begin{center}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+\textbf{Edge} & \textbf{Length} & \textbf{Straightness (RMS)} & \textbf{Corner} \\
+\midrule
+1 --- away, in depth   & 28.8\,cm & 2.25\,mm & 89.06\textdegree{} \\
+2 --- left, lateral    & 33.2\,cm & 7.27\,mm & 94.27\textdegree{} \\
+3 --- back, in depth   & 30.7\,cm & 2.91\,mm & 86.93\textdegree{} \\
+4 --- right, lateral   & 30.2\,cm & 4.64\,mm\rlap{$^{*}$} & 89.74\textdegree{} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent{\footnotesize $^{*}$Edge 4 contains the single outlier frame; the
+figure quoted is with the pose filter applied, which removes it. Unfiltered
+and with the outlier left in, that edge reads 25.15\,mm RMS --- one frame in
+3037 setting the number for the whole edge.}
+
+\textbf{Straightness of 2--7\,mm over edges of about 30\,cm is 0.7--2.4\,\%
+of edge length, and the four corners are square to within 4\textdegree{}.}
+Whatever Thomas Brezins observed on LIMO, this trajectory does not curve.
+That is the direct answer to the question that prompted the test.
+
+It does \emph{not} follow that the trajectory is accurate. There is no
+independent ground truth in this recording --- only a hand-dragged path
+against a marked square --- so the residual measures the steadiness of a
+human arm at least as much as it measures Carolus, and the 4.4\,cm spread
+in edge length almost certainly belongs to the hand. Distinguishing the two
+would need a fixture, not a better plot.
+
+\textbf{One figure in this section was wrong, and is corrected here rather
+than quietly.} The depth excursion in this recording was first reported as
+0.95\,m, and that number reached four documents before anyone re-derived
+it. It is the span between the lowest $z$ and \emph{the single worst frame
+of the recording} --- one bad detection at $z=-0.36$\,m out of 3037. With
+that frame removed the real span is \textbf{0.338\,m}, which is simply the
+square's own depth edge and agrees with the tape. The corrected number is
+the better evidence: 0.95\,m of excursion was never consistent with a
+30\,cm square in the first place, and it went unchallenged because it
+flattered the result. The same single frame is why the residual along
+edge~4 reads 25\,mm unfiltered and 4.6\,mm filtered.
 
 An earlier attempt at this same validation was discarded, and the reason
 is worth recording: the recording window was launched on a fixed timeout,
