@@ -1,8 +1,5 @@
 # Carolus Launcher
 
-<!-- SCREENSHOT 1 (hero): full GUI mid-session -- robot on, beacon detected,
-     dashboard showing a live state (SEARCH/ALIGN/APPROACH), at least 2-3 log
-     tabs with real scrollback. This is the one image that has to sell it. -->
 ![Carolus Launcher, mid-session](images/launcher-full.png)
 
 Turn the robot on, run one script, and every terminal, control, and status
@@ -54,15 +51,60 @@ flowchart LR
   output can be grepped back after the fact.
 - **Live camera preview and blob-detection view** — the same detection
   overlay that used to need a manually configured rviz panel, now a
-  thumbnail in the launcher.
-
-  <!-- SCREENSHOT 2 (optional): tight crop on the blob-detection view --
-       coloured circles on the beacon's 4 detected LEDs. Visually the most
-       distinctive single panel; worth its own close-up if there's a good
-       frame. -->
-
+  thumbnail in the launcher, visible together in the screenshot above.
 - **Pi health at a glance** — temperature, load, RAM, so a session doesn't
   end with "it was probably the Pi" as an unfalsifiable guess.
+
+## A real launch sequence, step by step
+
+Eight screenshots from one actual session (2026-09-05), each one the moment
+a stage came up. Nothing staged for the camera — this is what a normal
+session's log tabs actually say.
+
+**1 — idle.** Nothing launched yet: every stage but T1 shows `[--]`, no log
+in any tab.
+![idle](images/launcher-01-idle.png)
+
+**2 — `roscore` comes up.** T1's own log, unedited:
+`started roslaunch server http://ubuntu:45577/`, then
+`ROS_MASTER_URI=http://ubuntu:11311/`, `started core service [/rosout]`.
+![roscore](images/launcher-02-roscore.png)
+
+**3 — the SDK connects.** T2 gated on `/camera/color/image_raw` actually
+publishing, not just the process starting: `[RM] Connecting over RNDIS...`,
+`[MODE] set_robot_mode('free') returned True -> mode read back: 'free'`,
+`[GIMBAL] torque ACTIVE`, three separate subscription confirmations
+(`sub_angle`, `sub_status`, `sub_imu`, each `OK (returned True)`), then
+`[CAM] Publishing on /camera/color/image_raw` and `OK - Camera ready`.
+![camera and beacon connect](images/launcher-03-camera-beacon.png)
+
+**4 — running, nothing to see yet.** T3 is up and solving, but no beacon is
+in frame: a clean, repeating `Time to find contours: 0.003s` /
+`Not enough blobs < 4.` pair, frame after frame. This is the correct,
+honest behaviour with an empty scene — not an error state.
+![no beacon in view](images/launcher-04-search-no-blobs.png)
+
+**5 — a target enters the frame.** `CAM PREVIEW` toggled on: the live feed
+picks up a real target on the far wall, and the solver starts reporting
+per-blob parameters (`x`, `y`, `Circularity`, `HUE`, `Area`) instead of the
+"not enough blobs" line above.
+![camera preview live](images/launcher-05-camera-preview.png)
+
+**6 — camera and blob view together.** Both preview panels on at once — the
+raw feed and Carolus's own black-and-white detection output, side by side.
+This is the shot at the top of this page.
+![camera and blob detection together](images/launcher-full.png)
+
+**7 — the TF broadcaster joins.** T4 unlocked and launched:
+`T4 launched - TF broadcaster active (quaternion fixed, BUG-048)`,
+`Carolus TF broadcaster started (robust + NaN safe)`.
+![TF broadcaster active](images/launcher-07-tf-broadcaster.png)
+
+**8 — the full pipeline, MINS included.** All five stages read `[OK]`. T5's
+own tab is a live multi-sensor estimator, not a mock: real RMSE/NEES figures
+and per-sensor Hz averages (`IMU 200.0 CAM0 30.0 CAM1 30.0 LDR0 10.0`)
+scrolling in real time.
+![full pipeline with MINS](images/launcher-08-mins-full-pipeline.png)
 
 ## Design decisions worth knowing about
 

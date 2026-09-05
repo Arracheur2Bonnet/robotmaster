@@ -90,8 +90,6 @@ is in [`overleaf/main.tex`](overleaf/main.tex).
 
 ## Carolus Launcher
 
-<!-- SCREENSHOT: same hero image as docs/carolus-launcher.md, or a smaller
-     crop of it -- keep this one light, the full page carries the detail. -->
 ![Carolus Launcher](docs/images/launcher-full.png)
 
 Turn the robot on, run one script, and every terminal, control, and status
@@ -110,7 +108,7 @@ same detection/solver core, plus the tooling and reports around them.
 
 | Folder | What's in it |
 |---|---|
-| [`carolus_ws/`](carolus_ws/) | The ROS1 workspace — what actually runs on the robot. The Carolus detection/solver code, the RoboMaster SDK bridge, the autonomous state machine, and the EKF sensor-fusion node. |
+| [`carolus_ws/`](carolus_ws/) | The ROS1 workspace — what actually runs on the robot. The Carolus detection/solver code, the RoboMaster SDK bridge, the autonomous state machine, and the EKF sensor-fusion node. Its own [README](carolus_ws/README.md) maps out the five packages. |
 | [`raspberry5-carolus-ros2/`](raspberry5-carolus-ros2/) | A self-contained ROS2 port of the same detection/solver core, with its own manual, meant to be handed over and built independently of the ROS1 tree above. |
 | [`overleaf/`](overleaf/) | The two main written documents: `technical.tex` (the complete ROS1 setup and operation manual) and `main.tex` (the investigation report — what was tried, what was found, and why). |
 | [`shortcuts/`](shortcuts/) | Operator tools — most importantly `carolus_launcher.py` (above) — plus deployment, testing and safety-check scripts. Full reference: `shortcuts/README.md`. |

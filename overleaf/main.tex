@@ -451,6 +451,18 @@ keyboard. And it shows a live dashboard: battery, attitude, wheel speeds,
 velocity, a camera preview, Carolus's own blob-detection view, and beacon
 detection state.
 
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/launcher-full-pipeline.png}
+\caption{All five stages running together (2026-09-05): \texttt{roscore},
+the camera/beacon SDK bridge, the Carolus solver, the TF broadcaster, and
+MINS, each showing \texttt{[OK]}. The active tab is MINS's own log, a live
+multi-sensor estimator rather than a static readout --- per-sensor
+frequencies (\texttt{IMU 200.0 CAM0 30.0 CAM1 30.0 LDR0 10.0}) and RMSE/NEES
+figures scrolling in real time.}
+\label{fig:launcher-pipeline}
+\end{figure}
+
 \subsection{Why it looks the way it does}
 
 Three constraints shaped the architecture, and all three came from bugs.
